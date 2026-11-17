@@ -76,6 +76,7 @@ fn dimer_exact(tau: f64) -> f64 {
 /// Run the impurity solve to pseudo-particle self-consistency at the
 /// given expansion order and return the Matsubara bath Green's
 /// function samples.
+#[allow(clippy::needless_range_loop)]
 fn solve_dimer(order: usize, pp_iters: usize) -> Vec<f64> {
     let hs = build(1, SectorClass::SpinResolved);
     let ham = SingleBand {
@@ -134,6 +135,7 @@ fn main() {
 }
 
 #[test]
+#[allow(clippy::needless_range_loop)]
 fn xca_dimer_converges_to_exact_order_by_order() {
     // order-by-order convergence toward the exact dimer solution
     let mut errors = Vec::new();

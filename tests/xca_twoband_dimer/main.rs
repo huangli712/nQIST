@@ -36,43 +36,48 @@ fn k_tau(tau: f64, w: f64) -> f64 {
     -(-w * tau).exp() / (1.0 + (-BETA * w).exp())
 }
 
-/// Impurity energy of the spin-up occupation pattern `(n1u, n2u)` on
-/// the (dn = 0) sector, taken from the nQIST Hamiltonian itself.
-fn impurity_energy(ham: &TwoBandVariant, hs: &HilbertSpace, n1u: u64, n2u: u64) -> f64 {
-    // full 4-bit Fock state with dn = 0; bits are spin*norb + orb
-    let psi = n1u | (n2u << 1);
-    let n_up = (n1u + n2u) as usize;
-    let s = n_up * 3; // sector index = n_up * (norb + 1) + n_dn
-    let blk = LocalHamiltonianRef::sector_block(ham, hs, s, -1);
+/// Impurity energy of the full 4-bit occupation pattern (bits are
+/// spin*norb + orb: 1u, 2u, 1d, 2d), from the nQIST Hamiltonian
+/// itself so the ED is convention-identical to the solver.
+fn impurity_energy(ham: &nqist::hamilton::LocalHamiltonian, hs: &HilbertSpace, psi: u64) -> f64 {
+    let n_up = (psi & 0b0011).count_ones() as usize;
+    let n_dn = (psi & 0b1100).count_ones() as usize;
+    let s = n_up * 3 + n_dn;
+    let blk = nqist::hamilton::LocalHamiltonian::sector_block(ham, hs, s, -1);
     let idx = hs.sectors[s].states.iter().position(|&x| x == psi).unwrap();
     blk.get(idx, idx).re
 }
 
 /// Exact Green's function of orbital `orb` (spin up) from the
-/// diagonalization of the 16-state {orb1, orb2, b1, b2} Fock space.
-fn twoband_exact(ham: &TwoBandVariant, hs: &HilbertSpace, orb: usize, tau: f64) -> f64 {
-    // basis ordering: bit0 = orb0-up, bit1 = orb1-up, bit2 = b1,
-    // bit3 = b2 (c_orb acts on bit `orb` with the JW sign of the
-    // bits below it)
-    let mut h = DenseMat::zeros(16);
-    for st in 0..16u64 {
-        let n1u = st & 1;
-        let n2u = (st >> 1) & 1;
-        let nb1 = (st >> 2) & 1;
-        let nb2 = (st >> 3) & 1;
-        let e = impurity_energy(ham, hs, n1u, n2u) + EPS_B1 * nb1 as f64 + EPS_B2 * nb2 as f64;
-        h.set(st as usize, st as usize, Complex::new(e, 0.0));
+/// diagonalization of the full 64-state Fock space: impurity bits
+/// (1u, 2u, 1d, 2d) = 0..3 plus bath bits b1 = 4, b2 = 5. The
+/// down-spin orbitals stay in the partition (Kanamori coupled) but
+/// never hybridize.
+fn twoband_exact(
+    ham: &nqist::hamilton::LocalHamiltonian,
+    hs: &HilbertSpace,
+    orb: usize,
+    tau: f64,
+) -> f64 {
+    let n = 64usize;
+    let mut h = DenseMat::zeros(n);
+    for st in 0..n as u64 {
+        let e_imp = impurity_energy(ham, hs, st & 0b1111);
+        let e_bath = EPS_B1 * ((st >> 4) & 1) as f64 + EPS_B2 * ((st >> 5) & 1) as f64;
+        h.set(st as usize, st as usize, Complex::new(e_imp + e_bath, 0.0));
     }
-    // impurity <-> bath hopping (same spin, per orbital)
-    for st in 0..16u64 {
-        for (imp_bit, bath_bit, v) in [(0u32, 2u32, V1), (1, 3, V2)] {
+    // up-only impurity <-> bath hopping: (bit0 <-> bit4), (bit1 <-> bit5)
+    for st in 0..n as u64 {
+        for (imp_bit, bath_bit, v) in [(0u32, 4u32, V1), (1, 5, V2)] {
             let bi = 1u64 << imp_bit;
             let bb = 1u64 << bath_bit;
             if (st & bi == 0) && (st & bb != 0) {
-                // move a particle bath -> impurity; JW sign from the
-                // bits between the two positions
                 let between = (st & (bb - 1)) >> (imp_bit + 1);
-                let sign = if between.count_ones() % 2 == 1 { -1.0 } else { 1.0 };
+                let sign = if between.count_ones() % 2 == 1 {
+                    -1.0
+                } else {
+                    1.0
+                };
                 let tgt = (st | bi) & !bb;
                 h.set(st as usize, tgt as usize, Complex::new(sign * v, 0.0));
                 h.set(tgt as usize, st as usize, Complex::new(sign * v, 0.0));
@@ -81,14 +86,18 @@ fn twoband_exact(ham: &TwoBandVariant, hs: &HilbertSpace, orb: usize, tau: f64) 
     }
     let (w, v) = eigh(&h);
 
-    // c_orb as a 16x16 matrix in the eigenbasis
-    let mut cmat = DenseMat::zeros(16);
-    for st in 0..16u64 {
+    // c_orb (up) as a matrix in the eigenbasis
+    let mut cmat = DenseMat::zeros(n);
+    for st in 0..n as u64 {
         let bi = 1u64 << orb;
         if st & bi != 0 {
             let tgt = st & !bi;
             let below = st & (bi - 1);
-            let sign = if below.count_ones() % 2 == 1 { -1.0 } else { 1.0 };
+            let sign = if below.count_ones() % 2 == 1 {
+                -1.0
+            } else {
+                1.0
+            };
             cmat.set(tgt as usize, st as usize, Complex::new(sign, 0.0));
         }
     }
@@ -99,8 +108,8 @@ fn twoband_exact(ham: &TwoBandVariant, hs: &HilbertSpace, orb: usize, tau: f64) 
         z += (-BETA * ei).exp();
     }
     let mut acc = 0.0;
-    for i in 0..16 {
-        for j in 0..16 {
+    for i in 0..n {
+        for j in 0..n {
             let m = vc.get(i, j);
             acc += (-BETA * w[i]).exp() * (m * m.conj()).re * (-tau * (w[j] - w[i])).exp();
         }
@@ -108,11 +117,9 @@ fn twoband_exact(ham: &TwoBandVariant, hs: &HilbertSpace, orb: usize, tau: f64) 
     -acc / z
 }
 
-type TwoBandVariant = nqist::hamilton::LocalHamiltonian;
-type LocalHamiltonianRef = nqist::hamilton::LocalHamiltonian;
-
 /// Solve the two-band impurity at expansion order `order` and return
 /// the Matsubara Green's functions of both orbitals.
+#[allow(clippy::needless_range_loop)]
 fn solve_twoband(order: usize, pp_iters: usize) -> (Vec<f64>, Vec<f64>) {
     let hs = build(2, SectorClass::SpinResolved);
     let ham = TwoBand {
@@ -228,6 +235,33 @@ fn solve_twoband(order: usize, pp_iters: usize) -> (Vec<f64>, Vec<f64>) {
 
 fn main() {
     println!("run via cargo test --test xca_twoband_dimer");
+}
+
+#[test]
+fn twoband_atomic_conventions_and_propagators() {
+    // cross-check `sector_block` energies against the hand-computed
+    // Kanamori values and the two orbital G(0+) occupations
+    let hs = build(2, SectorClass::SpinResolved);
+    let ham = TwoBand {
+        mu: 0.0,
+        u: vec![U_HUB; NT + 2],
+        j: vec![J_HUND; NT + 2],
+        delta: vec![CRYSTAL; NT + 2],
+        bz: vec![0.0; NT + 2],
+    };
+    for (psi, want) in [
+        (0u64, 0.0),
+        (1, 0.5 * CRYSTAL - 0.5 * (3.0 * U_HUB - 5.0 * J_HUND)),
+        (2, -0.5 * CRYSTAL - 0.5 * (3.0 * U_HUB - 5.0 * J_HUND)),
+        (
+            3,
+            (U_HUB - 2.0 * J_HUND) - J_HUND - 2.0 * 0.5 * (3.0 * U_HUB - 5.0 * J_HUND),
+        ),
+    ] {
+        let e = impurity_energy(&ham, &hs, psi);
+        eprintln!("impurity {psi:04b}: sector_block {e:+.6}  hand {want:+.6}");
+        assert!((e - want).abs() < 1e-12);
+    }
 }
 
 #[test]

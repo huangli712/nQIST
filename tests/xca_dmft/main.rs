@@ -28,6 +28,7 @@ const ITERMAX: usize = 40;
 
 #[test]
 #[ignore = "release recommended: cargo test --release --test xca_dmft -- --ignored"]
+#[allow(clippy::needless_range_loop)]
 fn xca_order3_equilibrium_dmft_converges() {
     let hs = build(1, SectorClass::SpinResolved);
     let mut u = vec![2.0; NT + 2];

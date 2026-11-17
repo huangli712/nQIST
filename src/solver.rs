@@ -323,10 +323,17 @@ impl ImpuritySolver {
             if let Some(bath) = &self.boson {
                 nca::add_boson_sigma_mat(bath, &self.pp_g, &mut self.pp_sigma);
             }
-            if self.order >= 2 {
-                self.add_sigma_mat_oca(pp_ints);
-            }
-            if self.order >= 3 {
+            // the OCA kernels are single-band: multi-band orders >= 2
+            // ride the (calibrated equivalent) xca backbones instead
+            let xca_lo = if self.hs.norb > 1 {
+                2
+            } else {
+                if self.order >= 2 {
+                    self.add_sigma_mat_oca(pp_ints);
+                }
+                3
+            };
+            if self.order >= xca_lo {
                 // XCA crossing topologies of orders 3..=order
                 // (SOE-separated backbones on the Matsubara grid)
                 let fits = xca::fit_channels(
@@ -342,7 +349,7 @@ impl ImpuritySolver {
                     dtau: self.beta / self.ntau as f64,
                     pp_g: &self.pp_g,
                 };
-                for m in 3..=self.order {
+                for m in xca_lo..=self.order {
                     xca::add_sigma_mat_xca(
                         m,
                         &self.hs,
@@ -397,26 +404,35 @@ impl ImpuritySolver {
     /// functions per GF vertex (blueprint `get_spgf` at `tstp = -1`).
     pub fn get_spgf_mat(&self, verts: &[GfVertex], pp_ints: &[Hybridization]) -> Vec<Vec<Complex>> {
         let mut out = nca::gf_mat(&self.hs, &self.pp_g, verts);
-        if self.order >= 2 {
-            let integ = Integrator::new(self.kt as i64);
-            let mut oca_part = vec![vec![Complex::ZERO; self.ntau + 1]; verts.len()];
-            oca::add_gf_mat_oca(
-                &self.hs,
-                &self.pp_g,
-                verts,
-                pp_ints,
-                self.beta,
-                self.kt as i64,
-                &integ,
-                &mut oca_part,
-            );
-            for (o, add) in out.iter_mut().zip(&oca_part) {
-                for q in 0..o.len() {
-                    o[q] += add[q];
+        let xca_lo = if self.order >= 2 {
+            if self.hs.norb > 1 {
+                2
+            } else {
+                let integ = Integrator::new(self.kt as i64);
+                let mut oca_part = vec![vec![Complex::ZERO; self.ntau + 1]; verts.len()];
+                oca::add_gf_mat_oca(
+                    &self.hs,
+                    &self.pp_g,
+                    verts,
+                    pp_ints,
+                    self.beta,
+                    self.kt as i64,
+                    &integ,
+                    &mut oca_part,
+                );
+                for (o, add) in out.iter_mut().zip(&oca_part) {
+                    for q in 0..o.len() {
+                        o[q] += add[q];
+                    }
                 }
+                3
             }
-        }
-        if self.order >= 3 {
+        } else if self.order >= 1 {
+            3
+        } else {
+            1
+        };
+        if self.order >= xca_lo {
             let fits = xca::fit_channels(
                 pp_ints,
                 self.beta,
@@ -431,7 +447,7 @@ impl ImpuritySolver {
                 pp_g: &self.pp_g,
             };
             let mut xca_part = vec![vec![Complex::ZERO; self.ntau + 1]; verts.len()];
-            for m in 3..=self.order {
+            for m in xca_lo..=self.order {
                 xca::gf::add_gf_mat_xca(
                     m,
                     &self.hs,

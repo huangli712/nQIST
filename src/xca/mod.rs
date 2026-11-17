@@ -35,7 +35,7 @@ use crate::nca::Hybridization;
 /// Six poles resolve discrete and moderately structured continuous
 /// baths to ~1e-4; every surviving pole costs `p^(m-1)` in the
 /// diagram sums, so the budget is the main performance knob.
-pub const MAX_POLES_DEFAULT: usize = 8;
+pub const MAX_POLES_DEFAULT: usize = 6;
 
 /// Default spectral cutoff passed to the SOE fit (`w_max`).
 pub const W_MAX_DEFAULT: f64 = 12.0;
@@ -83,6 +83,7 @@ mod tests {
     impl Fixture {
         /// Two-site discrete bath `Delta(tau) = v1^2 K(tau, e1) +
         /// v2^2 K(tau, e2)` and atomic-limit propagators.
+        #[allow(clippy::needless_range_loop)]
         fn new() -> Self {
             let hs = build(1, SectorClass::SpinResolved);
             let contour = Contour::new(4, NTAU as i64, 1, 1, 0.08, BETA);
@@ -167,6 +168,7 @@ mod tests {
     }
 
     #[test]
+    #[allow(clippy::needless_range_loop)]
     fn xca_order1_sigma_equals_nca_exactly() {
         let fx = Fixture::new();
         let pp_ints = fx.pp_ints();
@@ -194,6 +196,7 @@ mod tests {
     }
 
     #[test]
+    #[allow(clippy::needless_range_loop)]
     fn xca_order3_sigma_stays_on_scale() {
         // per-sector magnitude of the order-3 self-energy on the
         // atomic fixture: must stay on the V^6 beta^4 scale (O(1..10)),
