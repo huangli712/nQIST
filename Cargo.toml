@@ -1,0 +1,14 @@
+[package]
+name = "nqist"
+version = "0.1.0"
+edition = "2024"
+authors = ["Li Huang <huangli@caep.cn>"]
+description = "Non-equilibrium DMFT impurity solvers (PPSC NCA/OCA, IPT) on the Kadanoff-Baym contour, built on KadanoffBaym"
+
+[dependencies]
+kadanoffbaym = { path = "../KadanoffBaym" }
+
+[profile.release]
+opt-level = 3
+lto = "thin"
+codegen-units = 1
