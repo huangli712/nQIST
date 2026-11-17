@@ -336,8 +336,9 @@ impl ImpuritySolver {
             if self.order >= xca_lo {
                 // XCA crossing topologies of orders 3..=order
                 // (SOE-separated backbones on the Matsubara grid)
+                let xca_channels = oca::channels_with_bath(pp_ints, self.boson.as_ref());
                 let fits = xca::fit_channels(
-                    pp_ints,
+                    &xca_channels,
                     self.beta,
                     self.ntau,
                     xca::MAX_POLES_DEFAULT,
@@ -353,7 +354,7 @@ impl ImpuritySolver {
                     xca::add_sigma_mat_xca(
                         m,
                         &self.hs,
-                        pp_ints,
+                        &xca_channels,
                         &fits,
                         &grids,
                         &integ,
@@ -436,8 +437,9 @@ impl ImpuritySolver {
             1
         };
         if self.order >= xca_lo {
+            let xca_channels = oca::channels_with_bath(pp_ints, self.boson.as_ref());
             let fits = xca::fit_channels(
-                pp_ints,
+                &xca_channels,
                 self.beta,
                 self.ntau,
                 xca::MAX_POLES_DEFAULT,

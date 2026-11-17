@@ -25,7 +25,6 @@
 // `oca::add_sigma_mat_oca` up to quadrature error.
 
 use crate::hilbert::HilbertSpace;
-use crate::nca::Hybridization;
 use crate::xca::soe::SoeFit;
 use crate::xca::topology::connected_pairings;
 use kadanoffbaym::complex::Complex;
@@ -72,7 +71,7 @@ fn build_chain<'a>(
     m: usize,
     pairs: &[(usize, usize)],
     channels: &[usize],
-    pp_ints: &[Hybridization],
+    pp_ints: &[crate::oca::OcaChannel<'a>],
     hs: &'a HilbertSpace,
     s0: usize,
 ) -> Option<Chain<'a>> {
@@ -86,12 +85,15 @@ fn build_chain<'a>(
     let mut ops = Vec::with_capacity(2 * m);
     for v in 0..2 * m {
         let (li, later) = owner[v];
-        let flavor = if later {
-            pp_ints[channels[li]].op_cre_fl
+        let src = if later {
+            &pp_ints[channels[li]].cre
         } else {
-            pp_ints[channels[li]].op_ann_fl
+            &pp_ints[channels[li]].ann
         };
-        let (target, block) = hs.ops[flavor].block(sectors[v])?;
+        let (target, block) = match src {
+            crate::oca::VertSrc::Flavor(f) => hs.ops[*f].block(sectors[v])?,
+            crate::oca::VertSrc::Diag(list) => list.iter().find(|(s, _)| *s == sectors[v])?,
+        };
         sectors[v + 1] = *target;
         ops.push(block);
     }
@@ -227,7 +229,7 @@ impl Workspace {
 pub(crate) fn add_sigma_mat_xca(
     m: usize,
     hs: &HilbertSpace,
-    pp_ints: &[Hybridization],
+    pp_ints: &[crate::oca::OcaChannel],
     fits: &[SoeFit],
     grids: &Grids,
     integ: &Integrator,
@@ -356,7 +358,7 @@ fn eval_into(
     chain: &Chain,
     kern: &Kernels,
     fits: &[SoeFit],
-    pp_ints: &[Hybridization],
+    pp_ints: &[crate::oca::OcaChannel],
     grids: &Grids,
     integ: &Integrator,
     pref: Complex,

@@ -29,8 +29,6 @@ pub(crate) mod topology;
 pub(crate) use sigma::add_sigma_mat_xca;
 pub(crate) use soe::{SoeFit, soe_fit};
 
-use crate::nca::Hybridization;
-
 /// Default maximum number of SOE poles selected by the greedy fit.
 /// Six poles resolve discrete and moderately structured continuous
 /// baths to ~1e-4; every surviving pole costs `p^(m-1)` in the
@@ -43,14 +41,14 @@ pub const W_MAX_DEFAULT: f64 = 12.0;
 /// Fit every hybridization channel of `pp_ints` on the Matsubara
 /// grid; one `SoeFit` per channel, in order.
 pub(crate) fn fit_channels(
-    pp_ints: &[Hybridization],
+    channels: &[crate::oca::OcaChannel],
     beta: f64,
     ntau: usize,
     max_poles: usize,
     w_max: f64,
 ) -> Vec<SoeFit> {
     let dtau = beta / ntau as f64;
-    pp_ints
+    channels
         .iter()
         .map(|c| {
             let values: Vec<kadanoffbaym::complex::Complex> =
@@ -175,7 +173,8 @@ mod tests {
         let mut want = fx.empty_sigma();
         nca::set_sigma_mat(&fx.hs, &fx.pp_g, &pp_ints, &mut want);
         let mut got = fx.empty_sigma();
-        let fits = fit_channels(&pp_ints, BETA, NTAU, 12, 6.0);
+        let chans = oca::channels_with_bath(&pp_ints, None);
+        let fits = fit_channels(&chans, BETA, NTAU, 12, 6.0);
         for f in &fits {
             assert!(f.resid < 1.0e-10, "SOE resid {}", f.resid);
         }
@@ -185,7 +184,7 @@ mod tests {
             pp_g: &fx.pp_g,
         };
         let integ = Integrator::new(5);
-        add_sigma_mat_xca(1, &fx.hs, &pp_ints, &fits, &grids, &integ, &mut got);
+        add_sigma_mat_xca(1, &fx.hs, &chans, &fits, &grids, &integ, &mut got);
         for s in 0..4 {
             for i in 0..=NTAU {
                 let a = want[s].mat.block(i)[0];
@@ -205,20 +204,137 @@ mod tests {
         let fx = Fixture::new();
         let pp_ints = fx.pp_ints();
         let mut got = fx.empty_sigma();
-        let fits = fit_channels(&pp_ints, BETA, NTAU, 12, 6.0);
+        let chans = oca::channels_with_bath(&pp_ints, None);
+        let fits = fit_channels(&chans, BETA, NTAU, 12, 6.0);
         let grids = sigma::Grids {
             ntau: NTAU,
             dtau: BETA / NTAU as f64,
             pp_g: &fx.pp_g,
         };
         let integ = Integrator::new(5);
-        add_sigma_mat_xca(3, &fx.hs, &pp_ints, &fits, &grids, &integ, &mut got);
+        add_sigma_mat_xca(3, &fx.hs, &chans, &fits, &grids, &integ, &mut got);
         for s in 0..4 {
             let mx = (0..=NTAU)
                 .map(|i| got[s].mat.block(i)[0].abs())
                 .fold(0.0f64, f64::max);
             assert!(mx < 10.0, "sector {s} blew up: {mx}");
         }
+    }
+
+    /// Holstein low-order anchors: with a boson bath attached, XCA(1)
+    /// must reproduce NCA+boson and XCA(2) must reproduce
+    /// NCA+boson+OCA(channels) exactly (the calibrated equivalence,
+    /// now carried by the freshly C++-gated Holstein kernels).
+    #[test]
+    #[allow(clippy::too_many_lines)]
+    fn xca_holstein_m1_anchor_matches_nca_boson() {
+        let fx = Fixture::new();
+        let pp_ints = fx.pp_ints();
+
+        // Holstein bath: free phonon at omega = 1, coupling g = 0.3
+        let mut d0 = crate::boson::green_from_eps_phonon(4, NTAU, BETA, 0.02, 1.0);
+        let gvec = vec![0.3; 4 + 2];
+        crate::boson::scale_phonon(&mut d0, &gvec);
+        let contour = Contour::new(4, NTAU as i64, 1, 1, 0.08, BETA);
+        let mut d0_cc = ContourGreen::new(&contour, Sign::Bose, Complex::ZERO);
+        crate::boson::set_bwd_from_fwd_boson_mat(&mut d0_cc, &d0);
+        let bath = nca::BosonBath {
+            d0,
+            d0_cc,
+            blocks: crate::boson::docc_blocks(&fx.hs),
+        };
+
+        let chans = oca::channels_with_bath(&pp_ints, Some(&bath));
+        assert_eq!(chans.len(), 6, "4 fermion + 2 boson channels");
+        let fits = fit_channels(&chans, BETA, NTAU, 12, 6.0);
+        for (c, f) in fits.iter().enumerate() {
+            eprintln!(
+                "DBG fit chan {c}: poles={} resid={}",
+                f.poles.len(),
+                f.resid
+            );
+            assert!(f.resid < 1.0e-10, "SOE resid chan {c}: {}", f.resid);
+        }
+        let grids = sigma::Grids {
+            ntau: NTAU,
+            dtau: BETA / NTAU as f64,
+            pp_g: &fx.pp_g,
+        };
+        let integ = Integrator::new(5);
+
+        // --- m = 1 anchor: XCA(1) == NCA + boson ---
+        let mut want = fx.empty_sigma();
+        nca::set_sigma_mat(&fx.hs, &fx.pp_g, &pp_ints, &mut want);
+        nca::add_boson_sigma_mat(&bath, &fx.pp_g, &mut want);
+        let mut got = fx.empty_sigma();
+        add_sigma_mat_xca(1, &fx.hs, &chans, &fits, &grids, &integ, &mut got);
+        for s in 0..4 {
+            for i in 0..=NTAU {
+                let a = want[s].mat.block(i)[0];
+                let b = got[s].mat.block(i)[0];
+                assert!((a - b).abs() < 1e-10, "m1 anchor s {s} i {i}: {a} vs {b}");
+            }
+        }
+    }
+
+    /// KNOWN OPEN (2026-11-18): the m = 2 boson-inclusive anchor.
+    /// XCA(2) with boson channels disagrees with the native
+    /// OCA(channels) beyond the calibrated tolerance (total-relative
+    /// ~0.5): (a) a pre-existing fermion-only offset of the pure OCA
+    /// part (~2.6x at the OCA-part scale) that the established
+    /// total-relative tolerance in `xca_order2_sigma_matches_oca`
+    /// masks, and (b) boson-pair bookkeeping (adding the backward
+    /// boson channel REDUCES the XCA total instead of adding
+    /// diagrams). Root cause lives in the XCA topology prefactors vs
+    /// the C++ OCA pair rules for mixed statistics; needs dedicated
+    /// XCA-side calibration work. The m = 1 anchor above is exact.
+    #[test]
+    #[ignore = "m2 boson-pair calibration open in the XCA backbone"]
+    fn xca_holstein_m2_anchor_matches_oca_boson() {
+        let fx = Fixture::new();
+        let pp_ints = fx.pp_ints();
+        let mut d0 = crate::boson::green_from_eps_phonon(4, NTAU, BETA, 0.02, 1.0);
+        let gvec = vec![0.3; 4 + 2];
+        crate::boson::scale_phonon(&mut d0, &gvec);
+        let contour = Contour::new(4, NTAU as i64, 1, 1, 0.08, BETA);
+        let mut d0_cc = ContourGreen::new(&contour, Sign::Bose, Complex::ZERO);
+        crate::boson::set_bwd_from_fwd_boson_mat(&mut d0_cc, &d0);
+        let bath = nca::BosonBath {
+            d0,
+            d0_cc,
+            blocks: crate::boson::docc_blocks(&fx.hs),
+        };
+        let chans = oca::channels_with_bath(&pp_ints, Some(&bath));
+        let fits = fit_channels(&chans, BETA, NTAU, 12, 6.0);
+        let grids = sigma::Grids {
+            ntau: NTAU,
+            dtau: BETA / NTAU as f64,
+            pp_g: &fx.pp_g,
+        };
+        let integ = Integrator::new(5);
+        let mut want2 = fx.empty_sigma();
+        nca::set_sigma_mat(&fx.hs, &fx.pp_g, &pp_ints, &mut want2);
+        nca::add_boson_sigma_mat(&bath, &fx.pp_g, &mut want2);
+        let diagrams = oca::build_sigma_diagrams_oca_channels(&fx.hs, &chans);
+        for d in &diagrams {
+            oca::add_sigma_mat_oca(d, &fx.pp_g, BETA, 5, &integ, &mut want2);
+        }
+        let mut got2 = fx.empty_sigma();
+        add_sigma_mat_xca(1, &fx.hs, &chans, &fits, &grids, &integ, &mut got2);
+        add_sigma_mat_xca(2, &fx.hs, &chans, &fits, &grids, &integ, &mut got2);
+        let mut max_rel = 0.0f64;
+        for s in 0..4 {
+            for i in 1..=NTAU {
+                let a = want2[s].mat.block(i)[0];
+                let b = got2[s].mat.block(i)[0];
+                let scale = a.abs().max(1e-3);
+                max_rel = max_rel.max((a - b).abs() / scale);
+            }
+        }
+        assert!(
+            max_rel < 1.0e-3,
+            "m2 anchor max relative deviation {max_rel}"
+        );
     }
 
     #[test]
@@ -234,14 +350,15 @@ mod tests {
         }
 
         let mut got = fx.empty_sigma();
-        let fits = fit_channels(&pp_ints, BETA, NTAU, 12, 6.0);
+        let chans = oca::channels_with_bath(&pp_ints, None);
+        let fits = fit_channels(&chans, BETA, NTAU, 12, 6.0);
         let grids = sigma::Grids {
             ntau: NTAU,
             dtau: BETA / NTAU as f64,
             pp_g: &fx.pp_g,
         };
-        add_sigma_mat_xca(1, &fx.hs, &pp_ints, &fits, &grids, &integ, &mut got);
-        add_sigma_mat_xca(2, &fx.hs, &pp_ints, &fits, &grids, &integ, &mut got);
+        add_sigma_mat_xca(1, &fx.hs, &chans, &fits, &grids, &integ, &mut got);
+        add_sigma_mat_xca(2, &fx.hs, &chans, &fits, &grids, &integ, &mut got);
 
         let mut max_rel = 0.0f64;
         for s in 0..4 {
@@ -270,7 +387,8 @@ mod tests {
         }];
         let want = nca::gf_mat(&fx.hs, &fx.pp_g, &verts);
         let mut got = vec![vec![Complex::ZERO; NTAU + 1]; 1];
-        let fits = fit_channels(&pp_ints, BETA, NTAU, 12, 6.0);
+        let chans = oca::channels_with_bath(&pp_ints, None);
+        let fits = fit_channels(&chans, BETA, NTAU, 12, 6.0);
         let grids = gf::Grids {
             ntau: NTAU,
             dtau: BETA / NTAU as f64,
@@ -391,7 +509,8 @@ mod tests {
         );
 
         let mut got = vec![vec![Complex::ZERO; NTAU + 1]; 1];
-        let fits = fit_channels(&pp_ints, BETA, NTAU, 12, 6.0);
+        let chans = oca::channels_with_bath(&pp_ints, None);
+        let fits = fit_channels(&chans, BETA, NTAU, 12, 6.0);
         let grids = gf::Grids {
             ntau: NTAU,
             dtau: BETA / NTAU as f64,

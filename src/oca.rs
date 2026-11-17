@@ -208,6 +208,16 @@ pub(crate) struct OcaChannel<'a> {
 /// The boson channels of a Holstein [`BosonBath`] (forward/backward;
 /// the diagonal vertex acts as both the annihilation and the creation
 /// insertion).
+/// Fermion-only convenience wrapper (test callers).
+#[cfg(test)]
+pub(crate) fn build_sigma_diagrams_oca<'a>(
+    hs: &HilbertSpace,
+    pp_ints: &[Hybridization<'a>],
+) -> Vec<OcaSigmaDiagram<'a>> {
+    let channels: Vec<OcaChannel> = channels_with_bath(pp_ints, None);
+    build_sigma_diagrams_oca_channels(hs, &channels)
+}
+
 pub(crate) fn boson_channels(bath: &BosonBath) -> Vec<OcaChannel<'_>> {
     vec![
         OcaChannel {
@@ -308,24 +318,6 @@ pub(crate) fn build_sigma_diagrams_oca_channels<'a>(
         }
     }
     diagrams
-}
-
-/// Fermion-only convenience wrapper (the pre-Holstein call surface).
-pub(crate) fn build_sigma_diagrams_oca<'a>(
-    hs: &HilbertSpace,
-    pp_ints: &[Hybridization<'a>],
-) -> Vec<OcaSigmaDiagram<'a>> {
-    let channels: Vec<OcaChannel<'a>> = pp_ints
-        .iter()
-        .map(|h| OcaChannel {
-            delta: h.delta,
-            fermion: h.fermion,
-            backward: h.backward,
-            ann: VertSrc::Flavor(h.op_ann_fl),
-            cre: VertSrc::Flavor(h.op_cre_fl),
-        })
-        .collect();
-    build_sigma_diagrams_oca_channels(hs, &channels)
 }
 
 // ------------------------------------------------------------------
@@ -615,25 +607,6 @@ pub(crate) fn build_gf_diagrams_oca_channels<'a>(
     diagrams
 }
 
-/// Fermion-only convenience wrapper (the pre-Holstein call surface).
-pub(crate) fn build_gf_diagrams_oca<'a>(
-    hs: &HilbertSpace,
-    verts: &[GfVertex],
-    pp_ints: &[Hybridization<'a>],
-) -> Vec<OcaGfDiagram<'a>> {
-    let channels: Vec<OcaChannel<'a>> = pp_ints
-        .iter()
-        .map(|h| OcaChannel {
-            delta: h.delta,
-            fermion: h.fermion,
-            backward: h.backward,
-            ann: VertSrc::Flavor(h.op_ann_fl),
-            cre: VertSrc::Flavor(h.op_cre_fl),
-        })
-        .collect();
-    build_gf_diagrams_oca_channels(hs, verts, &channels)
-}
-
 /// OCA Matsubara correction to the single-particle GF per vertex,
 /// ADDED onto the NCA values (blueprint `gdiagram_mat` with
 /// `equilibrium = true`, kernels `gdiagram_mat_integral`). Returns
@@ -891,7 +864,7 @@ mod probe9_compare {
     use super::*;
     use crate::hamilton::LocalHamiltonian::SingleBand;
     use crate::hilbert::{SectorClass, build};
-    use crate::nca::{BosonBath, GfVertex, Hybridization, gf_mat};
+    use crate::nca::{GfVertex, Hybridization, gf_mat};
     use crate::solver::ImpuritySolver;
     use kadanoffbaym::types::{Contour, Sign};
 
