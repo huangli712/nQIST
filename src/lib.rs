@@ -13,6 +13,7 @@
 
 #![forbid(unsafe_code)]
 
+pub mod boson;
 pub mod dmft;
 pub mod hamilton;
 pub mod hilbert;

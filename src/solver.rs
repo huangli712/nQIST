@@ -47,6 +47,8 @@ pub struct ImpuritySolver {
     /// Hamiltonian blocks `H_s(tstp)` per sector (blueprint
     /// `H` = list of `cntr::function`).
     pub h_func: Vec<TimeFunction>,
+    /// Optional static boson bath (Holstein/Hirsch vertex); NCA only
+    pub boson: Option<crate::nca::BosonBath>,
     /// Density matrix per time step (`rho[tstp + 1][sector]`).
     pub rho: Vec<Vec<DenseMat>>,
     /// Pseudo-particle chemical potential.
@@ -101,9 +103,25 @@ impl ImpuritySolver {
             h_func,
             rho,
             pp_mu: 0.0,
+            boson: None,
         };
         solver.update_hamiltonian();
         solver
+    }
+
+    /// Attach (or detach) a static boson bath for Holstein/Hirsch
+    /// calculations. The bath carries the coupling-scaled free phonon
+    /// propagators and the diagonal vertex blocks; it contributes
+    /// additional NCA diagrams to the pseudo-particle self-energies
+    /// in [`Self::update_sigma`].
+    pub fn set_boson_bath(&mut self, bath: Option<crate::nca::BosonBath>) {
+        if bath.is_some() {
+            assert_eq!(
+                self.order, 1,
+                "set_boson_bath: the Holstein boson bath supports NCA (order 1) only"
+            );
+        }
+        self.boson = bath;
     }
 
     /// Fill `h_func[s](tstp)` from the local Hamiltonian for all
@@ -156,7 +174,7 @@ impl ImpuritySolver {
                 // D = diag(-exp(-dtau m (E - pp_mu)))
                 let mut diag = DenseMat::zeros(d);
                 for (i, &e) in evals[s].iter().enumerate() {
-                    let x = -(dtau * m as f64 * (e - self.pp_mu)).exp();
+                    let x = -((-dtau) * m as f64 * (e - self.pp_mu)).exp();
                     diag.set(i, i, Complex::new(x, 0.0));
                 }
                 let g = evecs[s].mat_mul(&diag).mat_mul(&evecs[s].adjoint());
@@ -302,6 +320,9 @@ impl ImpuritySolver {
     pub fn update_sigma(&mut self, tstp: i64, pp_ints: &[Hybridization]) {
         if tstp == MATSUBARA {
             nca::set_sigma_mat(&self.hs, &self.pp_g, pp_ints, &mut self.pp_sigma);
+            if let Some(bath) = &self.boson {
+                nca::add_boson_sigma_mat(bath, &self.pp_g, &mut self.pp_sigma);
+            }
             if self.order >= 2 {
                 self.add_sigma_mat_oca(pp_ints);
             }
@@ -340,6 +361,9 @@ impl ImpuritySolver {
                  XCA orders >= 3 are Matsubara-axis only"
             );
             nca::set_sigma_tstp(tstp, &self.hs, &self.pp_g, pp_ints, &mut self.pp_sigma);
+            if let Some(bath) = &self.boson {
+                nca::add_boson_sigma_tstp(tstp, bath, &self.pp_g, &mut self.pp_sigma);
+            }
             if self.order == 2 {
                 let diagrams = oca::build_sigma_diagrams_oca(&self.hs, pp_ints);
                 let integ = Integrator::new(self.kt as i64);
@@ -645,12 +669,12 @@ mod tests {
         let dtau = 5.0 / ntau as f64;
         let e = -1.5;
         for m in 0..=ntau {
-            let want = -(dtau * m as f64 * (e - solver.pp_mu)).exp();
+            let want = -((-dtau) * m as f64 * (e - solver.pp_mu)).exp();
             let got = solver.pp_g[2].mat.block(m)[0].re;
             assert!((got - want).abs() < 1e-14, "m = {m}: {got} vs {want}");
         }
         // mat[ntau] carries the full beta Boltzmann weight
-        let want = -(5.0 * (e - solver.pp_mu)).exp();
+        let want = -((-5.0) * (e - solver.pp_mu)).exp();
         assert!((solver.pp_g[2].mat.block(ntau)[0].re - want).abs() < 1e-14);
         // mat[0] = -1 in every sector (V diag(-1) V^dag = -1)
         for s in 0..4 {

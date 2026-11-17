@@ -247,7 +247,7 @@ pub fn set_bwd_from_fwd_tstp(t: i64, bwd: &mut ContourGreen, fwd: &ContourGreen)
 /// does not touch the earlier rows (which carry no data in a
 /// diagram-evaluated timestep and would be zeroed by a prefix
 /// copy).
-fn set_gloc_row(g: &mut ContourGreen, f: &GreenTimeStep) {
+pub fn set_gloc_row(g: &mut ContourGreen, f: &GreenTimeStep) {
     let n = f.tstp as i64;
     for j in 0..=n {
         let src = f.ret.block(f.ret.idx(n, j)).to_vec();

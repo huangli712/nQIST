@@ -166,7 +166,17 @@ pub(crate) fn set_sigma_mat(
             }
         }
     }
-    for d in &diagrams {
+    accumulate_sigma_mat(&diagrams, pp_g, pp_sigma);
+}
+
+/// Kernel of [`set_sigma_mat`]: accumulate the Matsubara
+/// self-energy contributions of the given diagrams (no clearing).
+pub(crate) fn accumulate_sigma_mat(
+    diagrams: &[SigmaDiagram],
+    pp_g: &[PseudoGreen],
+    pp_sigma: &mut [PseudoGreen],
+) {
+    for d in diagrams {
         let ntau = pp_g[d.sa].ntau;
         let dim_out = pp_sigma[d.out].size1;
         for m in 0..=ntau {
@@ -329,7 +339,19 @@ pub(crate) fn set_sigma_tstp(
             }
         }
     }
-    for d in &diagrams {
+    accumulate_sigma_tstp(n, &diagrams, pp_g, pp_sigma);
+}
+
+/// Kernel of [`set_sigma_tstp`]: accumulate the real-time
+/// self-energy contributions of the given diagrams into row `n` (no
+/// row clearing).
+pub(crate) fn accumulate_sigma_tstp(
+    n: i64,
+    diagrams: &[SigmaDiagram],
+    pp_g: &[PseudoGreen],
+    pp_sigma: &mut [PseudoGreen],
+) {
+    for d in diagrams {
         let dim_out = pp_sigma[d.out].size1;
         let ntau = pp_g[d.sa].ntau as i64;
         let ga = &pp_g[d.sa];
@@ -399,6 +421,59 @@ pub(crate) fn set_sigma_tstp(
             }
         }
     }
+}
+
+/// A static boson bath (Holstein/Hirsch): the coupling-scaled free
+/// phonon propagator with its backward partner and the diagonal
+/// vertex blocks (e.g. the doublon operator `n_up n_dn` from
+/// [`crate::boson::docc_blocks`]).
+pub struct BosonBath {
+    pub d0: ContourGreen,
+    pub d0_cc: ContourGreen,
+    pub blocks: Vec<(usize, DenseMat)>,
+}
+
+/// Build the bosonic NCA self-energy diagrams: per sector with a
+/// vertex block, a forward and a backward channel, each a same-sector
+/// chain `ss --vertex--> ss` with statistics prefactor `i * (+1)`
+/// (boson hybridizations carry no backward minus; blueprint
+/// `construct_sigma_diagram` with `sig = +1`).
+pub(crate) fn build_boson_diagrams(bath: &BosonBath) -> Vec<SigmaDiagram<'_>> {
+    let mut out = Vec::new();
+    for delta in [&bath.d0, &bath.d0_cc] {
+        for (s, blk) in &bath.blocks {
+            out.push(SigmaDiagram {
+                out: *s,
+                sa: *s,
+                delta,
+                op1: blk.clone(),
+                op2: blk.clone(),
+                prefactor: Complex::I,
+            });
+        }
+    }
+    out
+}
+
+/// Add the bosonic Matsubara self-energy contributions on top of the
+/// fermionic set.
+pub(crate) fn add_boson_sigma_mat(
+    bath: &BosonBath,
+    pp_g: &[PseudoGreen],
+    pp_sigma: &mut [PseudoGreen],
+) {
+    accumulate_sigma_mat(&build_boson_diagrams(bath), pp_g, pp_sigma);
+}
+
+/// Add the bosonic real-time self-energy contributions of row `tstp`
+/// on top of the fermionic set.
+pub(crate) fn add_boson_sigma_tstp(
+    tstp: i64,
+    bath: &BosonBath,
+    pp_g: &[PseudoGreen],
+    pp_sigma: &mut [PseudoGreen],
+) {
+    accumulate_sigma_tstp(tstp, &build_boson_diagrams(bath), pp_g, pp_sigma);
 }
 
 /// Real-time NCA single-particle Green's functions per vertex at
