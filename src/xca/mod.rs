@@ -317,6 +317,7 @@ mod tests {
             &fx.pp_g,
             &verts,
             &pp_ints_dn,
+            None,
             BETA,
             5,
             &integ,
@@ -386,7 +387,7 @@ mod tests {
         let mut want = nca::gf_mat(&fx.hs, &fx.pp_g, &verts);
         let integ = Integrator::new(5);
         oca::add_gf_mat_oca(
-            &fx.hs, &fx.pp_g, &verts, &pp_ints, BETA, 5, &integ, &mut want,
+            &fx.hs, &fx.pp_g, &verts, &pp_ints, None, BETA, 5, &integ, &mut want,
         );
 
         let mut got = vec![vec![Complex::ZERO; NTAU + 1]; 1];

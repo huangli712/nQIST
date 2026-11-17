@@ -27,6 +27,7 @@ struct HolsteinConfig {
     beta: f64,
     h: f64,
     itermax: usize,
+    order: usize,
     errmax: f64,
     iter_rtime: usize,
     kt: usize,
@@ -48,6 +49,7 @@ impl HolsteinConfig {
             beta: f("beta")?,
             h: f("h")?,
             itermax: r.get_usize("itermax")?,
+            order: r.get_usize("order")?,
             errmax: f("errmax")?,
             iter_rtime: r.get_usize("iter_rtime")?,
             kt: r.get_usize("kt")?,
@@ -100,7 +102,7 @@ fn main() {
         cfg.beta,
         cfg.h,
         cfg.kt,
-        1, // NCA (the boson bath is NCA-only)
+        cfg.order,
         hs,
         SingleBand {
             mu: cfg.mu,

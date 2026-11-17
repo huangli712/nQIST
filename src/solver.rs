@@ -116,9 +116,9 @@ impl ImpuritySolver {
     /// in [`Self::update_sigma`].
     pub fn set_boson_bath(&mut self, bath: Option<crate::nca::BosonBath>) {
         if bath.is_some() {
-            assert_eq!(
-                self.order, 1,
-                "set_boson_bath: the Holstein boson bath supports NCA (order 1) only"
+            assert!(
+                self.order <= 2,
+                "set_boson_bath: the Holstein boson bath supports NCA/OCA (orders 1-2) only"
             );
         }
         self.boson = bath;
@@ -372,7 +372,8 @@ impl ImpuritySolver {
                 nca::add_boson_sigma_tstp(tstp, bath, &self.pp_g, &mut self.pp_sigma);
             }
             if self.order == 2 {
-                let diagrams = oca::build_sigma_diagrams_oca(&self.hs, pp_ints);
+                let channels = oca::channels_with_bath(pp_ints, self.boson.as_ref());
+                let diagrams = oca::build_sigma_diagrams_oca_channels(&self.hs, &channels);
                 let integ = Integrator::new(self.kt as i64);
                 let pp_g = &self.pp_g;
                 let beta = self.beta;
@@ -388,7 +389,8 @@ impl ImpuritySolver {
     /// OCA Matsubara self-energy contribution (order = 2), added on
     /// top of the NCA values (blueprint `add_to_pp_self_energy`).
     fn add_sigma_mat_oca(&mut self, pp_ints: &[Hybridization]) {
-        let diagrams = oca::build_sigma_diagrams_oca(&self.hs, pp_ints);
+        let channels = oca::channels_with_bath(pp_ints, self.boson.as_ref());
+        let diagrams = oca::build_sigma_diagrams_oca_channels(&self.hs, &channels);
         let integ = Integrator::new(self.kt as i64);
         let hs_ptr = &self.hs;
         let pp_g = &self.pp_g;
@@ -415,6 +417,7 @@ impl ImpuritySolver {
                     &self.pp_g,
                     verts,
                     pp_ints,
+                    self.boson.as_ref(),
                     self.beta,
                     self.kt as i64,
                     &integ,
@@ -486,7 +489,8 @@ impl ImpuritySolver {
         );
         let mut out = nca::gf_tstp(&contour, tstp, &self.hs, &self.pp_g, verts);
         if self.order == 2 {
-            let diagrams = oca::build_gf_diagrams_oca(&self.hs, verts, pp_ints);
+            let channels = oca::channels_with_bath(pp_ints, self.boson.as_ref());
+            let diagrams = oca::build_gf_diagrams_oca_channels(&self.hs, verts, &channels);
             let integ = Integrator::new(self.kt as i64);
             let pp_g = &self.pp_g;
             let beta = self.beta;

@@ -5,7 +5,7 @@
 //           gf.cpp + gf_mat.hpp + oca/integration.hpp)
 
 use crate::hilbert::HilbertSpace;
-use crate::nca::Hybridization;
+use crate::nca::{BosonBath, Hybridization};
 use kadanoffbaym::complex::Complex;
 use kadanoffbaym::linalg::DenseMat;
 use kadanoffbaym::types::{ContourGreen, PseudoGreen};
@@ -175,32 +175,106 @@ pub(crate) struct OcaSigmaDiagram<'a> {
     pub prefactor: Complex,
 }
 
-pub(crate) fn build_sigma_diagrams_oca<'a>(
-    hs: &HilbertSpace,
+/// Vertex source of an OCA channel: a fermion c-operator flavor or a
+/// sector-diagonal boson vertex (the Holstein bath, blueprint: the
+/// operator-valued `pp_int_type` vertices).
+pub(crate) enum VertSrc<'a> {
+    Flavor(usize),
+    Diag(&'a [(usize, DenseMat)]),
+}
+
+impl VertSrc<'_> {
+    fn block<'x>(&'x self, hs: &'x HilbertSpace, sector: usize) -> Option<(usize, &'x DenseMat)> {
+        match self {
+            VertSrc::Flavor(f) => hs.ops[*f].block(sector).map(|(s, m)| (*s, m)),
+            VertSrc::Diag(list) => list
+                .iter()
+                .find(|(s, _)| *s == sector)
+                .map(|(s, m)| (*s, m)),
+        }
+    }
+}
+
+/// A hybridization channel view for the OCA loops: statistics,
+/// direction, propagator, and the two vertex sources.
+pub(crate) struct OcaChannel<'a> {
+    pub delta: &'a ContourGreen,
+    pub fermion: bool,
+    pub backward: bool,
+    pub ann: VertSrc<'a>,
+    pub cre: VertSrc<'a>,
+}
+
+/// The boson channels of a Holstein [`BosonBath`] (forward/backward;
+/// the diagonal vertex acts as both the annihilation and the creation
+/// insertion).
+pub(crate) fn boson_channels(bath: &BosonBath) -> Vec<OcaChannel<'_>> {
+    vec![
+        OcaChannel {
+            delta: &bath.d0,
+            fermion: false,
+            backward: false,
+            ann: VertSrc::Diag(&bath.blocks),
+            cre: VertSrc::Diag(&bath.blocks),
+        },
+        OcaChannel {
+            delta: &bath.d0_cc,
+            fermion: false,
+            backward: true,
+            ann: VertSrc::Diag(&bath.blocks),
+            cre: VertSrc::Diag(&bath.blocks),
+        },
+    ]
+}
+
+/// Fermion channels of `pp_ints` extended with the optional bath's
+/// boson channels.
+pub(crate) fn channels_with_bath<'a>(
     pp_ints: &[Hybridization<'a>],
+    bath: Option<&'a BosonBath>,
+) -> Vec<OcaChannel<'a>> {
+    let mut channels: Vec<OcaChannel<'a>> = pp_ints
+        .iter()
+        .map(|h| OcaChannel {
+            delta: h.delta,
+            fermion: h.fermion,
+            backward: h.backward,
+            ann: VertSrc::Flavor(h.op_ann_fl),
+            cre: VertSrc::Flavor(h.op_cre_fl),
+        })
+        .collect();
+    if let Some(b) = bath {
+        channels.extend(boson_channels(b));
+    }
+    channels
+}
+
+pub(crate) fn build_sigma_diagrams_oca_channels<'a>(
+    hs: &HilbertSpace,
+    channels: &[OcaChannel<'a>],
 ) -> Vec<OcaSigmaDiagram<'a>> {
     let mut diagrams = Vec::new();
     for ss in 0..hs.ns() {
-        for int1 in pp_ints {
-            for int2 in pp_ints {
+        for int1 in channels {
+            for int2 in channels {
                 // sector chain (blueprint oca::get_sectors)
-                let (sc, op4) = match hs.ops[int2.op_ann_fl].block(ss) {
+                let (sc, op4) = match int2.ann.block(hs, ss) {
                     Some(x) => x,
                     None => continue,
                 };
-                let (sb, op3) = match hs.ops[int1.op_ann_fl].block(*sc) {
+                let (sb, op3) = match int1.ann.block(hs, sc) {
                     Some(x) => x,
                     None => continue,
                 };
-                let (sa, op2) = match hs.ops[int2.op_cre_fl].block(*sb) {
+                let (sa, op2) = match int2.cre.block(hs, sb) {
                     Some(x) => x,
                     None => continue,
                 };
-                let (ss_ref, op1) = match hs.ops[int1.op_cre_fl].block(*sa) {
+                let (ss_ref, op1) = match int1.cre.block(hs, sa) {
                     Some(x) => x,
                     None => continue,
                 };
-                if *ss_ref != ss {
+                if ss_ref != ss {
                     continue;
                 }
                 // prefactor: bwd-fermion factors, fermion crossing,
@@ -218,9 +292,9 @@ pub(crate) fn build_sigma_diagrams_oca<'a>(
                 let prefactor = Complex::I * Complex::I * Complex::new(stat_sign * -1.0, 0.0);
                 diagrams.push(OcaSigmaDiagram {
                     out: ss,
-                    sa: *sa,
-                    sb: *sb,
-                    sc: *sc,
+                    sa,
+                    sb,
+                    sc,
                     sig: hs.sectors[ss].sig.as_i64() as f64,
                     op1: op1.clone(),
                     op2: op2.clone(),
@@ -234,6 +308,24 @@ pub(crate) fn build_sigma_diagrams_oca<'a>(
         }
     }
     diagrams
+}
+
+/// Fermion-only convenience wrapper (the pre-Holstein call surface).
+pub(crate) fn build_sigma_diagrams_oca<'a>(
+    hs: &HilbertSpace,
+    pp_ints: &[Hybridization<'a>],
+) -> Vec<OcaSigmaDiagram<'a>> {
+    let channels: Vec<OcaChannel<'a>> = pp_ints
+        .iter()
+        .map(|h| OcaChannel {
+            delta: h.delta,
+            fermion: h.fermion,
+            backward: h.backward,
+            ann: VertSrc::Flavor(h.op_ann_fl),
+            cre: VertSrc::Flavor(h.op_cre_fl),
+        })
+        .collect();
+    build_sigma_diagrams_oca_channels(hs, &channels)
 }
 
 // ------------------------------------------------------------------
@@ -475,28 +567,28 @@ pub(crate) struct OcaGfDiagram<'a> {
     pub prefactor: f64,
 }
 
-pub(crate) fn build_gf_diagrams_oca<'a>(
+pub(crate) fn build_gf_diagrams_oca_channels<'a>(
     hs: &HilbertSpace,
     verts: &[GfVertex],
-    pp_ints: &[Hybridization<'a>],
+    channels: &[OcaChannel<'a>],
 ) -> Vec<OcaGfDiagram<'a>> {
     let mut diagrams = Vec::new();
     for (vi, vert) in verts.iter().enumerate() {
-        for hyb in pp_ints {
+        for hyb in channels {
             for sa in 0..hs.ns() {
-                let (sb, op3) = match hs.ops[hyb.op_cre_fl].block(sa) {
+                let (sb, op3) = match hyb.cre.block(hs, sa) {
                     Some(x) => x,
                     None => continue,
                 };
-                let (sc, op2) = match hs.ops[vert.op_ann_fl].block(*sb) {
+                let (sc, op2) = match hs.ops[vert.op_ann_fl].block(sb) {
                     Some(x) => x,
                     None => continue,
                 };
-                let (sd, op4) = match hs.ops[hyb.op_ann_fl].block(*sc) {
+                let (sd, op4) = match hyb.ann.block(hs, *sc) {
                     Some(x) => x,
                     None => continue,
                 };
-                let (sa_ref, op1) = match hs.ops[vert.op_cre_fl].block(*sd) {
+                let (sa_ref, op1) = match hs.ops[vert.op_cre_fl].block(sd) {
                     Some(x) => x,
                     None => continue,
                 };
@@ -507,9 +599,9 @@ pub(crate) fn build_gf_diagrams_oca<'a>(
                 diagrams.push(OcaGfDiagram {
                     vertex: vi,
                     sa,
-                    sb: *sb,
+                    sb,
                     sc: *sc,
-                    sd: *sd,
+                    sd,
                     op1: op1.clone(),
                     op2: op2.clone(),
                     op3: op3.clone(),
@@ -523,6 +615,25 @@ pub(crate) fn build_gf_diagrams_oca<'a>(
     diagrams
 }
 
+/// Fermion-only convenience wrapper (the pre-Holstein call surface).
+pub(crate) fn build_gf_diagrams_oca<'a>(
+    hs: &HilbertSpace,
+    verts: &[GfVertex],
+    pp_ints: &[Hybridization<'a>],
+) -> Vec<OcaGfDiagram<'a>> {
+    let channels: Vec<OcaChannel<'a>> = pp_ints
+        .iter()
+        .map(|h| OcaChannel {
+            delta: h.delta,
+            fermion: h.fermion,
+            backward: h.backward,
+            ann: VertSrc::Flavor(h.op_ann_fl),
+            cre: VertSrc::Flavor(h.op_cre_fl),
+        })
+        .collect();
+    build_gf_diagrams_oca_channels(hs, verts, &channels)
+}
+
 /// OCA Matsubara correction to the single-particle GF per vertex,
 /// ADDED onto the NCA values (blueprint `gdiagram_mat` with
 /// `equilibrium = true`, kernels `gdiagram_mat_integral`). Returns
@@ -532,12 +643,14 @@ pub(crate) fn add_gf_mat_oca(
     pp_g: &[PseudoGreen],
     verts: &[GfVertex],
     pp_ints: &[Hybridization],
+    bath: Option<&BosonBath>,
     beta: f64,
     kt: i64,
     integ: &Integrator,
     out: &mut [Vec<Complex>],
 ) {
-    let diagrams = build_gf_diagrams_oca(hs, verts, pp_ints);
+    let channels = channels_with_bath(pp_ints, bath);
+    let diagrams = build_gf_diagrams_oca_channels(hs, verts, &channels);
     let nmax = pp_g[0].ntau;
     let dtau = beta / nmax as f64;
     let k = kt as usize;
@@ -778,7 +891,7 @@ mod probe9_compare {
     use super::*;
     use crate::hamilton::LocalHamiltonian::SingleBand;
     use crate::hilbert::{SectorClass, build};
-    use crate::nca::{GfVertex, Hybridization, gf_mat};
+    use crate::nca::{BosonBath, GfVertex, Hybridization, gf_mat};
     use crate::solver::ImpuritySolver;
     use kadanoffbaym::types::{Contour, Sign};
 
@@ -869,6 +982,7 @@ mod probe9_compare {
             &solver.pp_g,
             &verts,
             &pp_ints,
+            None,
             beta,
             kt as i64,
             &integ,
@@ -952,6 +1066,7 @@ mod probe9_compare {
                 &solver.pp_g,
                 &verts,
                 &pp_ints_m,
+                None,
                 beta,
                 kt as i64,
                 &integ,
