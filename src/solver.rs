@@ -8,6 +8,7 @@ use crate::hilbert::HilbertSpace;
 use crate::io::{dens_pp_mu_line, pp_dens_pp_mu_line};
 use crate::nca::{self, GfVertex, Hybridization, adjoint_raw};
 use crate::oca;
+use crate::xca;
 use kadanoffbaym::basics::set_t0_from_mat_pseudo;
 use kadanoffbaym::complex::Complex;
 use kadanoffbaym::dyson::{pseudo_dyson_mat, pseudo_dyson_start, pseudo_dyson_timestep};
@@ -301,10 +302,43 @@ impl ImpuritySolver {
     pub fn update_sigma(&mut self, tstp: i64, pp_ints: &[Hybridization]) {
         if tstp == MATSUBARA {
             nca::set_sigma_mat(&self.hs, &self.pp_g, pp_ints, &mut self.pp_sigma);
-            if self.order == 2 {
+            if self.order >= 2 {
                 self.add_sigma_mat_oca(pp_ints);
             }
+            if self.order >= 3 {
+                // XCA crossing topologies of orders 3..=order
+                // (SOE-separated backbones on the Matsubara grid)
+                let fits = xca::fit_channels(
+                    pp_ints,
+                    self.beta,
+                    self.ntau,
+                    xca::MAX_POLES_DEFAULT,
+                    xca::W_MAX_DEFAULT,
+                );
+                let integ = Integrator::new(self.kt as i64);
+                let grids = xca::sigma::Grids {
+                    ntau: self.ntau,
+                    dtau: self.beta / self.ntau as f64,
+                    pp_g: &self.pp_g,
+                };
+                for m in 3..=self.order {
+                    xca::add_sigma_mat_xca(
+                        m,
+                        &self.hs,
+                        pp_ints,
+                        &fits,
+                        &grids,
+                        &integ,
+                        &mut self.pp_sigma,
+                    );
+                }
+            }
         } else {
+            assert!(
+                self.order <= 2,
+                "update_sigma: real-time steps support NCA/OCA only; \
+                 XCA orders >= 3 are Matsubara-axis only"
+            );
             nca::set_sigma_tstp(tstp, &self.hs, &self.pp_g, pp_ints, &mut self.pp_sigma);
             if self.order == 2 {
                 let diagrams = oca::build_sigma_diagrams_oca(&self.hs, pp_ints);
@@ -339,7 +373,7 @@ impl ImpuritySolver {
     /// functions per GF vertex (blueprint `get_spgf` at `tstp = -1`).
     pub fn get_spgf_mat(&self, verts: &[GfVertex], pp_ints: &[Hybridization]) -> Vec<Vec<Complex>> {
         let mut out = nca::gf_mat(&self.hs, &self.pp_g, verts);
-        if self.order == 2 {
+        if self.order >= 2 {
             let integ = Integrator::new(self.kt as i64);
             let mut oca_part = vec![vec![Complex::ZERO; self.ntau + 1]; verts.len()];
             oca::add_gf_mat_oca(
@@ -353,6 +387,39 @@ impl ImpuritySolver {
                 &mut oca_part,
             );
             for (o, add) in out.iter_mut().zip(&oca_part) {
+                for q in 0..o.len() {
+                    o[q] += add[q];
+                }
+            }
+        }
+        if self.order >= 3 {
+            let fits = xca::fit_channels(
+                pp_ints,
+                self.beta,
+                self.ntau,
+                xca::MAX_POLES_DEFAULT,
+                xca::W_MAX_DEFAULT,
+            );
+            let integ = Integrator::new(self.kt as i64);
+            let grids = xca::gf::Grids {
+                ntau: self.ntau,
+                dtau: self.beta / self.ntau as f64,
+                pp_g: &self.pp_g,
+            };
+            let mut xca_part = vec![vec![Complex::ZERO; self.ntau + 1]; verts.len()];
+            for m in 3..=self.order {
+                xca::gf::add_gf_mat_xca(
+                    m,
+                    &self.hs,
+                    pp_ints,
+                    &fits,
+                    verts,
+                    &grids,
+                    &integ,
+                    &mut xca_part,
+                );
+            }
+            for (o, add) in out.iter_mut().zip(&xca_part) {
                 for q in 0..o.len() {
                     o[q] += add[q];
                 }

@@ -22,6 +22,7 @@ pub mod nca;
 pub mod observable;
 pub mod oca;
 pub mod solver;
+pub mod xca;
 
 /// Crate version as reported by `Cargo.toml`.
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");
