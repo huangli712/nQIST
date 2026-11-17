@@ -32,7 +32,10 @@ pub(crate) use soe::{SoeFit, soe_fit};
 use crate::nca::Hybridization;
 
 /// Default maximum number of SOE poles selected by the greedy fit.
-pub const MAX_POLES_DEFAULT: usize = 12;
+/// Six poles resolve discrete and moderately structured continuous
+/// baths to ~1e-4; every surviving pole costs `p^(m-1)` in the
+/// diagram sums, so the budget is the main performance knob.
+pub const MAX_POLES_DEFAULT: usize = 8;
 
 /// Default spectral cutoff passed to the SOE fit (`w_max`).
 pub const W_MAX_DEFAULT: f64 = 12.0;

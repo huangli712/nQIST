@@ -100,17 +100,25 @@ fn solve_dimer(order: usize, pp_iters: usize) -> Vec<f64> {
 
     let verts = get_gf_verts(&solver);
     let mut last: Vec<f64> = Vec::new();
-    for _ in 0..pp_iters {
+    let t0 = std::time::Instant::now();
+    for it in 0..pp_iters {
         let pp_ints = get_pp_ints(&delta, &delta_cc, &solver);
         solver.pp_step(-1, &pp_ints);
         let g = solver.get_spgf_mat(&verts, &pp_ints);
         let cur: Vec<f64> = g[0].iter().map(|z| z.re).collect();
+        // per-iteration progress (visible with --nocapture)
+        eprintln!(
+            "dimer-o{order} pp iter {it:3} (t {:>7.1?}): G(0) = {:.6}",
+            t0.elapsed(),
+            cur.first().copied().unwrap_or(0.0)
+        );
         if !last.is_empty() {
             let mut diff = 0.0f64;
             for (a, b) in last.iter().zip(&cur) {
                 diff = diff.max((a - b).abs());
             }
             if diff < 1.0e-10 {
+                eprintln!("dimer-o{order} converged after {it} iterations");
                 last = cur;
                 break;
             }
@@ -129,7 +137,7 @@ fn main() {
 fn xca_dimer_converges_to_exact_order_by_order() {
     // order-by-order convergence toward the exact dimer solution
     let mut errors = Vec::new();
-    for order in 1..=3usize {
+    for order in 1..=4usize {
         let g = solve_dimer(order, 200);
         let dtau = BETA / NTAU as f64;
         let mut err = 0.0f64;

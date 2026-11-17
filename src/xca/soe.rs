@@ -50,7 +50,7 @@ fn jacobi_eigh(mut a: Vec<f64>, n: usize) -> (Vec<f64>, Vec<f64>) {
                 off += a[i * n + j] * a[i * n + j];
             }
         }
-        if off < 1.0e-28 {
+        if off < 1.0e-16 {
             break;
         }
         for p in 0..n {
@@ -208,10 +208,16 @@ pub(crate) fn soe_fit(
         best = best_fit.expect("greedy keeps the best fit");
 
         // coordinate-descent refinement of all pole positions
+        // (bounded: meaningful-improvement acceptance plus a sweep
+        // cap - near-degenerate pole pairs otherwise wiggle forever
+        // with microscopic gains, and every trial step costs a
+        // least-squares solve with an eigendecomposition)
         let mut poles = best.poles.clone();
         let mut step = 0.25f64;
-        while step > 1.0e-6 {
+        let mut sweeps = 0usize;
+        while step > 1.0e-6 && sweeps < 60 {
             let mut improved = false;
+            sweeps += 1;
             for pi in 0..poles.len() {
                 for dir in [-1.0f64, 1.0] {
                     let orig = poles[pi];
@@ -224,7 +230,7 @@ pub(crate) fn soe_fit(
                     }
                     poles[pi] = cand;
                     let fit = solve_lsq(&poles, beta, dtau, values);
-                    if fit.resid_l2 < best.resid_l2 {
+                    if fit.resid_l2 < best.resid_l2 * (1.0 - 1.0e-6) {
                         best = fit;
                         improved = true;
                     } else {
