@@ -169,37 +169,135 @@ fn convolve(
     ntau: usize,
     rows: usize,
     cols: usize,
-    lblocks: &[Complex],
+    lpos: &[Complex],
     t: &mut [Complex],
     buf: &mut Vec<Complex>,
     integ: &Integrator,
 ) {
-    debug_assert_eq!(lblocks.len(), (ntau + 1) * rows * rows);
+    debug_assert_eq!(lpos.len(), (ntau + 1) * rows * rows);
     debug_assert_eq!(t.len(), (ntau + 1) * rows * cols);
     buf.clear();
     buf.resize((ntau + 1) * rows * cols, Complex::ZERO);
+    let k = integ.k as usize;
     for n in 1..=ntau {
         let off = n * rows * cols;
-        for j in 0..=n {
-            let w = integ.giw.at(n, j);
-            if w == 0.0 {
-                continue;
-            }
-            let wc = Complex::new(w, 0.0);
-            let li = (n - j) * rows * rows;
-            let ti = j * rows * cols;
-            for r in 0..rows {
-                for c in 0..cols {
-                    let mut acc = Complex::ZERO;
-                    for q in 0..rows {
-                        acc += lblocks[li + r * rows + q] * t[ti + q * cols + c];
-                    }
-                    buf[off + r * cols + c] += wc * acc;
+        if n >= k {
+            for j in 0..=n {
+                let w = integ.giw.at(n, j);
+                if w == 0.0 {
+                    continue;
                 }
+                let wc = Complex::new(w, 0.0);
+                let li = (n - j) * rows * rows;
+                let ti = j * rows * cols;
+                for r in 0..rows {
+                    for c in 0..cols {
+                        let mut acc = Complex::ZERO;
+                        for q in 0..rows {
+                            acc += lpos[li + r * rows + q] * t[ti + q * cols + c];
+                        }
+                        buf[off + r * cols + c] += wc * acc;
+                    }
+                }
+            }
+        } else {
+            // short-interval startup (blueprint sdiagram warmup): a
+            // k-point sub-grid on [0, t_n] with the integrand built
+            // from polynomial interpolation of the two factors over
+            // the grid nodes 0..=k, then a single gregory row
+            let dsub = n as f64 / k as f64;
+            // interpolated samples f[l] = L(t_n - tau_l) T(tau_l)
+            let mut f = vec![Complex::ZERO; (k + 1) * rows * cols];
+            for l in 0..=k {
+                let x = dsub * l as f64; // T argument, grid units
+                let dl = n as f64 - x; // L difference, grid units
+                for r in 0..rows {
+                    for c in 0..cols {
+                        let mut tv = Complex::ZERO;
+                        for q in 0..rows {
+                            let lv = poly_interp_elem(lpos, rows, r, q, dl, integ);
+                            tv += lv * poly_interp_t(t, rows, cols, q, c, x, integ);
+                        }
+                        f[l * rows * cols + r * cols + c] = tv;
+                    }
+                }
+            }
+            for j in 0..=k {
+                let w = integ.giw.at(k, j);
+                if w == 0.0 {
+                    continue;
+                }
+                let wc = Complex::new(w, 0.0);
+                let fi = j * rows * cols;
+                for q in 0..rows * cols {
+                    buf[off + q] += wc * f[fi + q];
+                }
+            }
+            let sc = Complex::new(dsub, 0.0);
+            for q in 0..rows * cols {
+                buf[off + q] *= sc;
             }
         }
     }
     t.copy_from_slice(buf);
+}
+
+/// Polynomial interpolation of the `L` buffer element `(r, q)` at the
+/// fractional difference `x` (grid units), stencil over the nodes
+/// `0..=k` of the difference index (blueprint `poly_interpol`).
+#[inline]
+pub(crate) fn poly_interp_elem(
+    lpos: &[Complex],
+    rows: usize,
+    r: usize,
+    q: usize,
+    x: f64,
+    integ: &Integrator,
+) -> Complex {
+    let k = integ.k as usize;
+    let mut sum = Complex::ZERO;
+    let mut xp = 1.0;
+    for l in 0..=k {
+        let mut fl = Complex::ZERO;
+        for i in 0..=k {
+            let w = integ.piw.at(l, i);
+            if w != 0.0 {
+                fl += Complex::new(w, 0.0) * lpos[i * rows * rows + r * rows + q];
+            }
+        }
+        sum += fl * Complex::new(xp, 0.0);
+        xp *= x;
+    }
+    sum
+}
+
+/// Polynomial interpolation of the `T` buffer element `(q, c)` at the
+/// fractional grid point `x` (grid units), stencil over `0..=k`.
+#[inline]
+pub(crate) fn poly_interp_t(
+    t: &[Complex],
+    rows: usize,
+    cols: usize,
+    q: usize,
+    c: usize,
+    x: f64,
+    integ: &Integrator,
+) -> Complex {
+    let k = integ.k as usize;
+    let mut sum = Complex::ZERO;
+    let mut xp = 1.0;
+    for l in 0..=k {
+        let mut fl = Complex::ZERO;
+        for i in 0..=k {
+            let w = integ.piw.at(l, i);
+            if w != 0.0 {
+                fl += Complex::new(w, 0.0) * t[i * rows * cols + q * cols + c];
+            }
+        }
+        sum += fl * Complex::new(xp, 0.0);
+        xp *= x;
+    }
+    sum
 }
 
 /// Scratch buffers reused across backbone evaluations of a topology.
@@ -518,5 +616,215 @@ fn eval_into(
         for q in 0..rows * cols {
             blk[q] += scale * src[q];
         }
+    }
+}
+
+// ------------------------------------------------------------------
+// TEMPORARY PROBE: single-pair XCA(2) vs OCA comparison
+// ------------------------------------------------------------------
+#[cfg(test)]
+pub(crate) mod probe {
+    use super::*;
+    use crate::hilbert::{SectorClass, build};
+    use crate::nca::Hybridization;
+    use crate::oca::{self, OcaChannel};
+    use kadanoffbaym::complex::Complex;
+    use kadanoffbaym::types::{Contour, ContourGreen, PseudoGreen, Sign};
+    use kadanoffbaym::weights::Integrator;
+
+    pub(crate) struct ProbeFx {
+        pub hs: crate::hilbert::HilbertSpace,
+        pub pp_ints: Vec<Hybridization<'static>>,
+        pub pp_g: Vec<PseudoGreen>,
+        pub contour: Contour,
+    }
+
+    // SAFETY-free construction: channels borrow leaked ContourGreens
+    // (test-only, process-lifetime)
+    pub(crate) fn fixture() -> ProbeFx {
+        let beta = 5.0f64;
+        let ntau = 96usize;
+        let hs = build(1, SectorClass::SpinResolved);
+        let contour = Contour::new(4, ntau as i64, 1, 1, 0.08, beta);
+        let dtau = beta / ntau as f64;
+        let kf = |t: f64, w: f64| -(-w * t).exp() / (1.0 + (-beta * w).exp());
+        let mk = |src: f64| -> &'static ContourGreen {
+            let mut g = ContourGreen::new(&contour, Sign::Fermi, Complex::ZERO);
+            for i in 0..=ntau {
+                let v = src * kf(dtau * i as f64, -1.2) + 0.5 * src * kf(dtau * i as f64, 0.8);
+                g.mat.block_mut(i)[0] = Complex::new(v, 0.0);
+            }
+            Box::leak(Box::new(g))
+        };
+        let mk_cc = |src: &ContourGreen| -> &'static ContourGreen {
+            let mut g = ContourGreen::new(&contour, Sign::Fermi, Complex::ZERO);
+            for i in 0..=ntau {
+                let v = -src.mat.block(ntau - i)[0];
+                g.mat.block_mut(i)[0] = v;
+            }
+            Box::leak(Box::new(g))
+        };
+        let d_up = mk(0.09);
+        let d_dn = mk(0.12);
+        let d_up_cc = mk_cc(d_up);
+        let d_dn_cc = mk_cc(d_dn);
+        let cua = hs.flavor(0, 0, true);
+        let cda = hs.flavor(0, 1, true);
+        let cud = hs.flavor(0, 0, false);
+        let cdd = hs.flavor(0, 1, false);
+        let pp_ints = vec![
+            Hybridization {
+                delta: d_up,
+                op_cre_fl: cua,
+                op_ann_fl: cud,
+                fermion: true,
+                backward: false,
+            },
+            Hybridization {
+                delta: d_up_cc,
+                op_cre_fl: cud,
+                op_ann_fl: cua,
+                fermion: true,
+                backward: true,
+            },
+            Hybridization {
+                delta: d_dn,
+                op_cre_fl: cda,
+                op_ann_fl: cdd,
+                fermion: true,
+                backward: false,
+            },
+            Hybridization {
+                delta: d_dn_cc,
+                op_cre_fl: cdd,
+                op_ann_fl: cda,
+                fermion: true,
+                backward: true,
+            },
+        ];
+        let energies = [0.0, -1.5, -1.5, 0.0];
+        let mu = -1.6387400224070612;
+        let mut pp_g = Vec::new();
+        for s in 0..4 {
+            let mut g = PseudoGreen::new(&contour, hs.sectors[s].sig, Complex::ZERO);
+            for i in 0..=ntau {
+                let v = -(dtau * i as f64 * (energies[s] - mu)).exp();
+                g.mat.block_mut(i)[0] = Complex::new(v, 0.0);
+            }
+            pp_g.push(g);
+        }
+        ProbeFx {
+            hs,
+            pp_ints,
+            pp_g,
+            contour,
+        }
+    }
+
+    /// XCA(2) restricted to the channel assignment `cs` (single
+    /// topology), evaluated into a fresh sigma buffer.
+    pub(crate) fn xca2_single(fx: &ProbeFx, cs: [usize; 2]) -> Vec<PseudoGreen> {
+        let ntau = 96usize;
+        let beta = 5.0f64;
+        let channels: Vec<OcaChannel> = fx
+            .pp_ints
+            .iter()
+            .map(|h| oca::OcaChannel {
+                delta: h.delta,
+                fermion: h.fermion,
+                backward: h.backward,
+                ann: oca::VertSrc::Flavor(h.op_ann_fl),
+                cre: oca::VertSrc::Flavor(h.op_cre_fl),
+            })
+            .collect();
+        let fits = crate::xca::fit_channels(&channels, beta, ntau, 12, 6.0);
+        let grids = Grids {
+            ntau,
+            dtau: beta / ntau as f64,
+            pp_g: &fx.pp_g,
+        };
+        let integ = Integrator::new(5);
+        let mut out: Vec<PseudoGreen> = (0..4)
+            .map(|s| PseudoGreen::new(&fx.contour, fx.hs.sectors[s].sig, Complex::ZERO))
+            .collect();
+        let topos = crate::xca::topology::connected_pairings(2);
+        for topo in &topos {
+            let b0 = topo.pairs[0].1;
+            let mut ws = Workspace::new();
+            let mut stat = 1.0f64;
+            for &c in &cs {
+                if channels[c].fermion && channels[c].backward {
+                    stat *= -1.0;
+                }
+            }
+            let msign = 1.0f64; // m even
+            let base_pref = Complex::new(msign * stat * topo.parity, 0.0);
+            for s0 in 0..fx.hs.ns() {
+                let Some(chain) = build_chain(2, &topo.pairs, &cs, &channels, &fx.hs, s0) else {
+                    continue;
+                };
+                let empty_kern = || Kernels {
+                    vertex: vec![None; 4],
+                    edge: vec![Vec::new(); 3],
+                };
+                // pole loop over line 1
+                let mut pole_l = vec![0usize; 1];
+                'poles: loop {
+                    let kern = build_kernels(2, &topo.pairs, &cs, &pole_l, &fits);
+                    let mut pref = base_pref;
+                    let l = pole_l[0];
+                    let fit = &fits[cs[1]];
+                    let w = fit.poles[l];
+                    let denom = if w <= 0.0 {
+                        fit.km0(l)
+                    } else {
+                        let edges = (topo.pairs[1].1 - topo.pairs[1].0 - 1) as i32;
+                        fit.kp0(l).powi(edges)
+                    };
+                    pref *= fit.coefs[l] / Complex::new(denom, 0.0);
+                    eval_into(
+                        2, b0, &cs, &chain, &kern, &fits, &channels, &grids, &integ, pref, s0,
+                        &mut out, &mut ws,
+                    );
+                    pole_l[0] += 1;
+                    if pole_l[0] >= fits[cs[1]].len() {
+                        break 'poles;
+                    }
+                }
+                let _ = empty_kern;
+            }
+        }
+        out
+    }
+
+    /// Native OCA diagrams filtered to one ordered channel pair.
+    pub(crate) fn oca_single(fx: &ProbeFx, c1: usize, c2: usize) -> (Vec<PseudoGreen>, Vec<usize>) {
+        let channels: Vec<OcaChannel> = fx
+            .pp_ints
+            .iter()
+            .map(|h| oca::OcaChannel {
+                delta: h.delta,
+                fermion: h.fermion,
+                backward: h.backward,
+                ann: oca::VertSrc::Flavor(h.op_ann_fl),
+                cre: oca::VertSrc::Flavor(h.op_cre_fl),
+            })
+            .collect();
+        let all = oca::build_sigma_diagrams_oca_channels(&fx.hs, &channels);
+        let mut picked = Vec::new();
+        for (idx, d) in all.iter().enumerate() {
+            if std::ptr::eq(d.lam1, channels[c1].delta) && std::ptr::eq(d.lam2, channels[c2].delta)
+            {
+                picked.push(idx);
+            }
+        }
+        let integ = Integrator::new(5);
+        let mut out: Vec<PseudoGreen> = (0..4)
+            .map(|s| PseudoGreen::new(&fx.contour, fx.hs.sectors[s].sig, Complex::ZERO))
+            .collect();
+        for &idx in &picked {
+            oca::add_sigma_mat_oca(&all[idx], &fx.pp_g, 5.0, 5, &integ, &mut out);
+        }
+        (out, picked)
     }
 }

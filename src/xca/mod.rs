@@ -533,3 +533,35 @@ mod tests {
         assert!(max_rel < 5.0e-3, "max relative deviation {max_rel}");
     }
 }
+
+#[cfg(test)]
+mod probe_test {
+    use super::sigma::probe;
+
+    /// Warmup-row regression: with the sub-grid startup the XCA(2)
+    /// single-pair evaluation reproduces the native OCA diagram to
+    /// SOE-fit precision at every sampled point, warmup region
+    /// included (the historical truncation showed ratios up to 2.6
+    /// at i = 1).
+    #[test]
+    fn xca2_single_pair_matches_oca_incl_warmup() {
+        let fx = probe::fixture();
+        for (c1, c2) in [(0usize, 2usize)] {
+            let xca = probe::xca2_single(&fx, [c1, c2]);
+            let (oca, picked) = probe::oca_single(&fx, c1, c2);
+            assert_eq!(picked.len(), 1);
+            for s in 0..4usize {
+                for i in 1..=12usize {
+                    let a = oca[s].mat.block(i)[0];
+                    let b = xca[s].mat.block(i)[0];
+                    if a.re.abs() > 1e-13 {
+                        assert!(
+                            (b - a).abs() < 1e-7 * a.abs().max(1e-4),
+                            "s{s}i{i}: oca={a:?} xca={b:?}"
+                        );
+                    }
+                }
+            }
+        }
+    }
+}

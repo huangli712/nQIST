@@ -203,23 +203,47 @@ fn convolve_left(
 ) {
     buf.clear();
     buf.resize((ntau + 1) * rows * cols, Complex::ZERO);
+    let k = integ.k as usize;
     for n in 1..=ntau {
         let off = n * rows * cols;
-        for j in 0..=n {
-            let w = integ.giw.at(n, j);
-            if w == 0.0 {
-                continue;
-            }
-            let wc = Complex::new(w, 0.0);
-            let li = (n - j) * rows * rows;
-            let ti = j * rows * cols;
-            for r in 0..rows {
-                for c in 0..cols {
-                    let mut acc = Complex::ZERO;
-                    for q in 0..rows {
-                        acc += lblocks[li + r * rows + q] * t[ti + q * cols + c];
+        if n >= k {
+            for j in 0..=n {
+                let w = integ.giw.at(n, j);
+                if w == 0.0 {
+                    continue;
+                }
+                let wc = Complex::new(w, 0.0);
+                let li = (n - j) * rows * rows;
+                let ti = j * rows * cols;
+                for r in 0..rows {
+                    for c in 0..cols {
+                        let mut acc = Complex::ZERO;
+                        for q in 0..rows {
+                            acc += lblocks[li + r * rows + q] * t[ti + q * cols + c];
+                        }
+                        buf[off + r * cols + c] += wc * acc;
                     }
-                    buf[off + r * cols + c] += wc * acc;
+                }
+            }
+        } else {
+            // short-interval startup (mirror of the sigma-side kernel:
+            // k-point sub-grid, polynomial interpolation of both
+            // factors, single gregory row)
+            let dsub = n as f64 / k as f64;
+            for l in 0..=k {
+                let x = dsub * l as f64;
+                let dl = n as f64 - x;
+                for r in 0..rows {
+                    for c in 0..cols {
+                        let mut acc = Complex::ZERO;
+                        for q in 0..rows {
+                            let lv = super::sigma::poly_interp_elem(lblocks, rows, r, q, dl, integ);
+                            let tv = super::sigma::poly_interp_t(t, rows, cols, q, c, x, integ);
+                            acc += lv * tv;
+                        }
+                        buf[off + r * cols + c] +=
+                            Complex::new(integ.giw.at(k, l) * dsub, 0.0) * acc;
+                    }
                 }
             }
         }
@@ -245,21 +269,44 @@ fn convolve_right(
     buf.resize((ntau + 1) * rows * cols, Complex::ZERO);
     for n in 1..=ntau {
         let off = n * rows * cols;
-        for j in 0..=n {
-            let w = integ.giw.at(n, j);
-            if w == 0.0 {
-                continue;
-            }
-            let wc = Complex::new(w, 0.0);
-            let ri = (n - j) * cols * cols;
-            let ti = j * rows * cols;
-            for r in 0..rows {
-                for c in 0..cols {
-                    let mut acc = Complex::ZERO;
-                    for q in 0..cols {
-                        acc += t[ti + r * cols + q] * rblocks[ri + q * cols + c];
+        let k = integ.k as usize;
+        if n >= k {
+            for j in 0..=n {
+                let w = integ.giw.at(n, j);
+                if w == 0.0 {
+                    continue;
+                }
+                let wc = Complex::new(w, 0.0);
+                let ri = (n - j) * cols * cols;
+                let ti = j * rows * cols;
+                for r in 0..rows {
+                    for c in 0..cols {
+                        let mut acc = Complex::ZERO;
+                        for q in 0..cols {
+                            acc += t[ti + r * cols + q] * rblocks[ri + q * cols + c];
+                        }
+                        buf[off + r * cols + c] += wc * acc;
                     }
-                    buf[off + r * cols + c] += wc * acc;
+                }
+            }
+        } else {
+            // short-interval startup (right pairing: T at the small
+            // argument, R at the large one)
+            let dsub = n as f64 / k as f64;
+            for l in 0..=k {
+                let x = dsub * l as f64;
+                let dl = n as f64 - x;
+                for r in 0..rows {
+                    for c in 0..cols {
+                        let mut acc = Complex::ZERO;
+                        for q in 0..cols {
+                            let tv = super::sigma::poly_interp_t(t, rows, cols, r, q, x, integ);
+                            let rv = super::sigma::poly_interp_elem(rblocks, cols, q, c, dl, integ);
+                            acc += tv * rv;
+                        }
+                        buf[off + r * cols + c] +=
+                            Complex::new(integ.giw.at(k, l) * dsub, 0.0) * acc;
+                    }
                 }
             }
         }
