@@ -822,6 +822,114 @@ mod tests {
         }
     }
 
+    /// Two-band m=1 anchor (the cell the m=2 twoband anchors
+    /// imply but no dedicated gate covered): on the norb = 2
+    /// Kanamori fixture, XCA(1) must reproduce the stock NCA
+    /// Matsubara self-energy exactly (fit-residual level; the
+    /// single-band twin asserts 1e-12, xca_order1_sigma_equals_
+    /// nca_exactly).
+    #[test]
+    #[allow(clippy::needless_range_loop)]
+    fn xca_order1_twoband_matches_nca() {
+        use crate::hamilton::LocalHamiltonian::TwoBand;
+        use kadanoffbaym::linalg::eigh;
+        let hs = build(2, SectorClass::SpinResolved);
+        let ns = hs.ns();
+        let contour = Contour::new(4, NTAU as i64, 1, 1, 0.08, BETA);
+        let dtau = BETA / NTAU as f64;
+        let kf = |t: f64, w: f64| -(-w * t).exp() / (1.0 + (-BETA * w).exp());
+        let bath_val = |t: f64| 0.09 * kf(t, -1.2) + 0.16 * kf(t, 0.8);
+        let mut deltas = Vec::new();
+        let mut deltas_cc = Vec::new();
+        for _ in 0..4 {
+            let mut d = ContourGreen::new(&contour, Sign::Fermi, Complex::ZERO);
+            let mut dc = ContourGreen::new(&contour, Sign::Fermi, Complex::ZERO);
+            for i in 0..=NTAU {
+                let t = dtau * i as f64;
+                d.mat.block_mut(i)[0] = Complex::new(bath_val(t), 0.0);
+                dc.mat.block_mut(i)[0] = Complex::new(-bath_val(BETA - t), 0.0);
+            }
+            deltas.push(d);
+            deltas_cc.push(dc);
+        }
+        let ham = TwoBand {
+            mu: 0.0,
+            u: vec![2.0; 6],
+            j: vec![0.4; 6],
+            delta: vec![0.8; 6],
+            bz: vec![0.0; 6],
+        };
+        let mut pp_g = Vec::new();
+        for sec in 0..ns {
+            let h0 = ham.sector_block(&hs, sec, -1);
+            let dim = hs.sectors[sec].dim;
+            let (evals, _) = eigh(&h0);
+            let csec = Contour::new(4, NTAU as i64, dim as i64, dim as i64, 0.08, BETA);
+            let mut g = PseudoGreen::new(&csec, hs.sectors[sec].sig, Complex::ZERO);
+            for m in 0..=NTAU {
+                for i in 0..dim {
+                    let x = -(dtau * m as f64 * evals[i]).exp();
+                    g.mat.block_mut(m as usize)[i * dim + i] = Complex::new(x, 0.0);
+                }
+            }
+            pp_g.push(g);
+        }
+        let mut pp_ints = Vec::new();
+        for (orb, spin) in [(0usize, 0usize), (0, 1), (1, 0), (1, 1)] {
+            let c = hs.flavor(orb, spin, false);
+            let a = hs.flavor(orb, spin, true);
+            let ix = 2 * orb + spin;
+            pp_ints.push(Hybridization {
+                delta: &deltas[ix],
+                op_cre_fl: a,
+                op_ann_fl: c,
+                fermion: true,
+                backward: false,
+            });
+            pp_ints.push(Hybridization {
+                delta: &deltas_cc[ix],
+                op_cre_fl: c,
+                op_ann_fl: a,
+                fermion: true,
+                backward: true,
+            });
+        }
+        let empty = || -> Vec<PseudoGreen> {
+            (0..ns)
+                .map(|sec| {
+                    let dim = hs.sectors[sec].dim as i64;
+                    let csec = Contour::new(4, NTAU as i64, dim, dim, 0.08, BETA);
+                    PseudoGreen::new(&csec, hs.sectors[sec].sig, Complex::ZERO)
+                })
+                .collect()
+        };
+        let integ = Integrator::new(5);
+        let mut want = empty();
+        nca::set_sigma_mat(&hs, &pp_g, &pp_ints, &mut want);
+        let channels = oca::channels_with_bath(&pp_ints, None);
+        let fits = fit_channels(&channels, BETA, NTAU, 12, 6.0);
+        for f in &fits {
+            assert!(f.resid < 1.0e-10, "SOE resid {}", f.resid);
+        }
+        let grids = sigma::Grids {
+            ntau: NTAU,
+            dtau,
+            pp_g: &pp_g,
+        };
+        let mut got = empty();
+        add_sigma_mat_xca(1, &hs, &channels, &fits, &grids, &integ, &mut got);
+        for sec in 0..ns {
+            let dim2 = hs.sectors[sec].dim * hs.sectors[sec].dim;
+            for m in 0..=NTAU {
+                for q in 0..dim2 {
+                    let a = want[sec].mat.block(m)[q];
+                    let b = got[sec].mat.block(m)[q];
+                    assert!((a - b).abs() < 1e-12, "s {sec} m {m} q {q}: {a} vs {b}");
+                }
+            }
+        }
+    }
+
     #[test]
     #[allow(clippy::needless_range_loop)]
     fn xca_order1_sigma_equals_nca_exactly() {
