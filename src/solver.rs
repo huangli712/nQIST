@@ -323,16 +323,14 @@ impl ImpuritySolver {
             if let Some(bath) = &self.boson {
                 nca::add_boson_sigma_mat(bath, &self.pp_g, &mut self.pp_sigma);
             }
-            // the OCA kernels are single-band: multi-band orders >= 2
-            // ride the (calibrated equivalent) xca backbones instead
-            let xca_lo = if self.hs.norb > 1 {
-                2
-            } else {
-                if self.order >= 2 {
-                    self.add_sigma_mat_oca(pp_ints);
-                }
-                3
-            };
+            // native OCA at order 2 for every band count (the kernels
+            // are dimension-generic; the scalar fast path covers the
+            // single-band sectors); XCA crossing topologies add orders
+            // 3..=order on top
+            if self.order >= 2 {
+                self.add_sigma_mat_oca(pp_ints);
+            }
+            let xca_lo = 3;
             if self.order >= xca_lo {
                 // XCA crossing topologies of orders 3..=order
                 // (SOE-separated backbones on the Matsubara grid)
@@ -381,7 +379,18 @@ impl ImpuritySolver {
                 let h = self.h;
                 let kt = self.kt as i64;
                 for d in &diagrams {
-                    oca::add_sigma_tstp_oca(tstp, d, pp_g, beta, h, kt, &integ, &mut self.pp_sigma);
+                    if std::env::var("NQIST_SKIP_OCA_SIGMA").is_err() {
+                        oca::add_sigma_tstp_oca(
+                            tstp,
+                            d,
+                            pp_g,
+                            beta,
+                            h,
+                            kt,
+                            &integ,
+                            &mut self.pp_sigma,
+                        );
+                    }
                 }
             }
         }
@@ -408,9 +417,7 @@ impl ImpuritySolver {
     pub fn get_spgf_mat(&self, verts: &[GfVertex], pp_ints: &[Hybridization]) -> Vec<Vec<Complex>> {
         let mut out = nca::gf_mat(&self.hs, &self.pp_g, verts);
         let xca_lo = if self.order >= 2 {
-            if self.hs.norb > 1 {
-                2
-            } else {
+            {
                 let integ = Integrator::new(self.kt as i64);
                 let mut oca_part = vec![vec![Complex::ZERO; self.ntau + 1]; verts.len()];
                 oca::add_gf_mat_oca(
@@ -499,7 +506,9 @@ impl ImpuritySolver {
             let h = self.h;
             let kt = self.kt as i64;
             for d in &diagrams {
-                oca::add_gf_tstp_oca(tstp, d, pp_g, beta, h, kt, &integ, &mut out[d.vertex]);
+                if std::env::var("NQIST_SKIP_OCA_GF").is_err() {
+                    oca::add_gf_tstp_oca(tstp, d, pp_g, beta, h, kt, &integ, &mut out[d.vertex]);
+                }
             }
         }
         out
@@ -529,6 +538,42 @@ impl ImpuritySolver {
     /// window `0..=kt` is solved in one shot, otherwise the single
     /// step `tstp`. Returns the `dens, pp_mu = ...` line on the
     /// Matsubara axis, `None` otherwise.
+
+    #[allow(dead_code)]
+    fn debug_sigma_finite_pub(&self, tstp: i64, tag: &str) {
+        let msub = tstp == -1;
+        for sec in 0..self.hs.ns() {
+            let sig = &self.pp_sigma[sec];
+            if msub {
+                for m in 0..=(sig.ntau) {
+                    for z in sig.mat.block(m) {
+                        assert!(
+                            z.re.is_finite() && z.im.is_finite(),
+                            "non-finite sigma mat sec={sec} m={m} [{tag}]"
+                        );
+                    }
+                }
+            } else {
+                for j in 0..=tstp {
+                    for z in sig.ret.raw_block_at(tstp, j) {
+                        assert!(
+                            z.re.is_finite() && z.im.is_finite(),
+                            "non-finite sigma ret sec={sec} n={tstp} j={j} [{tag}]"
+                        );
+                    }
+                }
+                for m in 0..=(sig.ntau as i64) {
+                    for z in sig.lmix.raw_block_at(tstp, m) {
+                        assert!(
+                            z.re.is_finite() && z.im.is_finite(),
+                            "non-finite sigma lmix sec={sec} n={tstp} m={m} [{tag}]"
+                        );
+                    }
+                }
+            }
+        }
+    }
+
     pub fn pp_step(&mut self, tstp: i64, pp_ints: &[Hybridization]) -> Option<String> {
         let (n1, n2) = if tstp <= self.kt as i64 && tstp >= 0 {
             (0, self.kt as i64)
@@ -537,6 +582,11 @@ impl ImpuritySolver {
         };
         for n in n1..=n2 {
             self.update_sigma(n, pp_ints);
+            #[cfg(debug_assertions)]
+            {
+                let tag = format!("pp_step n={n}");
+                self.debug_sigma_finite_pub(n, &tag);
+            }
         }
         self.solve_dyson(tstp);
         let mut line = None;

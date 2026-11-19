@@ -26,6 +26,7 @@ struct TwoBandConfig {
     bz0: f64,
     bz: f64,
     t_hop: f64,
+    order: usize,
 }
 
 impl TwoBandConfig {
@@ -52,6 +53,7 @@ impl TwoBandConfig {
             bz0: f("bz0")?,
             bz: f("bz")?,
             t_hop: f("t")?,
+            order: r.get_usize("order").unwrap_or(1),
         })
     }
 }
@@ -81,7 +83,7 @@ fn main() {
         cfg.beta,
         cfg.h,
         cfg.kt,
-        1, // NCA (order 1), as the reference case
+        cfg.order, // 1 = NCA (the reference case), 2 = OCA
         hs,
         TwoBand {
             mu: cfg.mu,

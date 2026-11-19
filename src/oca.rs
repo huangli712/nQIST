@@ -44,19 +44,21 @@ fn mul_acc(a: &[Complex], b: &[Complex], m: usize, k: usize, n: usize, out: &mut
     }
 }
 
-/// `out = a * m * b`: sandwich of the square matrix `m (k x k)`.
+/// `out = a * m * b` for row-major `a (d1 x dk)`, `m (dk x dl)`,
+/// `b (dl x d2)` (nothing assumed square).
 fn sandwich(
     a: &[Complex],
     m: &[Complex],
     b: &[Complex],
     d1: usize,
     dk: usize,
+    dl: usize,
     d2: usize,
     out: &mut [Complex],
     scratch: &mut [Complex],
 ) {
-    mul_into(a, m, d1, dk, dk, scratch);
-    mul_into(scratch, b, dk, dk, d2, out);
+    mul_into(a, m, d1, dk, dl, scratch);
+    mul_into(scratch, b, d1, dl, d2, out);
 }
 
 /// A Matsubara axis of `d1 x d2` blocks (raw view of a mat component).
@@ -361,7 +363,7 @@ pub(crate) fn add_sigma_mat_oca(
     let mut gc_i = vec![Complex::ZERO; b_gc];
     let mut ga_i = vec![Complex::ZERO; b_ga];
     let mut lam2_i = vec![Complex::ZERO; b_l];
-    let mut scratch = vec![Complex::ZERO; b_gb.max(b_ac).max(b_ss)];
+    let mut scratch = vec![Complex::ZERO; b_gb.max(b_ac).max(b_ss).max(b_ga).max(b_gc)];
     let mut f_bc = vec![vec![Complex::ZERO; b_bc]; nmax + 1];
     let mut tmp_bc = vec![Complex::ZERO; b_bc];
     let mut tmp_ac = vec![Complex::ZERO; b_ac];
@@ -388,6 +390,7 @@ pub(crate) fn add_sigma_mat_oca(
                             d.op3.raw(),
                             gc_i.as_slice(),
                             bdim,
+                            bdim,
                             cdim,
                             cdim,
                             inner.as_mut_slice(),
@@ -410,6 +413,7 @@ pub(crate) fn add_sigma_mat_oca(
                         d.op2.raw(),
                         integr_bc.as_slice(),
                         adim,
+                        adim,
                         bdim,
                         cdim,
                         inner.as_mut_slice(),
@@ -427,6 +431,7 @@ pub(crate) fn add_sigma_mat_oca(
                     sdim,
                     adim,
                     cdim,
+                    sdim,
                     res.as_mut_slice(),
                     scratch.as_mut_slice(),
                 );
@@ -462,6 +467,7 @@ pub(crate) fn add_sigma_mat_oca(
                                 d.op3.raw(),
                                 gc_i.as_slice(),
                                 bdim,
+                                bdim,
                                 cdim,
                                 cdim,
                                 inner.as_mut_slice(),
@@ -484,6 +490,7 @@ pub(crate) fn add_sigma_mat_oca(
                                 d.op3.raw(),
                                 gc.block(l),
                                 bdim,
+                                bdim,
                                 cdim,
                                 cdim,
                                 inner.as_mut_slice(),
@@ -501,6 +508,7 @@ pub(crate) fn add_sigma_mat_oca(
                         ga.block(m - j),
                         d.op2.raw(),
                         tmp_bc.as_slice(),
+                        adim,
                         adim,
                         bdim,
                         cdim,
@@ -520,6 +528,7 @@ pub(crate) fn add_sigma_mat_oca(
                     sdim,
                     adim,
                     cdim,
+                    sdim,
                     res.as_mut_slice(),
                     scratch.as_mut_slice(),
                 );
@@ -611,6 +620,295 @@ pub(crate) fn build_gf_diagrams_oca_channels<'a>(
 /// ADDED onto the NCA values (blueprint `gdiagram_mat` with
 /// `equilibrium = true`, kernels `gdiagram_mat_integral`). Returns
 /// per-vertex `mat(m)` values, `m = 0..=ntau`.
+/// Matrix path of the gf diagram Matsubara integral for multi-band
+/// sectors (blueprint `gdiagram_mat_integral` with matrix types; the
+/// hybridization insertions stay scalar `(0, 0)` blocks).
+#[allow(clippy::too_many_arguments)]
+/// Reusable scratch for the hot gf matcore (called per-`m` per
+/// diagram per iteration in the real-time path; the inner loops must
+/// not allocate).
+pub(crate) struct GfMatScratch {
+    prod: Vec<Complex>,
+    gdv: Vec<Complex>,
+    blk: Vec<Complex>,
+    gd_interp: Vec<Complex>,
+    u1: Vec<Complex>,
+}
+
+impl GfMatScratch {
+    fn new(max_nel: usize, k: usize, ddim: usize) -> Self {
+        GfMatScratch {
+            prod: vec![Complex::ZERO; max_nel],
+            gdv: vec![Complex::ZERO; (k + 1) * ddim * ddim],
+            blk: vec![Complex::ZERO; ddim * ddim],
+            gd_interp: vec![Complex::ZERO; ddim * ddim],
+            u1: vec![Complex::ZERO; max_nel],
+        }
+    }
+}
+
+fn gf_mat_matrix_branch(
+    m: usize,
+    k: usize,
+    nmax: usize,
+    ga: &MatAxis,
+    gb: &MatAxis,
+    gc: &MatAxis,
+    gd: &MatAxis,
+    lam: &MatAxis,
+    d: &OcaGfDiagram,
+    gd_sign: f64,
+    equilibrium: bool,
+    integ: &Integrator,
+    lam_i: &mut Vec<Complex>,
+    scratch: &mut Vec<Complex>,
+    mscratch: &mut GfMatScratch,
+) -> Complex {
+    let (adim, bdim, cdim, ddim) = (ga.d1, gb.d1, gc.d1, gd.d1);
+    let nel_dc = ddim * cdim;
+    let nel_da = ddim * adim;
+    let nel_ba = bdim * adim;
+    let mut gb_i = vec![Complex::ZERO; bdim * bdim];
+    let mut ga_i = vec![Complex::ZERO; adim * adim];
+    let mut gc_i = vec![Complex::ZERO; cdim * cdim];
+    let mut gd_flip_blk = vec![Complex::ZERO; ddim * ddim];
+    let sc_flip = -Complex::new(gd_sign, 0.0);
+    let flip = |i2: usize, out: &mut [Complex]| {
+        if equilibrium {
+            for q in 0..ddim * ddim {
+                out[q] = sc_flip * gd.block(nmax - i2)[q];
+            }
+        } else {
+            // real-time: gd rows fed directly (no flip)
+            for q in 0..ddim * ddim {
+                out[q] = gd.block(i2)[q];
+            }
+        }
+    };
+    let smax = (ddim * bdim)
+        .max(bdim * adim)
+        .max(ddim * cdim)
+        .max(adim * adim)
+        .max(bdim * bdim)
+        .max(cdim * cdim)
+        .max(ddim * ddim);
+    scratch.clear();
+    scratch.resize(smax, Complex::ZERO);
+    let mut t1 = vec![Complex::ZERO; ddim * bdim];
+    let mut t2 = vec![Complex::ZERO; nel_da];
+    // close the chain `sd --op1--> sa` on the da block (ddim x adim):
+    // trace of (f_da . op1) with op1 stored (adim x ddim)
+    let trace_close = |da: &[Complex]| -> Complex {
+        let mut tr = Complex::ZERO;
+        for r in 0..ddim {
+            for q in 0..adim {
+                tr += da[r * adim + q] * d.op1.get(q, r);
+            }
+        }
+        tr
+    };
+    if m < k && m > 0 {
+        // low-side warmup
+        let dtau1 = m as f64 / k as f64;
+        let mut f_dc = vec![vec![Complex::ZERO; nel_dc]; nmax - m + 1];
+        let mut f_da = vec![vec![Complex::ZERO; nel_da]; k + 1];
+        for i1 in 0..=k {
+            let tau1 = i1 as f64 * dtau1;
+            for i2 in m..=nmax {
+                let y = nmax as f64 + tau1 - i2 as f64;
+                let mut l = (y.floor() as i64 - k as i64 / 2).max(0) as usize;
+                if l > nmax - k {
+                    l = nmax - k;
+                }
+                let view = MatAxis {
+                    data: &lam.data[l..],
+                    d1: 1,
+                    d2: 1,
+                };
+                poly_interpol(&view, y - l as f64, integ, lam_i, scratch);
+                flip(i2, &mut gd_flip_blk);
+                sandwich(
+                    gd_flip_blk.as_slice(),
+                    d.op4.raw(),
+                    gc.block(i2 - m),
+                    ddim,
+                    ddim,
+                    cdim,
+                    cdim,
+                    &mut mscratch.prod[..nel_dc],
+                    scratch.as_mut_slice(),
+                );
+                for q in 0..nel_dc {
+                    f_dc[i2 - m][q] = lam_i[0] * mscratch.prod[q];
+                }
+            }
+            let integr_dc = gregory_sum(nmax - m, &f_dc, integ);
+            poly_interpol(gb, m as f64 - tau1, integ, &mut gb_i, scratch);
+            poly_interpol(ga, tau1, integ, &mut ga_i, scratch);
+            sandwich(
+                integr_dc.as_slice(),
+                d.op2.raw(),
+                gb_i.as_slice(),
+                ddim,
+                cdim,
+                bdim,
+                bdim,
+                t1.as_mut_slice(),
+                scratch.as_mut_slice(),
+            );
+            sandwich(
+                t1.as_slice(),
+                d.op3.raw(),
+                ga_i.as_slice(),
+                ddim,
+                bdim,
+                adim,
+                adim,
+                t2.as_mut_slice(),
+                scratch.as_mut_slice(),
+            );
+            f_da[i1][..nel_da].copy_from_slice(&t2);
+        }
+        let integr_da = gregory_sum(k, &f_da, integ);
+        -Complex::new(dtau1, 0.0) * trace_close(&integr_da)
+    } else if m > nmax - k && m < nmax {
+        // high-side warmup
+        let dtau2 = (nmax - m) as f64 / k as f64;
+        let mut f_da = vec![vec![Complex::ZERO; nel_da]; k + 1];
+        let mut f_ba = vec![vec![Complex::ZERO; nel_ba]; m + 1];
+        for i2 in 0..=k {
+            let tau2 = m as f64 + i2 as f64 * dtau2;
+            for i1 in 0..=m {
+                let y = nmax as f64 + i1 as f64 - tau2;
+                let mut l = (y.floor() as i64 - k as i64 / 2).max(0) as usize;
+                if l > nmax - k {
+                    l = nmax - k;
+                }
+                let view = MatAxis {
+                    data: &lam.data[l..],
+                    d1: 1,
+                    d2: 1,
+                };
+                poly_interpol(&view, y - l as f64, integ, lam_i, scratch);
+                sandwich(
+                    gb.block(m - i1),
+                    d.op3.raw(),
+                    ga.block(i1),
+                    bdim,
+                    bdim,
+                    adim,
+                    adim,
+                    &mut mscratch.prod[..nel_ba],
+                    scratch.as_mut_slice(),
+                );
+                for q in 0..nel_ba {
+                    f_ba[i1][q] = lam_i[0] * mscratch.prod[q];
+                }
+            }
+            let integr_ba = gregory_sum(m, &f_ba, integ);
+            poly_interpol(gc, tau2 - m as f64, integ, &mut gc_i, scratch);
+            let y = tau2;
+            let mut l = (y.floor() as i64 - k as i64 / 2).max(0) as usize;
+            if l > nmax - k {
+                l = nmax - k;
+            }
+            for i in 0..=k {
+                flip(l + i, &mut mscratch.blk);
+                mscratch.gdv[i * ddim * ddim..(i + 1) * ddim * ddim].copy_from_slice(&mscratch.blk);
+            }
+            let gd_axis = MatAxis {
+                data: &mscratch.gdv,
+                d1: ddim,
+                d2: ddim,
+            };
+            poly_interpol(
+                &gd_axis,
+                y - l as f64,
+                integ,
+                &mut mscratch.gd_interp,
+                scratch,
+            );
+            sandwich(
+                mscratch.gd_interp.as_slice(),
+                d.op4.raw(),
+                gc_i.as_slice(),
+                ddim,
+                ddim,
+                cdim,
+                cdim,
+                &mut mscratch.u1[..nel_dc],
+                scratch.as_mut_slice(),
+            );
+            sandwich(
+                mscratch.u1[..nel_dc].as_ref(),
+                d.op2.raw(),
+                integr_ba.as_slice(),
+                ddim,
+                cdim,
+                bdim,
+                adim,
+                t2.as_mut_slice(),
+                scratch.as_mut_slice(),
+            );
+            f_da[i2][..nel_da].copy_from_slice(&t2);
+        }
+        let integr_da = gregory_sum(k, &f_da, integ);
+        -Complex::new(dtau2, 0.0) * trace_close(&integr_da)
+    } else if m >= k && m <= nmax - k {
+        // gregory region
+        let mut f_dc = vec![vec![Complex::ZERO; nel_dc]; nmax - m + 1];
+        let mut f_da = vec![vec![Complex::ZERO; nel_da]; m + 1];
+        for i1 in 0..=m {
+            for i2 in m..=nmax {
+                let lam_v = lam.block(nmax - i2 + i1)[0];
+                flip(i2, &mut gd_flip_blk);
+                sandwich(
+                    gd_flip_blk.as_slice(),
+                    d.op4.raw(),
+                    gc.block(i2 - m),
+                    ddim,
+                    ddim,
+                    cdim,
+                    cdim,
+                    &mut mscratch.prod[..nel_dc],
+                    scratch.as_mut_slice(),
+                );
+                for q in 0..nel_dc {
+                    f_dc[i2 - m][q] = lam_v * mscratch.prod[q];
+                }
+            }
+            let integr_dc = gregory_sum(nmax - m, &f_dc, integ);
+            sandwich(
+                integr_dc.as_slice(),
+                d.op2.raw(),
+                gb.block(m - i1),
+                ddim,
+                cdim,
+                bdim,
+                bdim,
+                t1.as_mut_slice(),
+                scratch.as_mut_slice(),
+            );
+            sandwich(
+                t1.as_slice(),
+                d.op3.raw(),
+                ga.block(i1),
+                ddim,
+                bdim,
+                adim,
+                adim,
+                t2.as_mut_slice(),
+                scratch.as_mut_slice(),
+            );
+            f_da[i1][..nel_da].copy_from_slice(&t2);
+        }
+        let integr_da = gregory_sum(m, &f_da, integ);
+        -trace_close(&integr_da)
+    } else {
+        Complex::ZERO
+    }
+}
+
 pub(crate) fn add_gf_mat_oca(
     hs: &HilbertSpace,
     pp_g: &[PseudoGreen],
@@ -645,11 +943,34 @@ pub(crate) fn add_gf_mat_oca(
         // gd_flip(tau) = -sig_gd * gd(nmax - tau) in equilibrium
         let gd_flip =
             |tau: usize| -> Complex { -Complex::new(gd_sig(d.sd), 0.0) * gd.block(nmax - tau)[0] };
-        // dimension bookkeeping (single-band: all 1x1)
-        let (adim, cdim) = (ga.d1, gc.d1);
-        debug_assert_eq!(adim * cdim, 1);
+        // dimension bookkeeping: the scalar fast path covers the
+        // single-band case (all blocks 1x1, P5-gated); multi-band
+        // sectors take the matrix path (blueprint
+        // gdiagram_mat_integral with matrix types)
+        let (adim, bdim, cdim, ddim) = (ga.d1, gb.d1, gc.d1, gd.d1);
+        let all1 = adim * bdim * cdim * ddim == 1;
         for m in 0..=nmax {
-            let g: Complex = if m < k && m > 0 {
+            let g: Complex = if !all1 {
+                let max_nel = (ddim * cdim).max(bdim * adim).max(ddim * adim);
+                let mut mscratch = GfMatScratch::new(max_nel, k, ddim);
+                gf_mat_matrix_branch(
+                    m,
+                    k,
+                    nmax,
+                    &ga,
+                    &gb,
+                    &gc,
+                    &gd,
+                    &lam,
+                    d,
+                    gd_sig(d.sd),
+                    true,
+                    integ,
+                    &mut lam_i,
+                    &mut scratch,
+                    &mut mscratch,
+                )
+            } else if m < k && m > 0 {
                 // low-side warmup
                 let dtau1 = m as f64 / k as f64;
                 let mut f_da = vec![vec![Complex::ZERO; 1]; k + 1];
@@ -1455,6 +1776,1095 @@ fn gf_mat_core(
 /// OCA self-energy real-time contribution at timestep `n`, ADDED
 /// onto the NCA values already present in `pp_sigma` (blueprint
 /// `sdiagram_tstp`: ret(1), vt(1..3), les(1..6), all signs and index
+// ------------------------------------------------------------------
+// matrix-valued real-time OCA kernels (multi-band sectors)
+// ------------------------------------------------------------------
+
+/// Element count of a sector block of `pp` (dim x dim).
+#[inline]
+fn nel_of(pp: &PseudoGreen) -> usize {
+    (pp.size1 * pp.size2) as usize
+}
+
+/// Matrix pseudo ret slot (holds greater); out-of-triangle reads fall
+/// back to `-[ret(j,n)]^dag` block (adjoint of the stored block).
+#[inline]
+fn psc_blk_into(pp: &PseudoGreen, n: i64, j: i64, dim: usize, out: &mut [Complex]) {
+    let nel = dim * dim;
+    if j <= n {
+        out[..nel].copy_from_slice(pp.ret.raw_block_at(n, j));
+    } else {
+        let src = pp.ret.raw_block_at(j, n);
+        for r in 0..dim {
+            for c in 0..dim {
+                out[r * dim + c] = -src[c * dim + r].conj();
+            }
+        }
+    }
+}
+
+/// Matrix pseudo lesser with the `-[less(n,j)]^dag` fallback.
+#[inline]
+fn pls_blk_into(pp: &PseudoGreen, j: i64, n: i64, dim: usize, out: &mut [Complex]) {
+    let nel = dim * dim;
+    if j <= n {
+        out[..nel].copy_from_slice(pp.less.raw_block_at(j, n));
+    } else {
+        let src = pp.less.raw_block_at(n, j);
+        for r in 0..dim {
+            for c in 0..dim {
+                out[r * dim + c] = -src[c * dim + r].conj();
+            }
+        }
+    }
+}
+
+/// Matrix DIRECT pseudo tv block mirroring the scalar `ptv(pp, n, m)`:
+/// a plain copy of `G.lmix(n, m)`.
+#[inline]
+fn ptv_dir_blk(pp: &PseudoGreen, n: i64, m: i64, dim: usize, out: &mut [Complex]) {
+    let nel = dim * dim;
+    out[..nel].copy_from_slice(pp.lmix.raw_block_at(n, m));
+}
+
+/// Matrix pseudo vt view mirroring the C++ `vt_from_tv_matrix_matrix_ref`:
+/// `-sig * [G.lmix(t, ntau - tau)]^dag` -- the CONJUGATE TRANSPOSE
+/// (adjoint) of the stored tv block, not an element-wise conjugate
+/// (identical only at dim = 1).
+#[inline]
+fn ptv_blk_into(pp: &PseudoGreen, tau: i64, t: i64, dim: usize, out: &mut [Complex]) {
+    let src = pp.lmix.raw_block_at(t, pp.ntau as i64 - tau);
+    let sgn = -Complex::new(pp.sign.as_i64() as f64, 0.0);
+    for r in 0..dim {
+        for c in 0..dim {
+            out[r * dim + c] = sgn * src[c * dim + r].conj();
+        }
+    }
+}
+
+/// Scalar hybridization views keep `(0,0)` element semantics: the
+/// matrix kernels reuse the scalar `svt/sles/sgtr/stv/svt` accessors.
+
+/// Gregory quadrature over a block-valued 1-D array (`nel` elements
+/// per point, `n+1` points).
+fn gregory_blk(n: usize, v: &[Complex], nel: usize, integ: &Integrator) -> Vec<Complex> {
+    // the warmup weight rows (n < k) span all k+1 nodes: the column
+    // must be zero-padded to max(n, k) + 1 (blueprint
+    // gregory_sum on the full zero-padded array)
+    let k = integ.k as usize;
+    let ntop = n.max(k);
+    let mut out = vec![Complex::ZERO; nel];
+    for q in 0..nel {
+        let col: Vec<Complex> = (0..=ntop)
+            .map(|i| {
+                // zero-pad only BEYOND the slice: the warmup rows
+                // (n < k+1) read all k+1 nodes, so entries the caller
+                // filled past n (up to n1 = max(n, kt)) must be read,
+                // matching the scalar gregory over the full array
+                if i * nel + q < v.len() {
+                    v[i * nel + q]
+                } else {
+                    Complex::ZERO
+                }
+            })
+            .collect();
+        out[q] = gregory_scalar(n, &col, integ);
+    }
+    out
+}
+
+/// `conv2b` quadrature over a block-valued triangular grid (layout
+/// `data[i1 * n11 * nel + i2 * nel + q]`).
+fn conv2b_blk(
+    data: &[Complex],
+    n11: usize,
+    nel: usize,
+    j: usize,
+    nn: usize,
+    integ: &Integrator,
+) -> Vec<Complex> {
+    let mut out = vec![Complex::ZERO; nel];
+    for q in 0..nel {
+        let col: Vec<Complex> = (0..n11 * n11).map(|ix| data[ix * nel + q]).collect();
+        out[q] = conv2b_scalar(&col, n11, j, nn, integ);
+    }
+    out
+}
+
+/// Low-side (warmup) quadrature over block-valued arrays.
+fn lowside_blk(
+    j: usize,
+    aa: &[Complex],
+    bb: &[Complex],
+    d1: usize,
+    d2: usize,
+    d3: usize,
+    mmax: usize,
+    integ: &Integrator,
+    scratch: &mut Vec<Complex>,
+) -> Vec<Complex> {
+    // block-product contraction over the shared tau index: the two
+    // factors carry `nel_a` and `nel_b` elements per point with the
+    // product shape (d1 x d2) . (d2 x d3)
+    let nel_a = d1 * d2;
+    let nel_b = d2 * d3;
+    let nelo = d1 * d3;
+    let k = integ.k as usize;
+    let mut out = vec![Complex::ZERO; nelo];
+    let mut prod = vec![Complex::ZERO; nelo];
+    let smax = nel_a.max(nel_b).max(nelo);
+    if scratch.len() < smax {
+        scratch.resize(smax, Complex::ZERO);
+    }
+    let mat2 = |a: &[Complex], b: &[Complex], o: &mut [Complex]| {
+        for r in 0..d1 {
+            for c in 0..d3 {
+                let mut acc = Complex::ZERO;
+                for q in 0..d2 {
+                    acc += a[r * d2 + q] * b[q * d3 + c];
+                }
+                o[r * d3 + c] = acc;
+            }
+        }
+    };
+    if j > 0 && j < k {
+        for l in 0..=k {
+            for m in 0..=k {
+                let w = integ.bcw.at(j, l, m);
+                if w != 0.0 {
+                    mat2(&aa[l * nel_a..], &bb[m * nel_b..], &mut prod);
+                    for q in 0..nelo {
+                        out[q] += Complex::new(w, 0.0) * prod[q];
+                    }
+                }
+            }
+        }
+    } else if j > 0 {
+        let mut f1 = vec![Complex::ZERO; (j + 1) * nelo];
+        for l in 0..=j {
+            mat2(&aa[(j - l) * nel_a..], &bb[l * nel_b..], &mut prod);
+            f1[l * nelo..(l + 1) * nelo].copy_from_slice(&prod);
+        }
+        out = gregory_blk(j, &f1, nelo, integ);
+    }
+    out
+}
+
+/// Matrix version of [`add_sigma_tstp_oca`] for multi-band sectors
+/// (blueprint `sdiagram_tstp` with matrix types; the hybridization
+/// insertions stay scalar `(0,0)` elements). Adds onto `pp_sigma`.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn add_sigma_tstp_oca_matrix(
+    n: i64,
+    d: &OcaSigmaDiagram,
+    pp_g: &[PseudoGreen],
+    beta: f64,
+    h: f64,
+    kt: i64,
+    integ: &Integrator,
+    pp_sigma: &mut [PseudoGreen],
+) {
+    let mmax = pp_sigma[d.out].ntau as i64;
+    let dtau = beta / mmax as f64;
+    let n1 = n.max(kt);
+    let n11 = (n1 + 1) as usize;
+    let ga = &pp_g[d.sa];
+    let gb = &pp_g[d.sb];
+    let gc = &pp_g[d.sc];
+    let lam1 = d.lam1;
+    let lam2 = d.lam2;
+    let (adim, bdim, cdim) = (ga.size1 as usize, gb.size1 as usize, gc.size1 as usize);
+    let (na, nb, nc) = (adim * adim, bdim * bdim, cdim * cdim);
+    let nbc = bdim * cdim;
+    let pref = d.prefactor;
+    let sig = d.sig;
+    let hh = Complex::new(h * h, 0.0);
+    let out = &mut pp_sigma[d.out];
+    let sdim = out.size1 as usize;
+    let nss = sdim * sdim;
+    let nab = adim * bdim;
+    let nac = adim * cdim;
+    let smax = na.max(nb).max(nc).max(nab).max(nbc).max(nac).max(nss);
+    let mut scratch = vec![Complex::ZERO; smax];
+    // reusable block buffers
+    let mut gab = vec![Complex::ZERO; na];
+    let mut gbb = vec![Complex::ZERO; nb];
+    let mut gcb = vec![Complex::ZERO; nc];
+    let mut t_ab = vec![Complex::ZERO; adim * bdim];
+    let mut t_bc = vec![Complex::ZERO; bdim * cdim];
+    let mut t_ac = vec![Complex::ZERO; adim * cdim];
+    let mut prod = vec![Complex::ZERO; adim * cdim];
+    let mut op1_conv = vec![Complex::ZERO; nss];
+
+    // -- data_ab (ret 1): grid of (adim x bdim)-shaped products
+    let mut data_ab = vec![Complex::ZERO; n11 * n11 * nab];
+    for i1 in 0..=n1 {
+        let i2max = (i1 + kt).min(n1);
+        psc_blk_into(ga, n, i1, adim, &mut gab);
+        for i2 in 0..=i2max {
+            psc_blk_into(gb, i1, i2, bdim, &mut gbb);
+            sandwich(
+                &gab,
+                d.op2.raw(),
+                &gbb,
+                adim,
+                adim,
+                bdim,
+                bdim,
+                &mut t_ab,
+                &mut scratch,
+            );
+            let s = sgtr(lam1, n, i2);
+            for q in 0..nab {
+                data_ab[(i1 as usize) * n11 * nab + (i2 as usize) * nab + q] = s * t_ab[q];
+            }
+        }
+    }
+    // -- ret (1)
+    for j in (0..=n).rev() {
+        let i1min = j.min(n1 - kt);
+        let mut data_ac = vec![Complex::ZERO; n11 * n11 * nac];
+        for i1 in i1min..=n1 {
+            let i2max = (i1 + kt).min(n1);
+            let l2 = sgtr(lam2, i1, j);
+            for i2 in i1min..=i2max {
+                psc_blk_into(gc, i2, j, cdim, &mut gcb);
+                // data_ab[i1][i2] (adim x bdim) * op3 * gc(i2, j)
+                sandwich(
+                    &data_ab[(i1 as usize) * n11 * nab + (i2 as usize) * nab..],
+                    d.op3.raw(),
+                    &gcb,
+                    adim,
+                    bdim,
+                    cdim,
+                    cdim,
+                    &mut t_ac,
+                    &mut scratch,
+                );
+                let base = ((i1 - i1min) as usize) * n11 * nac + ((i2 - i1min) as usize) * nac;
+                for q in 0..nac {
+                    data_ac[base + q] = l2 * t_ac[q];
+                }
+            }
+        }
+        let conv = conv2b_blk(
+            &data_ac,
+            n11,
+            nac,
+            (j - i1min) as usize,
+            (n - i1min) as usize,
+            integ,
+        );
+        sandwich(
+            d.op1.raw(),
+            &conv,
+            d.op4.raw(),
+            sdim,
+            adim,
+            cdim,
+            sdim,
+            &mut op1_conv,
+            &mut scratch,
+        );
+        let blk = out.ret.block_mut(out.ret.idx(n, j));
+        for q in 0..blk.len() {
+            blk[q] += pref * (-hh) * op1_conv[q];
+        }
+    }
+    // -- data_bc (vt 1 / les 1): (bdim x cdim)-shaped products
+    let mut data_bc = vec![Complex::ZERO; n11 * n11 * nbc];
+    for t1 in 0..=n1 {
+        let t2max = (t1 + kt).min(n1);
+        psc_blk_into(gc, t1, n, cdim, &mut gcb);
+        for t2 in 0..=t2max {
+            psc_blk_into(gb, t2, t1, bdim, &mut gbb);
+            sandwich(
+                &gbb,
+                d.op3.raw(),
+                &gcb,
+                bdim,
+                bdim,
+                cdim,
+                cdim,
+                &mut t_bc,
+                &mut scratch,
+            );
+            let s = sgtr(lam2, t2, n);
+            for q in 0..nbc {
+                data_bc[(t1 as usize) * n11 * nbc + (t2 as usize) * nbc + q] = s * t_bc[q];
+            }
+        }
+    }
+    // reusable buffers: the vt(1)/les(1) (i2, i1) grid and the point
+    // arrays used by the other blocks
+    let mut data_ac_grid = vec![Complex::ZERO; n11 * n11 * nac];
+    let mut f_ac = vec![Complex::ZERO; (n11) * nac];
+    let mut gab_vt = vec![Complex::ZERO; na];
+    // -- vt (1)
+    for m in 0..=mmax {
+        for i2 in 0..=n1 {
+            let i1max = (i2 + kt).min(n1);
+            let lam1_vt = svt(lam1, m, i2);
+            for i1 in 0..=i1max {
+                let mut pv = vec![Complex::ZERO; na];
+                ptv_blk_into(ga, m, i1, adim, &mut pv);
+                sandwich(
+                    &pv,
+                    d.op2.raw(),
+                    &data_bc[(i2 as usize) * n11 * nbc + (i1 as usize) * nbc..],
+                    adim,
+                    adim,
+                    bdim,
+                    cdim,
+                    &mut t_ac,
+                    &mut scratch,
+                );
+                let base = (i2 as usize) * n11 * nac + (i1 as usize) * nac;
+                for q in 0..nac {
+                    data_ac_grid[base + q] = lam1_vt * t_ac[q];
+                }
+            }
+        }
+        let conv = conv2b_blk(&data_ac_grid, n11, nac, 0, n as usize, integ);
+        sandwich(
+            d.op1.raw(),
+            &conv,
+            d.op4.raw(),
+            sdim,
+            adim,
+            cdim,
+            sdim,
+            &mut op1_conv,
+            &mut scratch,
+        );
+        let val = pref * Complex::new(sig * h * h, 0.0);
+        let blk = out.lmix.block_mut(out.lmix.idx(n, mmax - m));
+        let sdim_l = blk.len();
+        let dim_l = (sdim_l as f64).sqrt() as usize;
+        for r in 0..dim_l {
+            for c in 0..dim_l {
+                blk[r * dim_l + c] += val * op1_conv[c * dim_l + r].conj();
+            }
+        }
+    }
+    // -- les (1)
+    for j in 0..=n {
+        for i2 in 0..=n1 {
+            let i1max = (i2 + kt).min(n1);
+            let lam1_les = sles(lam1, j, i2);
+            for i1 in 0..=i1max {
+                pls_blk_into(ga, j, i1, adim, &mut gab_vt);
+                sandwich(
+                    &gab_vt,
+                    d.op2.raw(),
+                    &data_bc[(i2 as usize) * n11 * nbc + (i1 as usize) * nbc..],
+                    adim,
+                    adim,
+                    bdim,
+                    cdim,
+                    &mut t_ac,
+                    &mut scratch,
+                );
+                let base = (i2 as usize) * n11 * nac + (i1 as usize) * nac;
+                for q in 0..nac {
+                    data_ac_grid[base + q] = lam1_les * t_ac[q];
+                }
+            }
+        }
+        let conv = conv2b_blk(&data_ac_grid, n11, nac, 0, n as usize, integ);
+        sandwich(
+            d.op1.raw(),
+            &conv,
+            d.op4.raw(),
+            sdim,
+            adim,
+            cdim,
+            sdim,
+            &mut op1_conv,
+            &mut scratch,
+        );
+        let blk = out.less.block_mut(out.less.idx(j, n));
+        for q in 0..blk.len() {
+            blk[q] += pref * (-hh) * op1_conv[q];
+        }
+    }
+
+    // -- vt (2) / les (2): tau-grid data2 = op2 * gb_tv  (adim x bdim)
+    let mnp = (mmax + 1) as usize;
+    let nab = adim * bdim;
+    let mut data2 = vec![Complex::ZERO; n11 * mnp * nab];
+    for tau in 0..=mmax {
+        let l2 = svt(lam2, tau, n);
+        for t in 0..=n1 {
+            let mut pv = vec![Complex::ZERO; nb];
+            ptv_blk_into(gb, tau, t, bdim, &mut pv); // (bdim x bdim)
+            let base = (t as usize) * mnp * nab + (tau as usize) * nab;
+            for r in 0..adim {
+                for c in 0..bdim {
+                    let mut acc = Complex::ZERO;
+                    for q in 0..bdim {
+                        acc += d.op2.get(r, q) * pv[q * bdim + c];
+                    }
+                    data2[base + r * bdim + c] = l2 * acc;
+                }
+            }
+        }
+    }
+    // -- vt (2)
+    for m in 0..=mmax {
+        for i2 in 0..=n1 {
+            let row = &data2[(i2 as usize) * mnp * nab..];
+            let conv_ab = lowside_blk(
+                m as usize,
+                ga.mat.raw(),
+                row,
+                adim,
+                adim,
+                bdim,
+                mmax as usize,
+                integ,
+                &mut scratch,
+            );
+            // conv_ab is (adim x bdim)-shaped? ga.mat blocks are (adim x adim);
+            // the lowside contracts over tau: result shape follows the product
+            // ga.mat(mu) x data2(mu) => (adim x bdim)
+            psc_blk_into(gc, i2, n, cdim, &mut gcb);
+            sandwich(
+                &conv_ab,
+                d.op3.raw(),
+                &gcb,
+                adim,
+                bdim,
+                cdim,
+                cdim,
+                &mut t_ac,
+                &mut scratch,
+            );
+            let s = svt(lam1, m, i2);
+            let base = (i2 as usize) * nac;
+            for q in 0..nac {
+                f_ac[base + q] = s * t_ac[q];
+            }
+        }
+        let integr = gregory_blk(n as usize, &f_ac[..(n1 as usize + 1) * nac], nac, integ);
+        sandwich(
+            d.op1.raw(),
+            &integr,
+            d.op4.raw(),
+            sdim,
+            adim,
+            cdim,
+            sdim,
+            &mut op1_conv,
+            &mut scratch,
+        );
+        let val = pref * Complex::new(-sig * dtau * h, 0.0);
+        let blk = out.lmix.block_mut(out.lmix.idx(n, mmax - m));
+        let sdim_l = blk.len();
+        let dim_l = (sdim_l as f64).sqrt() as usize;
+        for r in 0..dim_l {
+            for c in 0..dim_l {
+                blk[r * dim_l + c] += val * op1_conv[c * dim_l + r].conj();
+            }
+        }
+    }
+    // -- les (2)
+    for j in 0..=n {
+        for i2 in 0..=n1 {
+            let row = &data2[(i2 as usize) * mnp * nab..];
+            // f_ab[mu] = ptv(ga, j, mu) * row[mu]: (adim x adim) x (adim x bdim)
+            let mut f_ab = vec![Complex::ZERO; mnp * nab];
+            for mu in 0..=mmax {
+                let mut pv = vec![Complex::ZERO; na];
+                ptv_dir_blk(ga, j, mu, adim, &mut pv);
+                let rb = &row[(mu as usize) * nab..];
+                for r in 0..adim {
+                    for c in 0..bdim {
+                        let mut acc = Complex::ZERO;
+                        for q in 0..adim {
+                            acc += pv[r * adim + q] * rb[q * bdim + c];
+                        }
+                        f_ab[(mu as usize) * nab + r * bdim + c] = acc;
+                    }
+                }
+            }
+            let integr_ab = gregory_blk(mmax as usize, &f_ab, nab, integ);
+            psc_blk_into(gc, i2, n, cdim, &mut gcb);
+            sandwich(
+                &integr_ab,
+                d.op3.raw(),
+                &gcb,
+                adim,
+                bdim,
+                cdim,
+                cdim,
+                &mut t_ac,
+                &mut scratch,
+            );
+            let s = sles(lam1, j, i2);
+            let base = (i2 as usize) * nac;
+            for q in 0..nac {
+                f_ac[base + q] = s * t_ac[q];
+            }
+        }
+        let integr = gregory_blk(n as usize, &f_ac[..(n1 as usize + 1) * nac], nac, integ);
+        sandwich(
+            d.op1.raw(),
+            &integr,
+            d.op4.raw(),
+            sdim,
+            adim,
+            cdim,
+            sdim,
+            &mut op1_conv,
+            &mut scratch,
+        );
+        let val = pref * Complex::new(0.0, -dtau * h);
+        let blk = out.less.block_mut(out.less.idx(j, n));
+        for q in 0..blk.len() {
+            blk[q] += val * op1_conv[q];
+        }
+    }
+    // -- vt (3): the mat-core sandwich chain with vt-sliced gc/lam2 rows
+    {
+        let mut gc_vt = vec![Complex::ZERO; mnp * nc];
+        let mut lam2_vt = vec![Complex::ZERO; mnp];
+        for tau in 0..=mmax {
+            lam2_vt[tau as usize] = svt(lam2, tau, n);
+            let mut pv = vec![Complex::ZERO; nc];
+            ptv_blk_into(gc, tau, n, cdim, &mut pv);
+            gc_vt[(tau as usize) * nc..(tau as usize + 1) * nc].copy_from_slice(&pv);
+        }
+        // per-m evaluation of the double Matsubara integral (low/mid/high
+        // branches, blueprint sigma_mat_core with matrix blocks)
+        for m in 0..=mmax {
+            let val = sigma_mat_core_blk(
+                m as usize,
+                kt as usize,
+                mmax as usize,
+                ga.mat.raw(),
+                gb.mat.raw(),
+                &gc_vt,
+                lam1.mat.raw(),
+                &lam2_vt,
+                adim,
+                bdim,
+                cdim,
+                out.size1 as usize,
+                d,
+                integ,
+                &mut scratch,
+            );
+            let pref_v = pref * Complex::new(0.0, -sig * dtau * dtau);
+            let blk = out.lmix.block_mut(out.lmix.idx(n, mmax - m));
+            let sdim_l = blk.len();
+            let dim_l = (sdim_l as f64).sqrt() as usize;
+            for r in 0..dim_l {
+                for c in 0..dim_l {
+                    blk[r * dim_l + c] += pref_v * val[c * dim_l + r].conj();
+                }
+            }
+        }
+    }
+    // -- les (3)
+    for j in (0..=n).rev() {
+        let i1max = j.max(kt);
+        for i1 in 0..=i1max {
+            let mut f_bc = vec![Complex::ZERO; n11 * nbc];
+            for i2 in 0..=n1 {
+                pls_blk_into(gb, i1, i2, bdim, &mut gbb);
+                psc_blk_into(gc, i2, n, cdim, &mut gcb);
+                sandwich(
+                    &gbb,
+                    d.op3.raw(),
+                    &gcb,
+                    bdim,
+                    bdim,
+                    cdim,
+                    cdim,
+                    &mut t_bc,
+                    &mut scratch,
+                );
+                let s = sles(lam1, j, i2);
+                for q in 0..nbc {
+                    f_bc[(i2 as usize) * nbc + q] = s * t_bc[q];
+                }
+            }
+            let integr_bc = gregory_blk(n as usize, &f_bc, nbc, integ);
+            psc_blk_into(ga, j, i1, adim, &mut gab);
+            sandwich(
+                &gab,
+                d.op2.raw(),
+                &integr_bc,
+                adim,
+                adim,
+                bdim,
+                cdim,
+                &mut t_ac,
+                &mut scratch,
+            );
+            let s = sles(lam2, i1, n);
+            for q in 0..nac {
+                f_ac[(i1 as usize) * nac + q] = s * t_ac[q];
+            }
+        }
+        let integr = gregory_blk(
+            j as usize,
+            &f_ac[..((i1max + 1) as usize) * nac],
+            nac,
+            integ,
+        );
+        sandwich(
+            d.op1.raw(),
+            &integr,
+            d.op4.raw(),
+            sdim,
+            adim,
+            cdim,
+            sdim,
+            &mut op1_conv,
+            &mut scratch,
+        );
+        let blk = out.less.block_mut(out.less.idx(j, n));
+        for q in 0..blk.len() {
+            blk[q] += pref * hh * op1_conv[q];
+        }
+    }
+    // -- les (4)
+    for j in 0..=n {
+        let mut f_bc = vec![Complex::ZERO; mnp * nbc];
+        for mu in 0..=mmax {
+            let mut pv = vec![Complex::ZERO; nc];
+            ptv_blk_into(gc, mu, n, cdim, &mut pv);
+            // op3 * pv: (bdim x cdim) x (cdim x cdim)
+            let rb = &mut f_bc[(mu as usize) * nbc..];
+            for r in 0..bdim {
+                for c in 0..cdim {
+                    let mut acc = Complex::ZERO;
+                    for q in 0..cdim {
+                        acc += d.op3.get(r, q) * pv[q * cdim + c];
+                    }
+                    rb[r * cdim + c] = stv(lam1, j, mu) * acc;
+                }
+            }
+        }
+        let mut f_ac_m = vec![Complex::ZERO; mnp * nac];
+        for mu in 0..=mmax {
+            let conv_bc = lowside_blk(
+                mu as usize,
+                gb.mat.raw(),
+                &f_bc,
+                bdim,
+                bdim,
+                cdim,
+                mmax as usize,
+                integ,
+                &mut scratch,
+            );
+            let mut pv = vec![Complex::ZERO; na];
+            ptv_dir_blk(ga, j, mu, adim, &mut pv);
+            sandwich(
+                &pv,
+                d.op2.raw(),
+                &conv_bc,
+                adim,
+                adim,
+                bdim,
+                cdim,
+                &mut t_ac,
+                &mut scratch,
+            );
+            let s = svt(lam2, mu, n);
+            for q in 0..nac {
+                f_ac_m[(mu as usize) * nac + q] = s * t_ac[q];
+            }
+        }
+        let integr = gregory_blk(mmax as usize, &f_ac_m, nac, integ);
+        sandwich(
+            d.op1.raw(),
+            &integr,
+            d.op4.raw(),
+            sdim,
+            adim,
+            cdim,
+            sdim,
+            &mut op1_conv,
+            &mut scratch,
+        );
+        let val = pref * Complex::new(0.0, dtau * dtau);
+        let blk = out.less.block_mut(out.less.idx(j, n));
+        for q in 0..blk.len() {
+            blk[q] += val * op1_conv[q];
+        }
+    }
+    // -- les (5)
+    {
+        let mut data_bc5 = vec![Complex::ZERO; n11 * n11 * nbc];
+        for i1 in 0..=n1 {
+            let i2max = (i1 + kt).min(n1);
+            let l2 = sles(lam2, i1, n);
+            for i2 in 0..=i2max {
+                psc_blk_into(gb, i1, i2, bdim, &mut gbb);
+                pls_blk_into(gc, i2, n, cdim, &mut gcb);
+                sandwich(
+                    &gbb,
+                    d.op3.raw(),
+                    &gcb,
+                    bdim,
+                    bdim,
+                    cdim,
+                    cdim,
+                    &mut t_bc,
+                    &mut scratch,
+                );
+                for q in 0..nbc {
+                    data_bc5[(i1 as usize) * n11 * nbc + (i2 as usize) * nbc + q] = l2 * t_bc[q];
+                }
+            }
+        }
+        for j in (0..=n).rev() {
+            let i1max = j.max(kt);
+            let mut data_ac5 = vec![Complex::ZERO; n11 * n11 * nac];
+            for i1 in 0..=i1max {
+                let i2max = (i1 + kt).min(i1max);
+                psc_blk_into(ga, j, i1, adim, &mut gab);
+                for i2 in 0..=i2max {
+                    sandwich(
+                        &gab,
+                        d.op2.raw(),
+                        &data_bc5[(i1 as usize) * n11 * nbc + (i2 as usize) * nbc..],
+                        adim,
+                        adim,
+                        bdim,
+                        cdim,
+                        &mut t_ac,
+                        &mut scratch,
+                    );
+                    let s = sgtr(lam1, j, i2);
+                    for q in 0..nac {
+                        data_ac5[(i1 as usize) * n11 * nac + (i2 as usize) * nac + q] = s * t_ac[q];
+                    }
+                }
+            }
+            let conv = conv2b_blk(&data_ac5, n11, nac, 0, j as usize, integ);
+            sandwich(
+                d.op1.raw(),
+                &conv,
+                d.op4.raw(),
+                sdim,
+                adim,
+                cdim,
+                sdim,
+                &mut op1_conv,
+                &mut scratch,
+            );
+            let blk = out.less.block_mut(out.less.idx(j, n));
+            for q in 0..blk.len() {
+                blk[q] += pref * (-hh) * op1_conv[q];
+            }
+        }
+    }
+    // -- les (6)
+    for j in 0..=n {
+        let i1max = j.max(kt);
+        for i1 in 0..=i1max {
+            let mut f_bc = vec![Complex::ZERO; mnp * nbc];
+            for mu in 0..=mmax {
+                let mut pv_b = vec![Complex::ZERO; nb];
+                ptv_dir_blk(gb, i1, mu, bdim, &mut pv_b);
+                let mut pv_c = vec![Complex::ZERO; nc];
+                ptv_blk_into(gc, mu, n, cdim, &mut pv_c);
+                sandwich(
+                    &pv_b,
+                    d.op3.raw(),
+                    &pv_c,
+                    bdim,
+                    bdim,
+                    cdim,
+                    cdim,
+                    &mut t_bc,
+                    &mut scratch,
+                );
+                let s = stv(lam1, j, mu);
+                for q in 0..nbc {
+                    f_bc[(mu as usize) * nbc + q] = s * t_bc[q];
+                }
+            }
+            let integr_bc = gregory_blk(mmax as usize, &f_bc, nbc, integ);
+            psc_blk_into(ga, j, i1, adim, &mut gab);
+            sandwich(
+                &gab,
+                d.op2.raw(),
+                &integr_bc,
+                adim,
+                adim,
+                bdim,
+                cdim,
+                &mut t_ac,
+                &mut scratch,
+            );
+            let s = sles(lam2, i1, n);
+            for q in 0..nac {
+                f_ac[(i1 as usize) * nac + q] = s * t_ac[q];
+            }
+        }
+        let integr = gregory_blk(
+            j as usize,
+            &f_ac[..((i1max + 1) as usize) * nac],
+            nac,
+            integ,
+        );
+        sandwich(
+            d.op1.raw(),
+            &integr,
+            d.op4.raw(),
+            sdim,
+            adim,
+            cdim,
+            sdim,
+            &mut op1_conv,
+            &mut scratch,
+        );
+        let val = pref * Complex::new(0.0, dtau * h);
+        let blk = out.less.block_mut(out.less.idx(j, n));
+        for q in 0..blk.len() {
+            blk[q] += val * op1_conv[q];
+        }
+    }
+}
+
+/// Matrix version of the scalar `sigma_mat_core` for the vt(3) block:
+/// evaluates the double Matsubara integral with the sandwich chain
+/// `lam1(mu) * (ga(mu1) * op2 * gb * op3 * gc_vt * op4)` on the
+/// sub-grid/gregory startup scheme (blueprint `sdiagram_mat_integral`).
+#[allow(clippy::too_many_arguments)]
+fn sigma_mat_core_blk(
+    m: usize,
+    k: usize,
+    mmax: usize,
+    ga_raw: &[Complex],
+    gb_raw: &[Complex],
+    gc_vt: &[Complex],
+    lam1_raw: &[Complex],
+    lam2_vt: &[Complex],
+    adim: usize,
+    bdim: usize,
+    cdim: usize,
+    sdim: usize,
+    d: &OcaSigmaDiagram,
+    integ: &Integrator,
+    scratch: &mut Vec<Complex>,
+) -> Vec<Complex> {
+    // matrix version of `sigma_mat_core` (blueprint: the low/mid/high
+    // branches of the scalar core with sandwich products; the vt(3)
+    // block feeds the tv-sliced `gc_vt`/`lam2_vt` rows directly)
+    let nb_c = bdim * cdim;
+    let na_c = adim * cdim;
+    let ns = sdim * sdim;
+    let mut out = vec![Complex::ZERO; ns];
+    if m == 0 {
+        return out;
+    }
+    let ga_axis = MatAxis {
+        data: ga_raw,
+        d1: adim,
+        d2: adim,
+    };
+    let gb_axis = MatAxis {
+        data: gb_raw,
+        d1: bdim,
+        d2: bdim,
+    };
+    let gc_axis = MatAxis {
+        data: gc_vt,
+        d1: cdim,
+        d2: cdim,
+    };
+    let smax = (adim * adim)
+        .max(bdim * bdim)
+        .max(cdim * cdim)
+        .max(nb_c)
+        .max(na_c)
+        .max(ns);
+    if scratch.len() < smax {
+        scratch.resize(smax, Complex::ZERO);
+    }
+    let mut gb_i = vec![Complex::ZERO; bdim * bdim];
+    let mut gc_i = vec![Complex::ZERO; cdim * cdim];
+    let mut ga_i = vec![Complex::ZERO; adim * adim];
+    let mut f_bc = vec![vec![Complex::ZERO; nb_c]; mmax + 1];
+    let mut f_ac = vec![vec![Complex::ZERO; na_c]; mmax + 1];
+    let mut tmp_bc = vec![Complex::ZERO; nb_c];
+    if m < k {
+        let dtau1 = m as f64 / k as f64;
+        for j in 1..=k {
+            let tau1 = dtau1 * j as f64;
+            let dtau2 = tau1 / k as f64;
+            for l in 0..=k {
+                let tau2 = l as f64 * dtau2;
+                let lam1_i = poly_interpol_scalar(lam1_raw, m as f64 - tau2, integ);
+                poly_interpol(&gb_axis, tau1 - tau2, integ, &mut gb_i, scratch);
+                poly_interpol(&gc_axis, tau2, integ, &mut gc_i, scratch);
+                sandwich(
+                    &gb_i,
+                    d.op3.raw(),
+                    &gc_i,
+                    bdim,
+                    bdim,
+                    cdim,
+                    cdim,
+                    &mut f_bc[l],
+                    scratch,
+                );
+                for q in 0..nb_c {
+                    f_bc[l][q] *= lam1_i;
+                }
+            }
+            // scalar core multiplies the inner warmup quadrature by
+            // dtau2 (grid refinement j/k); the outer gregory rows
+            // alone would miss it
+            let mut integr_bc = gregory_blk(k, &flatten(&f_bc[..=k]), nb_c, integ);
+            for q in 0..nb_c {
+                integr_bc[q] *= Complex::new(dtau2, 0.0);
+            }
+            let lam2_i = poly_interpol_scalar(lam2_vt, tau1, integ);
+            poly_interpol(&ga_axis, m as f64 - tau1, integ, &mut ga_i, scratch);
+            sandwich(
+                &ga_i,
+                d.op2.raw(),
+                &integr_bc,
+                adim,
+                adim,
+                bdim,
+                cdim,
+                &mut f_ac[j],
+                scratch,
+            );
+            for q in 0..na_c {
+                f_ac[j][q] *= lam2_i;
+            }
+        }
+        let integr_ac = gregory_blk(k, &flatten(&f_ac[..=k]), na_c, integ);
+        sandwich(
+            d.op1.raw(),
+            &integr_ac,
+            d.op4.raw(),
+            sdim,
+            adim,
+            cdim,
+            sdim,
+            &mut out,
+            scratch,
+        );
+        for q in 0..ns {
+            out[q] *= Complex::new(dtau1, 0.0);
+        }
+        out
+    } else {
+        for j in 1..=m {
+            if j < k {
+                let dtau2 = j as f64 / k as f64;
+                let tau1 = j as f64;
+                for l in 0..=k {
+                    let tau2 = l as f64 * dtau2;
+                    let y = m as f64 - tau2;
+                    let mut i1 = (y.floor() as i64 - k as i64 / 2).max(0) as usize;
+                    if i1 > mmax - k {
+                        i1 = mmax - k;
+                    }
+                    let lam1_i = poly_interpol_scalar(&lam1_raw[i1..], y - i1 as f64, integ);
+                    poly_interpol(&gb_axis, tau1 - tau2, integ, &mut gb_i, scratch);
+                    poly_interpol(&gc_axis, tau2, integ, &mut gc_i, scratch);
+                    sandwich(
+                        &gb_i,
+                        d.op3.raw(),
+                        &gc_i,
+                        bdim,
+                        bdim,
+                        cdim,
+                        cdim,
+                        &mut f_bc[l],
+                        scratch,
+                    );
+                    for q in 0..nb_c {
+                        f_bc[l][q] *= lam1_i;
+                    }
+                }
+                let integr_bc = gregory_blk(k, &flatten(&f_bc[..=k]), nb_c, integ);
+                for q in 0..nb_c {
+                    tmp_bc[q] = Complex::new(dtau2, 0.0) * integr_bc[q];
+                }
+            } else {
+                for l in 0..=j {
+                    let lam1_i = lam1_raw[m - l];
+                    let gb_blk = gb_axis.block(j - l);
+                    let gc_blk = gc_axis.block(l);
+                    sandwich(
+                        gb_blk,
+                        d.op3.raw(),
+                        gc_blk,
+                        bdim,
+                        bdim,
+                        cdim,
+                        cdim,
+                        &mut f_bc[l],
+                        scratch,
+                    );
+                    for q in 0..nb_c {
+                        f_bc[l][q] *= lam1_i;
+                    }
+                }
+                let integr_bc = gregory_blk(j, &flatten(&f_bc[..=j]), nb_c, integ);
+                tmp_bc.copy_from_slice(&integr_bc);
+            }
+            let lam2_i = lam2_vt[j];
+            let ga_blk = ga_axis.block(m - j);
+            sandwich(
+                ga_blk,
+                d.op2.raw(),
+                &tmp_bc,
+                adim,
+                adim,
+                bdim,
+                cdim,
+                &mut f_ac[j],
+                scratch,
+            );
+            for q in 0..na_c {
+                f_ac[j][q] *= lam2_i;
+            }
+        }
+        let integr_ac = gregory_blk(m, &flatten(&f_ac[..=m]), na_c, integ);
+        sandwich(
+            d.op1.raw(),
+            &integr_ac,
+            d.op4.raw(),
+            sdim,
+            adim,
+            cdim,
+            sdim,
+            &mut out,
+            scratch,
+        );
+        out
+    }
+}
+
+/// Flatten a slice of block vectors into a contiguous per-point
+/// layout for the block quadrature helpers.
+fn flatten(rows: &[Vec<Complex>]) -> Vec<Complex> {
+    let nel = rows.first().map(|r| r.len()).unwrap_or(0);
+    let mut out = Vec::with_capacity(rows.len() * nel);
+    for r in rows {
+        out.extend_from_slice(r);
+    }
+    out
+}
+
+fn nbc_placeholder() -> usize {
+    0
+}
+
 /// reversals verbatim; the diagram prefactor multiplies every term).
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn add_sigma_tstp_oca(
@@ -1467,6 +2877,13 @@ pub(crate) fn add_sigma_tstp_oca(
     integ: &Integrator,
     pp_sigma: &mut [PseudoGreen],
 ) {
+    // multi-band sectors take the matrix path (blueprint sdiagram_tstp
+    // with matrix types); the scalar fast path below stays P5-gated
+    // for all-1x1 chains
+    if pp_g[d.sa].size1 * pp_g[d.sb].size1 * pp_g[d.sc].size1 > 1 {
+        add_sigma_tstp_oca_matrix(n, d, pp_g, beta, h, kt, integ, pp_sigma);
+        return;
+    }
     debug_assert_eq!(pp_sigma[d.out].size1 * pp_sigma[d.out].size2, 1);
     let mmax = pp_sigma[d.out].ntau as i64;
     let dtau = beta / mmax as f64;
@@ -1693,6 +3110,777 @@ pub(crate) fn add_sigma_tstp_oca(
 /// onto the NCA values of the output timestep (blueprint
 /// `gdiagram_tstp`: vt parts 1-4, les parts 1-3, gtr parts 1-3 with
 /// `G^R = gtr + [G^<]^dag`; the scalar diagram prefactor multiplies
+
+/// Matrix `poly_integral` (blueprint `poly_integral_scalar`: gregory
+/// over the long branch, `xiw` weights over the full zero-padded
+/// array in the interpolation branch).
+fn poly_integral_blk(
+    v: &[Complex],
+    i0: usize,
+    i1: usize,
+    nel: usize,
+    integ: &Integrator,
+) -> Vec<Complex> {
+    let k = integ.k as usize;
+    let mut out = vec![Complex::ZERO; nel];
+    if i1 - i0 > k {
+        for q in 0..nel {
+            let c: Vec<Complex> = (i0..=i1).map(|i| v[i * nel + q]).collect();
+            out[q] = gregory_scalar(i1 - i0, &c, integ);
+        }
+    } else {
+        for q in 0..nel {
+            let mut acc = Complex::ZERO;
+            for j in 0..=k {
+                let w = integ.xiw.at(i0, i1, j);
+                if w != 0.0 {
+                    acc += Complex::new(w, 0.0) * v[j * nel + q];
+                }
+            }
+            out[q] = acc;
+        }
+    }
+    out
+}
+
+/// Matrix lowside contraction with a sandwiched operator
+/// (blueprint `lowside_op_scalar`: `bcw` warmup double sum over
+/// `aa[l] . op . bb[m]`; gregory fold of `aa[j-l] . op . bb[l]`).
+#[allow(clippy::too_many_arguments)]
+fn lowside_op_blk(
+    j: usize,
+    aa: &[Complex],
+    op: &kadanoffbaym::linalg::DenseMat,
+    bb: &[Complex],
+    d1: usize,
+    d2: usize,
+    d3: usize,
+    d4: usize,
+    integ: &Integrator,
+    scratch: &mut Vec<Complex>,
+) -> Vec<Complex> {
+    let k = integ.k as usize;
+    let nela = d1 * d2;
+    let nelb = d3 * d4;
+    let nelo = d1 * d4;
+    let smax = nela.max(nelb).max(nelo);
+    if scratch.len() < smax {
+        scratch.resize(smax, Complex::ZERO);
+    }
+    let mut out = vec![Complex::ZERO; nelo];
+    let mut prod = vec![Complex::ZERO; nelo];
+    if j > 0 && j < k {
+        for l in 0..=k {
+            for m in 0..=k {
+                let w = integ.bcw.at(j, l, m);
+                if w != 0.0 {
+                    sandwich(
+                        &aa[l * nela..],
+                        op.raw(),
+                        &bb[m * nelb..],
+                        d1,
+                        d2,
+                        d3,
+                        d4,
+                        &mut prod,
+                        scratch,
+                    );
+                    for q in 0..nelo {
+                        out[q] += Complex::new(w, 0.0) * prod[q];
+                    }
+                }
+            }
+        }
+    } else if j > 0 {
+        let mut f1 = vec![Complex::ZERO; (j + 1) * nelo];
+        for l in 0..=j {
+            sandwich(
+                &aa[(j - l) * nela..],
+                op.raw(),
+                &bb[l * nelb..],
+                d1,
+                d2,
+                d3,
+                d4,
+                &mut prod,
+                scratch,
+            );
+            f1[l * nelo..(l + 1) * nelo].copy_from_slice(&prod);
+        }
+        out = gregory_blk(j, &f1, nelo, integ);
+    }
+    out
+}
+
+/// Matrix highside contraction with a sandwiched operator
+/// (blueprint `highside_op_scalar`).
+#[allow(clippy::too_many_arguments)]
+fn highside_op_blk(
+    j: usize,
+    aa: &[Complex],
+    op: &kadanoffbaym::linalg::DenseMat,
+    bb: &[Complex],
+    d1: usize,
+    d2: usize,
+    d3: usize,
+    d4: usize,
+    mmax: usize,
+    integ: &Integrator,
+    scratch: &mut Vec<Complex>,
+) -> Vec<Complex> {
+    let k = integ.k as usize;
+    let j1 = mmax - j;
+    let nela = d1 * d2;
+    let nelb = d3 * d4;
+    let nelo = d1 * d4;
+    let smax = nela.max(nelb).max(nelo);
+    if scratch.len() < smax {
+        scratch.resize(smax, Complex::ZERO);
+    }
+    let mut out = vec![Complex::ZERO; nelo];
+    let mut prod = vec![Complex::ZERO; nelo];
+    if j1 > 0 && j1 < k {
+        for l in 0..=k {
+            for m in 0..=k {
+                let w = integ.bcw.at(j1, l, m);
+                if w != 0.0 {
+                    sandwich(
+                        &aa[(mmax - l) * nela..],
+                        op.raw(),
+                        &bb[m * nelb..],
+                        d1,
+                        d2,
+                        d3,
+                        d4,
+                        &mut prod,
+                        scratch,
+                    );
+                    for q in 0..nelo {
+                        out[q] += Complex::new(w, 0.0) * prod[q];
+                    }
+                }
+            }
+        }
+    } else if j1 > 0 {
+        let mut f1 = vec![Complex::ZERO; (j1 + 1) * nelo];
+        for l in 0..=j1 {
+            sandwich(
+                &aa[(mmax - (j1 - l)) * nela..],
+                op.raw(),
+                &bb[l * nelb..],
+                d1,
+                d2,
+                d3,
+                d4,
+                &mut prod,
+                scratch,
+            );
+            f1[l * nelo..(l + 1) * nelo].copy_from_slice(&prod);
+        }
+        out = gregory_blk(j1, &f1, nelo, integ);
+    }
+    out
+}
+
+/// Matrix version of [`add_gf_tstp_oca`] for multi-band sectors
+/// (blueprint `gdiagram_tstp` with matrix types; outputs are traces
+/// written into the 1x1 vertex-GF timestep blocks; the hybridization
+/// insertions stay scalar). Op labels follow the same C++-to-builder
+/// mapping as the mat kernel: the scalar code's `op1`/`op4` are this
+/// diagram's `d.op4`/`d.op1`.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn add_gf_tstp_oca_matrix(
+    n: i64,
+    d: &OcaGfDiagram,
+    pp_g: &[PseudoGreen],
+    beta: f64,
+    h: f64,
+    kt: i64,
+    integ: &Integrator,
+    out: &mut kadanoffbaym::types::GreenTimeStep,
+) {
+    let mmax = out.ntau as i64;
+    let ntau_pts = (mmax + 1) as usize;
+    let n1 = n.max(kt);
+    let n11 = (n1 + 1) as usize;
+    let ga = &pp_g[d.sa];
+    let gb = &pp_g[d.sb];
+    let gc = &pp_g[d.sc];
+    let gd = &pp_g[d.sd];
+    let lam = d.lam;
+    let k = integ.k as usize;
+    let (adim, bdim, cdim, ddim) = (
+        ga.size1 as usize,
+        gb.size1 as usize,
+        gc.size1 as usize,
+        gd.size1 as usize,
+    );
+    let (na, nb, nc, nd) = (adim * adim, bdim * bdim, cdim * cdim, ddim * ddim);
+    let ndc = ddim * cdim;
+    let nda = ddim * adim;
+    let nba = bdim * adim;
+    let pref = Complex::new(d.prefactor, 0.0);
+    let smax = na.max(nb).max(nc).max(nd).max(ndc).max(nda).max(nba);
+    let mut scratch = vec![Complex::ZERO; smax];
+    let mut gdb = vec![Complex::ZERO; nd];
+    let mut gab_b = vec![Complex::ZERO; nb];
+    let mut gcb = vec![Complex::ZERO; nc];
+    let mut gab = vec![Complex::ZERO; na];
+    let mut t_dc = vec![Complex::ZERO; ndc];
+    let mut t_db = vec![Complex::ZERO; ddim * bdim];
+    let mut t_da = vec![Complex::ZERO; nda];
+    let mut t_ba = vec![Complex::ZERO; nba];
+
+    // -- precompute (block-valued)
+    let mut data_a = vec![Complex::ZERO; n11 * ntau_pts * na];
+    let mut data_d = vec![Complex::ZERO; n11 * ntau_pts * nd];
+    for i2 in 0..=n1 {
+        for mu in 0..=mmax {
+            let s = svt(lam, mu, i2);
+            let base = (i2 as usize) * ntau_pts * na + (mu as usize) * na;
+            let mut pv = vec![Complex::ZERO; na];
+            ptv_blk_into(ga, mu, n, adim, &mut pv);
+            for q in 0..na {
+                data_a[base + q] = s * pv[q];
+            }
+        }
+    }
+    for i1 in 0..=n1 {
+        for mu in 0..=mmax {
+            let s = stv(lam, i1, mu);
+            let base = (i1 as usize) * ntau_pts * nd + (mu as usize) * nd;
+            let mut pv = vec![Complex::ZERO; nd];
+            ptv_dir_blk(gd, n, mu, ddim, &mut pv);
+            for q in 0..nd {
+                data_d[base + q] = s * pv[q];
+            }
+        }
+    }
+    let mut gavt = vec![Complex::ZERO; ntau_pts * na];
+    let mut gdtv = vec![Complex::ZERO; ntau_pts * nd];
+    for tau in 0..=mmax {
+        ptv_blk_into(ga, tau, n, adim, &mut gab);
+        gavt[(tau as usize) * na..(tau as usize + 1) * na].copy_from_slice(&gab);
+        ptv_dir_blk(gd, n, tau, ddim, &mut gdb);
+        gdtv[(tau as usize) * nd..(tau as usize + 1) * nd].copy_from_slice(&gdb);
+    }
+
+    let mut f_dc = vec![Complex::ZERO; n11.max(ntau_pts) * ndc];
+    let mut f_dc_ba = vec![Complex::ZERO; n11.max(ntau_pts) * nba];
+    let mut f_da = vec![Complex::ZERO; n11 * nda];
+
+    // -- tv component
+    // hoisted vt(2) matcore buffers (reused across the m loop; the
+    // matcore's inner loops must not allocate)
+    let ga_axis_vt = MatAxis {
+        data: &gavt,
+        d1: adim,
+        d2: adim,
+    };
+    let gb_axis_vt = MatAxis {
+        data: gb.mat.raw(),
+        d1: bdim,
+        d2: bdim,
+    };
+    let gc_axis_vt = MatAxis {
+        data: gc.mat.raw(),
+        d1: cdim,
+        d2: cdim,
+    };
+    let gd_axis_vt = MatAxis {
+        data: &gdtv,
+        d1: ddim,
+        d2: ddim,
+    };
+    let lam_axis_vt = MatAxis {
+        data: lam.mat.raw(),
+        d1: 1,
+        d2: 1,
+    };
+    let mut vt2_lam_i = vec![Complex::ZERO; 1];
+    let mut vt2_scratch = vec![Complex::ZERO; smax];
+    let max_nel_vt = ndc.max(nba).max(nda);
+    let mut vt2_mscratch = GfMatScratch::new(max_nel_vt, k, ddim);
+    for m in 0..=mmax {
+        // vt (1)
+        for i1 in 0..=n1 {
+            for i2 in 0..=n1 {
+                psc_blk_into(gd, n, i2, ddim, &mut gdb);
+                let mut pv = vec![Complex::ZERO; nc];
+                ptv_dir_blk(gc, i2, m, cdim, &mut pv);
+                sandwich(
+                    &gdb,
+                    d.op4.raw(),
+                    &pv,
+                    ddim,
+                    ddim,
+                    cdim,
+                    cdim,
+                    &mut t_dc,
+                    &mut scratch,
+                );
+                let sv = sgtr(lam, i1, i2);
+                for q in 0..ndc {
+                    f_dc[(i2 as usize) * ndc + q] = sv * t_dc[q];
+                }
+            }
+            let integr_dc = gregory_blk(n as usize, &f_dc[..(n1 as usize + 1) * ndc], ndc, integ);
+            let mut pv = vec![Complex::ZERO; nb];
+            ptv_blk_into(gb, m, i1, bdim, &mut pv);
+            sandwich(
+                &integr_dc,
+                d.op2.raw(),
+                &pv,
+                ddim,
+                cdim,
+                bdim,
+                bdim,
+                &mut t_db,
+                &mut scratch,
+            );
+            psc_blk_into(ga, i1, n, adim, &mut gab);
+            sandwich(
+                &t_db,
+                d.op3.raw(),
+                &gab,
+                ddim,
+                bdim,
+                adim,
+                adim,
+                &mut f_da[(i1 as usize) * nda..],
+                &mut scratch,
+            );
+        }
+        let vt1_blk = {
+            let mut v = gregory_blk(n as usize, &f_da[..(n1 as usize + 1) * nda], nda, integ);
+            let c = -Complex::new(h * h, 0.0);
+            for q in &mut v {
+                *q *= c;
+            }
+            v
+        };
+        // vt (2): full mat-core evaluation with the direct (non-flipped)
+        // gd rows and the traced closing product
+        let vt2 = Complex::new(0.0, beta / mmax as f64 * (beta / mmax as f64))
+            * gf_mat_matrix_branch(
+                m as usize,
+                k as usize,
+                mmax as usize,
+                &ga_axis_vt,
+                &gb_axis_vt,
+                &gc_axis_vt,
+                &gd_axis_vt,
+                &lam_axis_vt,
+                d,
+                pp_g[d.sd].sign.as_i64() as f64,
+                false,
+                integ,
+                &mut vt2_lam_i,
+                &mut vt2_scratch,
+                &mut vt2_mscratch,
+            );
+        // vt (3)
+        for i2 in 0..=n1 {
+            let row = &data_a[(i2 as usize) * ntau_pts * na..];
+            let conv_ba = lowside_op_blk(
+                m as usize,
+                gb.mat.raw(),
+                &d.op3,
+                row,
+                bdim,
+                bdim,
+                adim,
+                adim,
+                integ,
+                &mut scratch,
+            );
+            psc_blk_into(gd, n, i2, ddim, &mut gdb);
+            let mut pv = vec![Complex::ZERO; nc];
+            ptv_dir_blk(gc, i2, m, cdim, &mut pv);
+            sandwich(
+                &gdb,
+                d.op4.raw(),
+                &pv,
+                ddim,
+                ddim,
+                cdim,
+                cdim,
+                &mut t_dc,
+                &mut scratch,
+            );
+            sandwich(
+                &t_dc,
+                d.op2.raw(),
+                &conv_ba,
+                ddim,
+                cdim,
+                bdim,
+                adim,
+                &mut f_da[(i2 as usize) * nda..],
+                &mut scratch,
+            );
+        }
+        let vt3_blk = {
+            let mut v = gregory_blk(n as usize, &f_da[..(n1 as usize + 1) * nda], nda, integ);
+            let c = Complex::new(h * beta / mmax as f64, 0.0);
+            for q in &mut v {
+                *q *= c;
+            }
+            v
+        };
+        // vt (4)
+        for i1 in 0..=n1 {
+            let row = &data_d[(i1 as usize) * ntau_pts * nd..];
+            let conv_dc = highside_op_blk(
+                m as usize,
+                row,
+                &d.op4,
+                gc.mat.raw(),
+                ddim,
+                ddim,
+                cdim,
+                cdim,
+                mmax as usize,
+                integ,
+                &mut scratch,
+            );
+            let mut pv = vec![Complex::ZERO; nb];
+            ptv_blk_into(gb, m, i1, bdim, &mut pv);
+            sandwich(
+                &conv_dc,
+                d.op2.raw(),
+                &pv,
+                ddim,
+                cdim,
+                bdim,
+                bdim,
+                &mut t_db,
+                &mut scratch,
+            );
+            psc_blk_into(ga, i1, n, adim, &mut gab);
+            sandwich(
+                &t_db,
+                d.op3.raw(),
+                &gab,
+                ddim,
+                bdim,
+                adim,
+                adim,
+                &mut f_da[(i1 as usize) * nda..],
+                &mut scratch,
+            );
+        }
+        let vt4_blk = {
+            let mut v = gregory_blk(n as usize, &f_da[..(n1 as usize + 1) * nda], nda, integ);
+            let c = -Complex::new(h * beta / mmax as f64, 0.0);
+            for q in &mut v {
+                *q *= c;
+            }
+            v
+        };
+        // total: vt2 (complete, incl. the traced closing) plus the traced
+        // (vt1+vt3+vt4) . op1 chain
+        let mut sum_blk = vec![Complex::ZERO; nda];
+        for q in 0..nda {
+            sum_blk[q] = vt1_blk[q] + vt3_blk[q] + vt4_blk[q];
+        }
+        let total = vt2 + trace_close_op(&sum_blk, &d.op1, ddim, adim);
+        out.lmix.raw_block_at_mut(0, mmax - m)[0] += pref * total.conj();
+    }
+
+    // -- les component
+    let mut g_les = vec![Complex::ZERO; (n + 1) as usize];
+    for j in 0..=n {
+        let i2min = j.min(n1 - kt);
+        for i2 in i2min..=n1 {
+            // les (1)
+            for i1 in 0..=n1 {
+                pls_blk_into(gb, j, i1, bdim, &mut gab_b);
+                psc_blk_into(ga, i1, n, adim, &mut gab);
+                sandwich(
+                    &gab_b,
+                    d.op3.raw(),
+                    &gab,
+                    bdim,
+                    bdim,
+                    adim,
+                    adim,
+                    &mut t_ba,
+                    &mut scratch,
+                );
+                let sv = sgtr(lam, i1, i2);
+                for q in 0..nba {
+                    f_dc_ba[(i1 as usize) * nba + q] = sv * t_ba[q];
+                }
+            }
+            let les1_blk = {
+                let mut v =
+                    gregory_blk(n as usize, &f_dc_ba[..(n1 as usize + 1) * nba], nba, integ);
+                let c = -Complex::new(h, 0.0);
+                for q in &mut v {
+                    *q *= c;
+                }
+                v
+            };
+            // les (2)
+            for mu in 0..=mmax {
+                let mut pv_b = vec![Complex::ZERO; nb];
+                ptv_dir_blk(gb, j, mu, bdim, &mut pv_b);
+                let mut pv_a = vec![Complex::ZERO; na];
+                ptv_blk_into(ga, mu, n, adim, &mut pv_a);
+                sandwich(
+                    &pv_b,
+                    d.op3.raw(),
+                    &pv_a,
+                    bdim,
+                    bdim,
+                    adim,
+                    adim,
+                    &mut t_ba,
+                    &mut scratch,
+                );
+                let sv = svt(lam, mu, i2);
+                for q in 0..nba {
+                    f_dc_ba[(mu as usize) * nba + q] = sv * t_ba[q];
+                }
+            }
+            let les2_blk = {
+                let mut v = gregory_blk(mmax as usize, &f_dc_ba[..ntau_pts * nba], nba, integ);
+                let c = -Complex::new(0.0, beta / mmax as f64);
+                for q in &mut v {
+                    *q *= c;
+                }
+                v
+            };
+            // les (3)
+            let i1max = j.max(kt);
+            for i1 in 0..=i1max {
+                psc_blk_into(gb, j, i1, bdim, &mut gab_b);
+                pls_blk_into(ga, i1, n, adim, &mut gab);
+                sandwich(
+                    &gab_b,
+                    d.op3.raw(),
+                    &gab,
+                    bdim,
+                    bdim,
+                    adim,
+                    adim,
+                    &mut t_ba,
+                    &mut scratch,
+                );
+                let sv = sles(lam, i1, i2);
+                for q in 0..nba {
+                    f_dc_ba[(i1 as usize) * nba + q] = sv * t_ba[q];
+                }
+            }
+            let les3_blk = {
+                let mut v = gregory_blk(
+                    j as usize,
+                    &f_dc_ba[..((i1max + 1) as usize) * nba],
+                    nba,
+                    integ,
+                );
+                let c = Complex::new(h, 0.0);
+                for q in &mut v {
+                    *q *= c;
+                }
+                v
+            };
+            let mut sum_ba = vec![Complex::ZERO; nba];
+            for q in 0..nba {
+                sum_ba[q] = les1_blk[q] + les2_blk[q] + les3_blk[q];
+            }
+            psc_blk_into(gd, n, i2, ddim, &mut gdb);
+            psc_blk_into(gc, i2, j, cdim, &mut gcb);
+            sandwich(
+                &gdb,
+                d.op4.raw(),
+                &gcb,
+                ddim,
+                ddim,
+                cdim,
+                cdim,
+                &mut t_dc,
+                &mut scratch,
+            );
+            sandwich(
+                &t_dc,
+                d.op2.raw(),
+                &sum_ba,
+                ddim,
+                cdim,
+                bdim,
+                adim,
+                &mut f_da[((i2 - i2min) as usize) * nda..],
+                &mut scratch,
+            );
+        }
+        let integr_da = poly_integral_blk(
+            &f_da,
+            (j - i2min) as usize,
+            (n - i2min) as usize,
+            nda,
+            integ,
+        );
+        g_les[j as usize] =
+            pref * Complex::new(h, 0.0) * trace_close_op(&integr_da, &d.op1, ddim, adim);
+        out.less.block_mut(out.less.idx(j, n))[0] += g_les[j as usize];
+    }
+
+    // -- ret component (gtr parts + les^dag)
+    for j in 0..=n {
+        let i1min = j.min(n1 - kt);
+        for i1 in i1min..=n1 {
+            // gtr (1)
+            for i2 in 0..=n1 {
+                pls_blk_into(gd, j, i2, ddim, &mut gdb);
+                psc_blk_into(gc, i2, n, cdim, &mut gcb);
+                sandwich(
+                    &gdb,
+                    d.op4.raw(),
+                    &gcb,
+                    ddim,
+                    ddim,
+                    cdim,
+                    cdim,
+                    &mut t_dc,
+                    &mut scratch,
+                );
+                let sv = sles(lam, i1, i2);
+                for q in 0..ndc {
+                    f_dc[(i2 as usize) * ndc + q] = sv * t_dc[q];
+                }
+            }
+            let gtr1_blk = {
+                let mut v = gregory_blk(n as usize, &f_dc[..(n1 as usize + 1) * ndc], ndc, integ);
+                let c = -Complex::new(h, 0.0);
+                for q in &mut v {
+                    *q *= c;
+                }
+                v
+            };
+            // gtr (2)
+            for mu in 0..=mmax {
+                let mut pv_d = vec![Complex::ZERO; nd];
+                ptv_dir_blk(gd, j, mu, ddim, &mut pv_d);
+                let mut pv_c = vec![Complex::ZERO; nc];
+                ptv_blk_into(gc, mu, n, cdim, &mut pv_c);
+                sandwich(
+                    &pv_d,
+                    d.op4.raw(),
+                    &pv_c,
+                    ddim,
+                    ddim,
+                    cdim,
+                    cdim,
+                    &mut t_dc,
+                    &mut scratch,
+                );
+                let sv = stv(lam, i1, mu);
+                for q in 0..ndc {
+                    f_dc[(mu as usize) * ndc + q] = sv * t_dc[q];
+                }
+            }
+            let gtr2_blk = {
+                let mut v = gregory_blk(mmax as usize, &f_dc[..ntau_pts * ndc], ndc, integ);
+                let c = -Complex::new(0.0, beta / mmax as f64);
+                for q in &mut v {
+                    *q *= c;
+                }
+                v
+            };
+            // gtr (3)
+            let i2max = j.max(kt);
+            for i2 in 0..=i2max {
+                psc_blk_into(gd, j, i2, ddim, &mut gdb);
+                pls_blk_into(gc, i2, n, cdim, &mut gcb);
+                sandwich(
+                    &gdb,
+                    d.op4.raw(),
+                    &gcb,
+                    ddim,
+                    ddim,
+                    cdim,
+                    cdim,
+                    &mut t_dc,
+                    &mut scratch,
+                );
+                let sv = sgtr(lam, i1, i2);
+                for q in 0..ndc {
+                    f_dc[(i2 as usize) * ndc + q] = sv * t_dc[q];
+                }
+            }
+            let gtr3_blk = {
+                let mut v = gregory_blk(
+                    j as usize,
+                    &f_dc[..((i2max + 1) as usize) * ndc],
+                    ndc,
+                    integ,
+                );
+                let c = Complex::new(h, 0.0);
+                for q in &mut v {
+                    *q *= c;
+                }
+                v
+            };
+            let mut sum_dc = vec![Complex::ZERO; ndc];
+            for q in 0..ndc {
+                sum_dc[q] = gtr1_blk[q] + gtr2_blk[q] + gtr3_blk[q];
+            }
+            psc_blk_into(gb, n, i1, bdim, &mut gab_b);
+            sandwich(
+                &sum_dc,
+                d.op2.raw(),
+                &gab_b,
+                ddim,
+                cdim,
+                bdim,
+                bdim,
+                &mut t_db,
+                &mut scratch,
+            );
+            psc_blk_into(ga, i1, j, adim, &mut gab);
+            sandwich(
+                &t_db,
+                d.op3.raw(),
+                &gab,
+                ddim,
+                bdim,
+                adim,
+                adim,
+                &mut f_da[((i1 - i1min) as usize) * nda..],
+                &mut scratch,
+            );
+        }
+        let integr_da = poly_integral_blk(
+            &f_da,
+            (j - i1min) as usize,
+            (n - i1min) as usize,
+            nda,
+            integ,
+        );
+        let val = pref * Complex::new(h, 0.0) * trace_close_op(&integr_da, &d.op1, ddim, adim)
+            + g_les[j as usize].conj();
+        out.ret.block_mut(out.ret.idx(n, j))[0] += val;
+    }
+}
+
+/// Trace of `(m . op)` for the closing `sd --op1--> sa` product:
+/// `m` is `(ddim x adim)` row-major, `op` is `(adim x ddim)`.
+fn trace_close_op(
+    m: &[Complex],
+    op: &kadanoffbaym::linalg::DenseMat,
+    ddim: usize,
+    adim: usize,
+) -> Complex {
+    let mut tr = Complex::ZERO;
+    for r in 0..ddim {
+        for q in 0..adim {
+            tr += m[r * adim + q] * op.get(q, r);
+        }
+    }
+    tr
+}
 /// every term).
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn add_gf_tstp_oca(
@@ -1705,6 +3893,13 @@ pub(crate) fn add_gf_tstp_oca(
     integ: &Integrator,
     out: &mut kadanoffbaym::types::GreenTimeStep,
 ) {
+    // multi-band sectors take the matrix path (blueprint gdiagram_tstp
+    // with matrix types); the scalar fast path below stays P5-gated
+    // for all-1x1 chains
+    if pp_g[d.sa].size1 * pp_g[d.sb].size1 * pp_g[d.sc].size1 * pp_g[d.sd].size1 > 1 {
+        add_gf_tstp_oca_matrix(n, d, pp_g, beta, h, kt, integ, out);
+        return;
+    }
     debug_assert_eq!(out.size1 * out.size2, 1);
     let mmax = out.ntau as i64;
     let ntau_pts = (mmax + 1) as usize;
