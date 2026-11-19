@@ -9,6 +9,7 @@ use crate::io::{dens_pp_mu_line, pp_dens_pp_mu_line};
 use crate::nca::{self, GfVertex, Hybridization, adjoint_raw};
 use crate::oca;
 use crate::xca;
+use crate::xca_rt;
 use kadanoffbaym::basics::set_t0_from_mat_pseudo;
 use kadanoffbaym::complex::Complex;
 use kadanoffbaym::dyson::{pseudo_dyson_mat, pseudo_dyson_start, pseudo_dyson_timestep};
@@ -29,6 +30,37 @@ use kadanoffbaym::weights::Integrator;
 /// ntau + 1` (the number of POINTS), which resolves those expressions
 /// to the clean grid.
 pub struct ImpuritySolver {
+    /// Route the real-time order-2 self-energy through the XCA
+    /// backbones (`xca_rt::eval2`, the calibrated equivalent of the
+    /// OCA kernel). Plumbing/verification switch; default false.
+    pub rt_xca_m2: bool,
+    /// m=1 real-time Sigma through the rt-XCA machinery (eval1) for
+    /// BOTH the fermion NCA diagrams AND the Holstein boson
+    /// diagrams - the m=1 anchor is machine-calibrated (eval1 ==
+    /// NCA at 1.2e-6); makes order=1+Holstein independent of
+    /// nca::set_sigma_tstp / add_boson_sigma_tstp.
+    pub rt_xca_m1: bool,
+    /// Enable real-time XCA orders >= 3 through the validated
+    /// block-cut component families (xca_rt::evalfam2). Fermionic
+    /// channels only.
+    ///
+    /// KNOWN BOUNDARIES (see xca_rt::evalfam2 for details):
+    /// - Fit-resolvable grids: the fit window nt*h must resolve the
+    ///   bath structure. A too-short window returns garbage poles
+    ///   whose kernel factors e^{-w tau} are then extrapolated
+    ///   exponentially over the full Matsubara axis.
+    /// - The backward-channel greater component is genuinely
+    ///   TWO-pole structured; use rt_xca_poles >= 2 when the
+    ///   backward sectors dominate.
+    /// - The all-imaginary les cut's reversed vertex pairing is
+    ///   anchored against the reference kernel for TWO internal
+    ///   vertices (order 2). The order-3 all-I cut uses the FORWARD
+    ///   walk - ED-ADJUDICATED. XCA_M3_REV=1 selects the reversed
+    ///   variant for comparison studies.
+    pub rt_xca_m3: bool,
+    /// Pole budget for the real-time XCA fits (cost knob: every
+    /// pole costs poles^m in the diagram sums).
+    pub rt_xca_poles: usize,
     pub nt: usize,
     pub ntau: usize,
     pub beta: f64,
@@ -90,6 +122,10 @@ impl ImpuritySolver {
             })
             .collect();
         let mut solver = ImpuritySolver {
+            rt_xca_m2: false,
+            rt_xca_m1: false,
+            rt_xca_m3: false,
+            rt_xca_poles: crate::xca::MAX_POLES_DEFAULT,
             nt,
             ntau,
             beta,
@@ -116,9 +152,13 @@ impl ImpuritySolver {
     /// in [`Self::update_sigma`].
     pub fn set_boson_bath(&mut self, bath: Option<crate::nca::BosonBath>) {
         if bath.is_some() {
+            // order >= 3 rides the mixed rt-XCA path (anchored vs
+            // the stock at m=2; the m=3 anchors: separated==direct
+            // 5.4e-6, mixed greater 0.26%, les coupling classes
+            // 8/16/64 machine - memory #2575)
             assert!(
-                self.order <= 2,
-                "set_boson_bath: the Holstein boson bath supports NCA/OCA (orders 1-2) only"
+                self.order <= 2 || self.rt_xca_m3,
+                "set_boson_bath: order >= 3 requires rt_xca_m3"
             );
         }
         self.boson = bath;
@@ -362,34 +402,372 @@ impl ImpuritySolver {
             }
         } else {
             assert!(
-                self.order <= 2,
+                self.order <= 2 || self.rt_xca_m3,
                 "update_sigma: real-time steps support NCA/OCA only; \
-                 XCA orders >= 3 are Matsubara-axis only"
+                 XCA orders >= 3 need rt_xca_m3 (block-cut families)"
             );
-            nca::set_sigma_tstp(tstp, &self.hs, &self.pp_g, pp_ints, &mut self.pp_sigma);
-            if let Some(bath) = &self.boson {
-                nca::add_boson_sigma_tstp(tstp, bath, &self.pp_g, &mut self.pp_sigma);
-            }
-            if self.order == 2 {
-                let channels = oca::channels_with_bath(pp_ints, self.boson.as_ref());
-                let diagrams = oca::build_sigma_diagrams_oca_channels(&self.hs, &channels);
-                let integ = Integrator::new(self.kt as i64);
+            if self.rt_xca_m1 {
+                // m=1 through the rt-XCA machinery: the fermion NCA
+                // diagrams and the Holstein boson diagrams BOTH
+                // through eval1 (fits per delta)
+                //
+                // fresh timestep: zero the touched rows (the
+                // stock set_sigma_tstp semantics; the xca
+                // evaluators accumulate only)
+                for si in 0..self.hs.ns() {
+                    for j in 0..=tstp {
+                        for z in self.pp_sigma[si].ret.raw_block_at_mut(tstp, j) {
+                            *z = Complex::ZERO;
+                        }
+                        for z in self.pp_sigma[si].less.raw_block_at_mut(j, tstp) {
+                            *z = Complex::ZERO;
+                        }
+                    }
+                    for m in 0..=(self.pp_sigma[si].ntau as i64) {
+                        for z in self.pp_sigma[si].lmix.raw_block_at_mut(tstp, m) {
+                            *z = Complex::ZERO;
+                        }
+                    }
+                }
+
+                let diagrams = nca::build_sigma_diagrams(&self.hs, pp_ints);
+                let fits = xca_rt::fit_channels_rt(
+                    pp_ints,
+                    self.h,
+                    self.nt,
+                    xca::MAX_POLES_DEFAULT,
+                    xca::W_MAX_DEFAULT,
+                );
                 let pp_g = &self.pp_g;
+                let h = self.h;
+                for d in &diagrams {
+                    let i1 = pp_ints
+                        .iter()
+                        .position(|c| std::ptr::eq(c.delta, d.delta))
+                        .unwrap_or(0);
+                    xca_rt::eval1::add_sigma_tstp_xca1(
+                        tstp,
+                        d,
+                        pp_g,
+                        h,
+                        &fits[i1],
+                        &mut self.pp_sigma,
+                    );
+                }
+                if let Some(bath) = &self.boson {
+                    let mut d0_cc = bath.d0_cc.clone();
+                    for m in 0..=(self.ntau as i64) {
+                        let v = bath.d0.lmix.raw_block_at(0, m)[0];
+                        d0_cc.lmix.raw_block_at_mut(0, self.ntau as i64 - m)[0] = -v.conj();
+                    }
+                    d0_cc.less.block_mut(d0_cc.less.idx(0, 0))[0] = bath.d0.ret.raw_block_at(0, 0)
+                        [0]
+                        - bath.d0.less.raw_block_at(0, 0)[0].conj();
+                    let d0fit = xca_rt::fit_one_delta_rt(
+                        &bath.d0,
+                        self.h,
+                        self.nt,
+                        xca::MAX_POLES_DEFAULT,
+                        xca::W_MAX_DEFAULT,
+                    );
+                    // the boson diagrams reference the ORIGINAL
+                    // bath deltas; eval1 reads through the fit only,
+                    // so rebuild the diagram set against the FILLED
+                    // d0_cc by hand (the structure is trivial)
+                    for delta in [&bath.d0, &d0_cc] {
+                        for (sb, blk) in &bath.blocks {
+                            let d = nca::SigmaDiagram {
+                                out: *sb,
+                                sa: *sb,
+                                delta,
+                                op1: blk.clone(),
+                                op2: blk.clone(),
+                                prefactor: Complex::I,
+                            };
+                            xca_rt::eval1::add_sigma_tstp_xca1(
+                                tstp,
+                                &d,
+                                pp_g,
+                                h,
+                                &d0fit,
+                                &mut self.pp_sigma,
+                            );
+                        }
+                    }
+                }
+            } else {
+                nca::set_sigma_tstp(tstp, &self.hs, &self.pp_g, pp_ints, &mut self.pp_sigma);
+                if let Some(bath) = &self.boson {
+                    nca::add_boson_sigma_tstp(tstp, bath, &self.pp_g, &mut self.pp_sigma);
+                }
+            }
+            if self.order >= 2 {
+                if self.rt_xca_m2 && self.order == 2 {
+                    // NOTE: add-on-top semantics - the NCA base
+                    // (set_sigma_tstp with its own zeroing) runs
+                    // before this branch in the order>=2 flow; do
+                    // NOT zero here (that wipes the NCA base)
+                    //
+                    // order-2 through the real-time XCA backbones
+                    // (calibrated equivalent of the OCA kernel; see
+                    // xca_rt::eval2). With a boson bath the MIXED
+                    // diagram set (channels_with_bath) runs through
+                    // eval2 as well: the boson-walk diagrams are
+                    // machine-anchored against the stock
+                    // (rt_m2_holstein_anchor_vs_stock). The d0_cc's
+                    // t=0 row - left unfilled by the production
+                    // constructor - is filled locally per the same
+                    // convention (bwd^tv(0, N-m) = -fwd(0,m)^dag, the
+                    // (0,0) contact).
+                    let mut fits = xca_rt::fit_channels_rt(
+                        pp_ints,
+                        self.h,
+                        self.nt,
+                        xca::MAX_POLES_DEFAULT,
+                        xca::W_MAX_DEFAULT,
+                    );
+                    if let Some(bath) = &self.boson {
+                        let mut d0_cc = bath.d0_cc.clone();
+                        for m in 0..=(self.ntau as i64) {
+                            let v = bath.d0.lmix.raw_block_at(0, m)[0];
+                            d0_cc.lmix.raw_block_at_mut(0, self.ntau as i64 - m)[0] = -v.conj();
+                        }
+                        d0_cc.less.block_mut(d0_cc.less.idx(0, 0))[0] =
+                            bath.d0.ret.raw_block_at(0, 0)[0]
+                                - bath.d0.less.raw_block_at(0, 0)[0].conj();
+                        let bfit = xca_rt::fit_one_delta_rt(
+                            &bath.d0,
+                            self.h,
+                            self.nt,
+                            xca::MAX_POLES_DEFAULT,
+                            xca::W_MAX_DEFAULT,
+                        );
+                        fits.push(bfit.clone());
+                        fits.push(bfit);
+                        let mut channels: Vec<oca::OcaChannel> = pp_ints
+                            .iter()
+                            .map(|h| oca::OcaChannel {
+                                delta: h.delta,
+                                fermion: true,
+                                backward: h.backward,
+                                ann: oca::VertSrc::Flavor(h.op_ann_fl),
+                                cre: oca::VertSrc::Flavor(h.op_cre_fl),
+                            })
+                            .collect();
+                        channels.push(oca::OcaChannel {
+                            delta: &bath.d0,
+                            fermion: false,
+                            backward: false,
+                            ann: oca::VertSrc::Diag(&bath.blocks),
+                            cre: oca::VertSrc::Diag(&bath.blocks),
+                        });
+                        channels.push(oca::OcaChannel {
+                            delta: &d0_cc,
+                            fermion: false,
+                            backward: true,
+                            ann: oca::VertSrc::Diag(&bath.blocks),
+                            cre: oca::VertSrc::Diag(&bath.blocks),
+                        });
+                        let diagrams = oca::build_sigma_diagrams_oca_channels(&self.hs, &channels);
+                        let integ = Integrator::new(self.kt as i64);
+                        let pp_g = &self.pp_g;
+                        let beta = self.beta;
+                        let h = self.h;
+                        let kt = self.kt as i64;
+                        for d in &diagrams {
+                            let i1 = channels
+                                .iter()
+                                .position(|c| std::ptr::eq(c.delta, d.lam1))
+                                .unwrap_or(0);
+                            let i2 = channels
+                                .iter()
+                                .position(|c| std::ptr::eq(c.delta, d.lam2))
+                                .unwrap_or(0);
+                            xca_rt::add_sigma_tstp_xca2(
+                                tstp,
+                                d,
+                                pp_g,
+                                beta,
+                                h,
+                                kt,
+                                &integ,
+                                &fits[i1.min(fits.len() - 1)],
+                                &fits[i2.min(fits.len() - 1)],
+                                &mut self.pp_sigma,
+                            );
+                        }
+                    } else {
+                        let diagrams = oca::build_sigma_diagrams_oca(&self.hs, pp_ints);
+                        let integ = Integrator::new(self.kt as i64);
+                        let pp_g = &self.pp_g;
+                        let beta = self.beta;
+                        let h = self.h;
+                        let kt = self.kt as i64;
+                        for d in &diagrams {
+                            let i1 = pp_ints
+                                .iter()
+                                .position(|c| std::ptr::eq(c.delta, d.lam1))
+                                .unwrap_or(0);
+                            let i2 = pp_ints
+                                .iter()
+                                .position(|c| std::ptr::eq(c.delta, d.lam2))
+                                .unwrap_or(0);
+                            xca_rt::add_sigma_tstp_xca2(
+                                tstp,
+                                d,
+                                pp_g,
+                                beta,
+                                h,
+                                kt,
+                                &integ,
+                                &fits[i1],
+                                &fits[i2],
+                                &mut self.pp_sigma,
+                            );
+                        }
+                    }
+                } else {
+                    let channels = oca::channels_with_bath(pp_ints, self.boson.as_ref());
+                    let diagrams = oca::build_sigma_diagrams_oca_channels(&self.hs, &channels);
+                    let integ = Integrator::new(self.kt as i64);
+                    let pp_g = &self.pp_g;
+                    let beta = self.beta;
+                    let h = self.h;
+                    let kt = self.kt as i64;
+                    for d in &diagrams {
+                        if std::env::var("NQIST_SKIP_OCA_SIGMA").is_err() {
+                            oca::add_sigma_tstp_oca(
+                                tstp,
+                                d,
+                                pp_g,
+                                beta,
+                                h,
+                                kt,
+                                &integ,
+                                &mut self.pp_sigma,
+                            );
+                        }
+                    }
+                }
+            }
+            if self.order >= 3 {
+                assert!(self.rt_xca_m3);
+                // real-time XCA orders 3..=order via the block-cut
+                // component families (greater/les/mix), all three
+                // output components per anchor point. With a boson
+                // bath the MIXED channels ride the same evaluator
+                // (anchored vs the stock at m=2; the m=3 anchors:
+                // separated==direct 5.4e-6, mixed greater 0.26%, les
+                // coupling classes 8/16/64 machine - memory #2575)
+                let integ = Integrator::new(self.kt as i64);
+                let mut fits = xca_rt::fit_channels_rt_ext(
+                    pp_ints,
+                    self.h,
+                    self.nt,
+                    self.rt_xca_poles,
+                    xca::W_MAX_DEFAULT,
+                );
+                // the boson channels (d0 fwd + the row-0-filled
+                // d0_cc) share the FORWARD d0 fit (the copy
+                // structure)
+                if let Some(bath) = &self.boson {
+                    let bfit = xca_rt::fit_one_delta_rt(
+                        &bath.d0,
+                        self.h,
+                        self.nt,
+                        self.rt_xca_poles,
+                        xca::W_MAX_DEFAULT,
+                    );
+                    fits.push(bfit.clone());
+                    fits.push(bfit);
+                }
                 let beta = self.beta;
                 let h = self.h;
                 let kt = self.kt as i64;
-                for d in &diagrams {
-                    if std::env::var("NQIST_SKIP_OCA_SIGMA").is_err() {
-                        oca::add_sigma_tstp_oca(
-                            tstp,
-                            d,
-                            pp_g,
+                let dtau = beta / self.ntau as f64;
+                let ntau = self.ntau as i64;
+                let ns = self.hs.ns();
+                let chan_deltas: Vec<&kadanoffbaym::types::ContourGreen> =
+                    if let Some(bath) = &self.boson {
+                        let nf = pp_ints.len();
+                        let mut v: Vec<&kadanoffbaym::types::ContourGreen> =
+                            (0..nf).map(|c| pp_ints[c].delta).collect();
+                        v.push(&bath.d0);
+                        v.push(&bath.d0_cc);
+                        v
+                    } else {
+                        (0..pp_ints.len()).map(|c| pp_ints[c].delta).collect()
+                    };
+                let proj: Vec<_> = (0..chan_deltas.len())
+                    .map(|c| {
+                        xca_rt::fit::csoe_project_all(
+                            chan_deltas[c],
+                            &fits[c],
                             beta,
+                            dtau,
                             h,
+                            self.nt,
+                            self.ntau,
+                        )
+                    })
+                    .collect();
+                use xca_rt::evalfam2::{Anchor, sigma_cuts_m};
+                for m in 3..=self.order {
+                    for j in 0..=tstp {
+                        let g = sigma_cuts_m(
+                            m,
+                            &self.hs,
+                            pp_ints,
+                            self.boson.as_ref(),
+                            &proj,
+                            &self.pp_g,
+                            &Anchor::JUpper(j),
+                            tstp,
+                            h,
+                            beta,
+                            dtau,
                             kt,
                             &integ,
-                            &mut self.pp_sigma,
                         );
+                        let l = sigma_cuts_m(
+                            m,
+                            &self.hs,
+                            pp_ints,
+                            self.boson.as_ref(),
+                            &proj,
+                            &self.pp_g,
+                            &Anchor::JLower(j),
+                            tstp,
+                            h,
+                            beta,
+                            dtau,
+                            kt,
+                            &integ,
+                        );
+                        for si in 0..ns {
+                            self.pp_sigma[si].ret.raw_block_at_mut(tstp, j)[0] += g[si];
+                            self.pp_sigma[si].less.raw_block_at_mut(j, tstp)[0] += l[si];
+                        }
+                    }
+                    for mu in 0..=ntau {
+                        let mx = sigma_cuts_m(
+                            m,
+                            &self.hs,
+                            pp_ints,
+                            self.boson.as_ref(),
+                            &proj,
+                            &self.pp_g,
+                            &Anchor::Tau(mu),
+                            tstp,
+                            h,
+                            beta,
+                            dtau,
+                            kt,
+                            &integ,
+                        );
+                        for si in 0..ns {
+                            self.pp_sigma[si].lmix.raw_block_at_mut(tstp, ntau - mu)[0] += mx[si];
+                        }
                     }
                 }
             }

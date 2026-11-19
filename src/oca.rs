@@ -186,7 +186,12 @@ pub(crate) enum VertSrc<'a> {
 }
 
 impl VertSrc<'_> {
-    fn block<'x>(&'x self, hs: &'x HilbertSpace, sector: usize) -> Option<(usize, &'x DenseMat)> {
+    // pub(crate) for the XCA_INTDUMP channel-enumeration audit driver
+    pub(crate) fn block<'x>(
+        &'x self,
+        hs: &'x HilbertSpace,
+        sector: usize,
+    ) -> Option<(usize, &'x DenseMat)> {
         match self {
             VertSrc::Flavor(f) => hs.ops[*f].block(sector).map(|(s, m)| (*s, m)),
             VertSrc::Diag(list) => list
@@ -210,8 +215,7 @@ pub(crate) struct OcaChannel<'a> {
 /// The boson channels of a Holstein [`BosonBath`] (forward/backward;
 /// the diagonal vertex acts as both the annihilation and the creation
 /// insertion).
-/// Fermion-only convenience wrapper (test callers).
-#[cfg(test)]
+/// Fermion-only convenience wrapper (test callers, xca_rt).
 pub(crate) fn build_sigma_diagrams_oca<'a>(
     hs: &HilbertSpace,
     pp_ints: &[Hybridization<'a>],
@@ -1438,7 +1442,7 @@ fn pvt(pp: &PseudoGreen, tau: i64, t: i64) -> Complex {
 }
 
 #[inline]
-fn gregory_scalar(n: usize, v: &[Complex], integ: &Integrator) -> Complex {
+pub(crate) fn gregory_scalar(n: usize, v: &[Complex], integ: &Integrator) -> Complex {
     // blueprint gregory_sum: for n < k+1 the warmup weights row spans
     // ALL k+1 nodes (degree-k exact integration), so the sum runs to
     // max(n, k) — not n
@@ -1456,7 +1460,12 @@ fn gregory_scalar(n: usize, v: &[Complex], integ: &Integrator) -> Complex {
 /// `poly_integral` blueprint on scalars: straight sub-interval Gregory,
 /// or polynomial interpolation weights over the nodes `0..=kt` when
 /// the interval is short.
-fn poly_integral_scalar(v: &[Complex], i0: usize, i1: usize, integ: &Integrator) -> Complex {
+pub(crate) fn poly_integral_scalar(
+    v: &[Complex],
+    i0: usize,
+    i1: usize,
+    integ: &Integrator,
+) -> Complex {
     let k = integ.k as usize;
     if i1 - i0 > k {
         gregory_scalar(i1 - i0, &v[i0..=i1], integ)
@@ -1474,7 +1483,13 @@ fn poly_integral_scalar(v: &[Complex], i0: usize, i1: usize, integ: &Integrator)
 
 /// `convolution2b` blueprint on a scalar `(i1, i2)` triangle matrix
 /// (row-major, first index x second, stride n11).
-fn conv2b_scalar(data: &[Complex], n11: usize, j: usize, nn: usize, integ: &Integrator) -> Complex {
+pub(crate) fn conv2b_scalar(
+    data: &[Complex],
+    n11: usize,
+    j: usize,
+    nn: usize,
+    integ: &Integrator,
+) -> Complex {
     let k = integ.k as usize;
     let i1max = nn.max(k);
     let mut i1min = i1max - k;
@@ -1496,7 +1511,12 @@ fn conv2b_scalar(data: &[Complex], n11: usize, j: usize, nn: usize, integ: &Inte
 
 /// `matsubara_convolution_lowside` blueprint (no operator):
 /// `c = int_0^j a(j-x) b(x) dx`, warmup via `rcorr` (bcw).
-fn lowside_scalar(j: usize, aa: &[Complex], bb: &[Complex], integ: &Integrator) -> Complex {
+pub(crate) fn lowside_scalar(
+    j: usize,
+    aa: &[Complex],
+    bb: &[Complex],
+    integ: &Integrator,
+) -> Complex {
     let k = integ.k as usize;
     if j > 0 && j < k {
         let mut out = Complex::ZERO;
@@ -1588,7 +1608,7 @@ fn highside_op_scalar(
 /// Scalar core of `sdiagram_mat_integral` over plain slices (grid
 /// units), so the real-time `vt (3)` block can substitute the
 /// `lam2^vt(., n)` and `gc^vt(., n)` arrays.
-fn sigma_mat_core(
+pub(crate) fn sigma_mat_core(
     m: usize,
     ga: &[Complex],
     gb: &[Complex],
