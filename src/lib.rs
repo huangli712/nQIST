@@ -15,6 +15,7 @@
 
 pub mod boson;
 pub mod dmft;
+pub mod ed;
 pub mod hamilton;
 pub mod hilbert;
 pub mod io;
