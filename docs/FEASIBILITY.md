@@ -1068,3 +1068,370 @@ Merged as an UNCOMMITTED working tree at session close (the
 no-auto-commit rule; awaiting the user's commit decision).
 /tmp/nqist-rt remains as the campaign archive (this report now also
 lives at the repo root as FEASIBILITY.md).
+
+
+## Session 2026-11-20 (seventh): MULTI-BAND rt-XCA (norb = 2) - m=1/m=2 production + m=3 greater family
+
+Three gated stages, single-band behavior bit-identical throughout
+(the scalar fast paths are untouched; every pre-existing anchor
+stayed green with unchanged values).
+
+### m=1 (eval1 matrix path)
+
+- dispatch rule: ANY involved block > 1x1 takes the matrix path
+  (the stock oca rule); the scalar path is the all-1x1 fast route
+- two lessons paid for with the debug chain 54.85 -> 1.23 -> 7.2e-6:
+  (1) per-channel fits are MANDATORY (Line1.gtr reads the fit
+  coefficients directly - sharing a forward fit with backward
+  channels reconstructs the wrong sgtr);
+  (2) a dim-1 OUTPUT sector with dim-2 intermediates still needs
+  the full op1.G.op2 sandwich (op1.get(0,0) truncates it)
+- anchor `xca1_matches_nca_realtime_twoband` on the new setup_2b
+  fixture (9 matrix sectors rotated by per-sector orthogonal
+  bases - GENUINELY matrix data, not diagonal; 8 channels;
+  per-channel fits): worst 7.2e-6 (fit-limited, gate 1e-5)
+
+### m=2 (eval2m.rs - the ten families mirrored)
+
+- new file: line-for-line matrix mirror of the ten scalar families
+  (ret1/vt1/les1/vt2/les2/vt3/les3..les6) onto the stock OCA block
+  primitives (sandwich, psc/pls/ptv/ptv_dir_blk_into,
+  gregory/conv2b/lowside_blk, sigma_mat_core_blk - visibility-only
+  pub(crate) upgrades in oca.rs)
+- the vt families' final is a conj-TRANSPOSE scatter (the stock
+  matrix convention; the scalar plain .conj() is its 1x1
+  degenerate case)
+- dispatch inside add_sigma_tstp_xca2 (sa*sb*sc > 1)
+- anchor `xca2_matches_oca_realtime_twoband`: PASSED FIRST RUN,
+  worst 4.6e-5 (fit-limited, gate 1e-4)
+
+### m=3 Phase A (the all-greater family, matrix)
+
+- RtChainM + build_rt_chain_m (full rectangular operator blocks);
+  matrix Volterra backbone eval_backbone_m (rectangular chain
+  states; cols jump dim_{s1} -> dim_{s0} at the b0 step where
+  ops[0] right-multiplies); ascending direct transcription
+  rec_gtr_mat (ops[v] . sum_t greg G^{s_v}(t-t') rec, bottom
+  ops[1].G^{s1}.ops[0] times the raw delta reads);
+  poly_integral_chain_mat (entrywise reuse of the scalar weights)
+- TWO real shape bugs found and fixed by the gates:
+  (1) rec_gtr_mat's accumulation buffer carried the POST-ops[v]
+      shape (the kernels land BEFORE ops[v] left-multiplies);
+  (2) the ordinary backbone step's tn[0] kept the stale PRE-step
+      shape (the next step's shape inference and the convolve
+      buffers read st[0]; m=2 chains happened to be shape-loop
+      compatible and masked it)
+- gates: m=2 chain degeneracy vs the stock OCA greater output
+  (quadrature-family class, gate 8e-2) PASSED;
+  separated-vs-direct twoband m=2 2.05e-8 / m=3 6.598e-8
+  (gate 1e-6; the single-band closer was 5.4e-6)
+- structural gate `xca_m_greater_vscaling_twoband`: fixed-state
+  V-scaling, ratio 4^m MACHINE-exact (2.2e-16, m = 2/3)
+
+### m=3 Phase B (2026-11-20, eighth session): the block-cut families in matrix form
+
+New code: `evalfam2m.rs` (1245 lines) - `chord_setup_m` (the
+317-867 chord block extracted VERBATIM; pure bookkeeping, shared
+by both evaluators), `eval_cut_m` (the L/I/R window machinery with
+rectangular block states, the stock `blk_into` primitives for the
+propagator reads, entrywise `poly_integral_chain_mat`
+quadrature), `sigma_cuts_m_mat` (anchor sums -> Vec<DenseMat>);
+`build_rt_chain_mixed_m` in boson_rt (mixed-channel matrix walk);
+eval2m gained a family bitmask (`add_sigma_tstp_xca2m_fam`) for
+per-family references.
+
+Four findings, in the order they were caught:
+
+1. SPURIOUS-POLE BLOWUP: maxpoles=10 fits on the 2-pole-exact
+   fixture baths pick up spurious large-|w| poles whose Matsubara
+   kernels (e^{-w(beta-tau)}) amplify exponentially - the JLower
+   gate blew up at 2.5e14 (= e^{32.5}, w ~ -6.5). JUpper never
+   touches those kernels. Fix: `fits_npoles(2)` (clean exact
+   poles) for the cuts gates; the 10-pole fits stay for the
+   sgtr-path anchors.
+2. THE LES TRANSPOSE: after the spurious-pole fix JLower sat at
+   O(1) with a dim-pattern - ALL FOUR dim-1 (corner) sectors
+   passed at 1e-6..1e-4 while every dim>=2 sector failed at
+   1.4-2.0. Value-level diagnosis: every OFF-diagonal entry
+   satisfies got = want^T at 1.0000 machine-exact; diagonal and
+   1x1 entries are transpose-blind (why the single-band
+   discriminator showed 0 disagreements and why corner sectors
+   passed). Root cause: the scalar prototype's textual order
+   (`ops * read`, scalars commute) carries a hidden orientation -
+   mirrored as the forward string it yields the TRANSPOSED family
+   value for the les-class anchors. Fix: outer transpose for
+   JLower (exact for real-basis Hamiltonians whose G blocks are
+   symmetric) -> JLower 1.309e-3 (gate 8e-2).
+3. THE REV-CUT ASSOCIATION: the all-I JLower cut (0,2,0) needs
+   RIGHTWARD accumulation (seed = read^T . ops, steps
+   right-multiply ops) - the scalar's ops-left text order is its
+   1x1 degenerate.
+4. TAU (mix) IS OPEN: no global orientation (identity 13.1 /
+   transpose 16.2 / adjoint 16.9) closes the mix sum. ELIMINATION
+   TABLE (2026-11-20 campaign, all vs stock lmix, gate 8e-2):
+   - global outer: id 13.1 / T 16.2 / A 16.9
+   - per-cut outer (8 combos, XCA_TAU_CUT_ORI): 13.0-16.2
+   - read-form lifts (vt conj-transpose vs plain): DEGENERATE by
+     construction on real-basis fixtures (V.diag.V^T blocks are
+     symmetric, [X]^dag = conj(X))
+   - rightward-adjoint flow (ops-adjoint reversed string):
+     algebraically equals the transpose variant
+   - JLower-style all-I reversal for Tau (n-side vt seed + anchor
+     mat close, XCA_TAU_REV=on): 34.7 - WORSE
+   - CONJ variant (C: conj WITHOUT transpose, the vt1-derived
+     form - stock lmix write = pref*[op1.S.op4]^dag with
+     op1.S.op4 = my^T, so correct = conj(my)): 12.06 - best of
+     all orientations but still open. NOTE: the C-mix runs that
+     read 2.8-3.9 were contaminated by an experiment bug (the
+     rev campaign left the Tau I-close on the rightward mat
+     read unconditionally, collapsing the all-I cut to ~1e-4 of
+     its magnitude; fixed by gating on rev_i, T baseline
+     restored bit-identical at 16.16, discriminator green)
+   - per-flow piecewise probe under C: all three cuts still
+     scrambled vs vt1/vt2/vt3 (ratios like -0.24+0.27i) - the
+     mismatch is not orientation-only; the line-factor
+     PLACEMENT also differs (the stock attaches lam1_vt(m,i2)
+     at the i2-vertex and carries a kt hermitian band;
+     i1max = i2+kt) - the rewrite must mirror those too
+   - per-cut error apportionment: the all-I (0,2,0) dominates
+     (16.9 -> 2.83 excluding it); (0,0,2) contributes ~nil;
+     (0,1,1) carries ~3.9
+   Per-cut vs per-family probes show the cut decomposition and
+   the stock's vt1/vt2/vt3 families are NOT piecewise 1:1 (only
+   sums comparable - consistent with the campaign-era five-way-
+   table finding). CONCLUSION: no local variant of the scalar Tau
+   cut structure lifts correctly; the fix is a FLOW-LEVEL
+   REWRITE mirroring the stock's vt1/vt2/vt3 patterns. All
+   instruments are in place: `tau_cut_vs_stock_family_probe`
+   (per-family stock reference via the eval2m bitmask + hand-
+   rolled per-cut sums), the XCA_MCUT cut filter ("nl,ni,nr"
+   keep, leading ! excludes), XCA_TAU_ORI / XCA_TAU_CUT_ORI /
+   XCA_TAU_REV knobs.
+
+Gates landed: `xca_m2_cuts_match_oca_three_component_twoband`
+(JUpper vs stock ret 1.875e-2, JLower vs stock less 1.309e-3;
+Tau excluded pending the derivation), `eval_cut_m_matches_
+singleband` (the 1x1 discriminator, 0 disagreements over all
+anchors x cuts x channels x combos), and `xca_m3_cuts_match_
+chain_twoband` - the m=3 JUpper cut family vs the Phase-A Volterra
+backbone: MACHINE-EXACT 2.555e-15 (gate 1e-10). The two
+independent matrix architectures of the greater family agree
+exactly at m=3.
+
+State at close: full suite 109 passed / 0 failed / 4 ignored.
+
+### Tau BREAKTHROUGH (2026-11-20, ninth session): the failure is SCALAR-SIDE
+
+The entire elimination table above was built on the assumption
+that the scalar cut machinery was right and the matrix lift was
+wrong. A decisive NEW gate disproved that assumption:
+`scalar_tau_cuts_vs_stock_lmix_singleband` compares the SCALAR
+sigma_cuts_m(2, Tau) against the stock's lmix output at
+single-band - THE FIRST SUCH VALIDATION EVER (the campaign-era
+anchors covered the les/gtr sides only; the mix cuts at any m
+were never stock-gated). The scalar fails catastrophically:
+s=0 dev 14.9, s=3 imaginary part sign-flipped.
+
+Root cause chain (each step instrument-verified):
+1. THE (4,2) FERMION CHORD ARM NEVER PUSHES wsum[rv] - the
+   R-vertex t2-phase e^{-iwt2h} was missing entirely (the boson
+   (4,2) branch carries it; the fermion branch was an
+   oversight). Fix: `wsum[rv] += w` - the single biggest
+   correction (s=0: 14.9 -> 3.7).
+2. The anchor constant fold: the stock's reference (LineSep::vt
+   = Sigma_l c_l^{(m)}.phase(w_l, t, 0, h)) uses PER-IMAGINARY-
+   INDEX fit coefficients c_l^{(m)} that absorb ALL imaginary-
+   side structure; my factorization c_tv[l].e^{-w.tau_m} is the
+   right structure but the exact normalization per class is
+   still off (constant experiments, all with the phase fix: orig
+   e^{s4(beta-tau_m)} 3.7/0.54, flipped 2.4/0.54, pure
+   e^{-w.tau_m} 1.42/0.78 (KEPT - best), e^{+w.tau_m} 2.19/0.92 -
+   the single-exponential-fold family is exhausted; the residual
+   ratios are per-POLE complex, i.e. a coefficient-normalization
+   difference, not one constant). The DATA PROBE
+   (tau_vt_data_exponent_probe): the fixture's four channels
+   share ONE delta (no d1c - bwd enters only through the arm's
+   branch flag) and the vt data's tau_m-profile is a growing
+   2-pole mixture (non-constant complex step ratios) - the
+   stock's per-m fit coefficients absorb exactly this per pole.
+3. The remaining error is ENTIRELY in the BACKWARD class: the
+   audit shows all contributing chains carry line0 in the
+   backward channels {2,3} (the forward class contributes
+   ~nothing on this fixture).
+4. Consistency checks passed: families(2, Tau) emits all three
+   cuts; the I-cuts (0,1,1)/(0,2,0) vanish at single-band AND
+   so do the stock's vt2/vt3 (the fixture's cancellation is
+   physical); the matrix mirror tracks every scalar change
+   (discriminator still 0 disagreements).
+
+Instruments landed: `scalar_tau_cuts_vs_stock_lmix_singleband`
+(#[ignore]d while the calibration finishes - run with
+--ignored), `tau_stock_family_split_singleband` (per-family
+stock reference), `tau_per_chain_audit_singleband` (per-chain
+ratios; NOTE the delta-pointer matching cannot distinguish
+channels on the shared-delta fixture - match via the stock
+diagrams' op flavors or a distinct-delta fixture variant next).
+
+THE REMAINING PATH (next session, bounded): the coefficient
+probe (tau_ctv_vs_permfit_probe) DELIVERED ITS VERDICT - the
+per-pole ratios c_tv[l].e^{-w.tau_m} / c_l^{(m)} are messy
+complex (87+62i, -0.23-0.21i, -0.07-0.06i, ...) - not a
+normalization constant but a STRUCTURAL difference. THE FIX IS
+THE PER-M ROW-FIT: fold c_l^{(mm)} (the csoe_coeffs fit of the
+raw vt data at the anchor's m, cached like ROW_LES_FITS /
+LineSep::vt's vt_coef) directly into cprod for the (4,2) chord
+- the isum per-entry-coefficient mechanism (the boson two-mate
+modes) already supports it. Then close the single-band gate,
+re-run the matrix two-band Tau gate (expect the C orientation
+under the fixed scalar - the matrix mirror inherits everything
+through chord_setup_m).
+
+THE PER-M ROW-FIT (implemented same session): `vt_row_fit`
+(evalfam2.rs, cached like ROW_LES_FITS) - the csoe_coeffs fit of
+the raw vt data vt_c(delta, m, t) over t, exactly LineSep::vt's
+internal vt_coef; the (4,2) fermion branch (both files) now
+folds it PLAIN (no conj - the fit IS the vt component, the
+stock uses its coefficients plainly) at the anchor's m with
+wsum[rv] += w (the stock's phase(w,t,0,h) = e^{-iwth} matches
+exactly). Calibration campaign (single-band gate, s=0/s=1):
+- c_tv.conj x e^{-w.tau_m} (V3): 1.42 / 0.78
+- per-m fit WITH conj: 0.87 / 1.76
+- per-m fit PLAIN: 2.35 / 0.28 (KEPT - structurally right)
+- per-m fit at the reflected index ntau-mm for bwd lines:
+  3.43 / 0.15 - mixed; REVERTED (the fixture's four channels
+  share ONE delta - no materialized d_cc - so the reflection
+  has no data basis here; it may be right for true d1c
+  channels - re-test when a distinct-delta fixture exists)
+The remaining per-class split (per-chain ratios: line0-forward
+chains ~0.73.e^{i7deg} - nearly right; line0-backward chains
+~1.45.e^{i146deg}) lives OUTSIDE the (4,2) arm (with the
+uniform fold the arm is class-blind, yet the two classes
+disagree - the [3,1]-vs-[2,1] chain difference: the stat
+decoration or another chord's bwd factors). REFINED after
+reading the (2,5) arm in full: it is a CLASS-BLIND simple arm
+(c_gtr . e^{+iw(n-jjl)h} + wsum[rv]+=w, NO rowmult, NO bwd
+branches - the rowmult arms are the (3,2)/(2,3) les chords,
+JLower-only) - so the (2,5) is NOT the suspect; the swap
+asymmetry is WALK-STRUCTURAL (swapping cs exchanges which flavor
+hops at which vertices - different intermediate sectors, not a
+bug). The Tau (0,0,2) cut's two chords: (4,2) [now per-m
+row-fit] + (2,5) [the JLower-validated non-JUpper branch with
+jjl=0]. Remaining discrepancy: per-class ratios [2,1]-class
+(line0 fwd) ~ -0.73 REAL NEGATIVE vs [3,1]-class (line0 bwd,
+stat +1) ~ 1.45 e^{i147deg} - differing by line0's bwd-ness
+and the stat sign. NEXT: flavor-matched chain-to-diagram
+comparison (the stock's 2 diagrams/sector = the 2 flavor
+assignments; the shared-delta fixture makes delta-pointer
+matching useless - match via the ops' flavors) to read off the
+per-class corrections directly.
+
+THE FLAVOR-MATCHED AUDIT (decisive, 2026-11-20 final): the
+matching works (op1..op4 vs my ops[3],[2],[1],[0], conj
+allowed) and the per-chain ratios collapse to EXACTLY TWO
+constant complex factors, split perfectly by the stat sign /
+output-sector parity:
+  class A (stat +1, even sectors 0/3): ratio -1.207+0.801i
+  class B (stat -1, odd sectors 1/2):  ratio -0.733-0.089i
+|A| ~ 2|B| (1.448 vs 0.739), phases 146.5deg vs 189deg - NOT a
+pure sign error (A != -B); a per-class multiplicative structure
+(one chord factor or kernel differing by sector parity). Both
+classes' my-values share identical decorations (shared proj) so
+the source is parity-dependent: candidates = the sector sign
+multiply, a parity-dependent kernel mode, or the stat-parity
+interplay in the decoration. Two constants away from closure.
+
+FURTHER STRUCTURE (closing observation): |A| ~ |2B| (1.448 vs
+1.477, within 2%) and A/(2B) ~ 1.047 e^{-i44.6deg} - i.e.
+class B is short a factor 2, and the REMAINING shared error is
+~45deg of phase + 5% magnitude. The factor-2 candidates: a
+double-counted/missing diagram pair per odd sector (the swap
+chains), or the stat decoration counting one line twice. The
+45deg shared phase: a single chord-constant convention (e.g.
+an e^{-iw tau dtau}-class offset with w.tau.dtau ~ pi/4 on this
+fixture's poles).
+
+SESSION RESUME (later 2026-11-20): the (2,5) per-row switch
+LANDED (both files, the Tau-only branch: rowmult[rv] = the per-row
+gtr fit + cprod *= e^{-iwnh} - exactly the stock's LineSep::gtr(i1,
+n) semantics, the INTMINE-L2E instrument's form) - but the gate
+moved 2.348->2.361/0.281->0.278: the hypothesis is REFUTED as
+the two-constant source (the fixture's clean data makes per-row ~
+global; the semantics is kept as the stock-exact form). The
+SEGMENT MAPPING discovered: the stock's (sa,sb,sc) = my
+(s3,s2,s1) REVERSED labeling for the mix family (same as ret!) -
+but on the up/down-degenerate fixture the s1<->s3 external-read
+swap reads IDENTICAL data (same parity pairs) - not the source.
+AUDIT CAVEAT: the per-chain hand-sum's fac was missing msign
+(+1 at m=2, no-op) and the Tau sector-sign multiply (out[s0] *=
+pp_g[s0].sign) - the B-class ratio sign interpretation flips.
+NEXT (fresh context): the point-wise integrand comparison for one
+matched pair (the five-way-table methodology, mix side) - print
+my window's per-(t1,t2) factors vs the stock's data_ac/data_bc
+for [3,1]@s0=0 <-> stock-diagram-0; the divergence point will
+name the final structure. Full suite 113/0/5.
+
+TAU CLOSED IN FIVE STEPS (2026-11-20 final session stretch - the
+factor-probe campaign):
+(1) the (4,2) fermion chord pushes wsum[rv] += w (the R-vertex
+t2-phase; matches stock phase(w,t,0,h)=e^{-iwth}) - 14.9/3.4 ->
+3.7; (2) the (4,2) anchor factor = the PER-M ROW-FIT vt_row_fit
+(= LineSep::vt internals; the c_tv.fold factorization is
+structurally wrong) -> 2.35; (3) THE FACTOR-6 DISCOVERY: the
+R->R middle read must use the CONTINUATION hermitian branch
+(-ret*+less, absolute args) not the elapsed in-triangle form
+(ret-less*) - they differ by EXACTLY the real-part sign
+((a-c)+(b+d)i vs (c-a)+(b+d)i) - same root as JLower-vs-JUpper
+1.3e-3 vs 1.9e-2 - -> 1.37; (4) the ADJOINT-SCATTER -conj: the
+stock writes lmix += pref*[op1.S.op4]^dag with op1.S.op4 =
+my^T => written = -conj(my) (the C orientation + global -1;
+MUST conjugate AFTER the decorations - cprod is complex, the
+before-scale_c version broke the 1x1 consistency with 800
+discriminator disagreements) -> 0.52%/0.27% - SINGLE-BAND
+CLOSED (decisive gate 2e-2, measured 5.2e-3); (5) the (4,1)
+chord's c_mat needs a MINUS sign (its 'empirical c_mat only'
+calibration was against the never-validated old m=2 constant
+gate) - the cutsum test (all mm) green. Full suite 122/0/4.
+TWO-BAND STATUS (the per-sector probe, flavor-matched):
+(0,0,2)<->vt1: ratio +/-1.006 (0.6%, quadrature class) ALL
+SECTORS; (0,1,1)<->vt2: +/-1.0000 MACHINE-EXACT - BOTH CLOSED
+(the +/- = the sector-parity sign the probe's hand-sum lacks;
+production sigma_cuts_m_mat HAS the sign multiply). The two-band
+gate's residual (16.9) comes ENTIRELY from the (0,2,0) all-I
+cut <-> vt3 (the dominant family, |want| up to 1.6e5; per-sector
+ratios 0.35-4.5 messy, sign-flipped post-fix; the XCA_TAU_REV
+route is refuted: 35.6). REMAINING: the all-I's two-band
+structure - the stock's vt3 uses sigma_mat_core_blk (the
+RAW-MAT Matsubara backbone: lam1.mat.raw() + per-pole vt
+profiles for line2) - a grid-based architecture vs my
+pole-projected (4,1)+(1,5) chords; the (1,5)+I-machinery is
+VALIDATED (the (0,1,1) is machine-exact with the same chord),
+so the divergence is the (4,1)'s c_mat per-pole structure or
+the double-I association at dim>1. The five-fix chain and all
+instruments (factor probes, per-sector probe, cutsum test) are
+in the tree.
+
+ALL-I PER-CHAIN PROBE (first run): the ops-based flavor matching
+is NOT injective at two-band - several pairs show ~1e-6 / ~1e6
+ratios (mismatched diagrams: mine~0 vs want-huge and vice
+versa). The RELIABLE pairs (the [0,0]/[1,1] swap-consistent
+families) give nearly-REAL but chain-dependent ratios
+(-0.198/+0.745/-1.731) - a real per-chain multiplicative error,
+not a global constant. NEXT: a stronger matching key (the ops'
+flavor identification + the channel deltas) or the direct
+per-factor probe for the all-I flow at two-band (mirror
+tau_factor_probe_singleband); the all-I shares the validated
+(1,5)+seed machinery with (0,1,1) so the suspects narrow to the
+I->I transition and the (4,1) chord.
+
+State: full suite 113 passed / 0 failed / 5 ignored. The m=1/
+m=2 production + m=3 greater/les gates all green and untouched.
+
+### Remaining (m=3 completion, updated)
+
+- TAU constant calibration (bounded, path above): the c_tv
+  normalization vs the per-m fit coefficients, backward class
+- then the matrix two-band Tau gate (expect the C orientation
+  under the fixed scalar)
+- solver rt_xca_m3 matrix output routing (needs all three anchors)
+- the two-band 64-state ED dimer external anchor (evolution-level
+  gate; the fixture already exists as tests/xca_twoband_dimer)
