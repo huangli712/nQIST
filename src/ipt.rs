@@ -69,90 +69,6 @@ pub struct IptSolver {
     pub bare_tadpole: bool,
 }
 
-#[inline]
-fn u_at(u: &[f64], tstp: i64) -> f64 {
-    u[tstp as usize + 1]
-}
-
-/// Fill the real-time rows `tstp` of one spin's sunset self-energy
-/// (free function so the caller can split-borrow disjoint fields).
-///
-/// Component decomposition of
-/// `Sigma = U(t)U(t') A(t,t') B(t',t) C(t,t')` with `A = G0_sigma`,
-/// `B = C = G0_sbar`:
-/// * les `(j <= n)`: `u_j u_n A^<(j,n) (B^R(n,j) + B^<(j,n)) C^<(j,n)`
-///   (the reversed factor at (later, earlier) is simply the greater
-///   component `B^> = B^R + B^<`; greater and lesser are related only
-///   through their own anti-hermiticity, never by conjugation)
-/// * ret `(j <= n)` from `Sigma^> - Sigma^<`:
-///   `u_n u_j [(A^R + A^<) B^< (C^R + C^<)
-///   - A^< (B^R + B^<) C^<]`
-///
-/// Both components then satisfy the exact fermionic anti-hermiticity
-/// `Sigma^<(n,j) = -[Sigma^<(j,n)]^*` (and likewise for `>`) by
-/// construction, which preserves the particle-hole symmetry of the
-/// half-filled state.
-/// * tv `(n, m)`: `u_n u_i A^tv(n,m) conj(B^tv(n, N-m)) C^tv(n,m)`
-///   (fermionic `vt` view of the reversed factor)
-/// Fill the rows `tstp` (or the Matsubara component when `tstp ==
-/// MATSUBARA`) of one spin's sunset self-energy using the KB bubble
-/// primitives, composing the scheme of
-/// `ness2_bethe_prop.cpp::get_Sigma_timestep`:
-/// `chi(t,t') = i^2 G0_sbar(t,t') G0_sbar(t',t)` [`bubble1_herm`,
-/// a Bose bubble], `W = U(t)U(t') chi` (scalar row/column scaling),
-/// `Sigma = -i^2 G0_sigma(t,t') W(t',t)` [`bubble2_herm`].
-/// On the Matsubara axis this yields exactly
-/// `Sigma^M[m] = U_i^2 G0^M[m]^2 G0_sbar^M[N-m]` (paper Eq. 31).
-fn sigma_second_spin(
-    tstp: i64,
-    ntau: usize,
-    u: &[f64],
-    ga: &ContourGreen,
-    gb: &ContourGreen,
-    w: &mut ContourGreen,
-    sig: &mut ContourGreen,
-) {
-    kadanoffbaym::convolution::bubble1_herm(tstp, w, 0, 0, gb, 0, 0, gb, 0, 0);
-    // W = U(t)U(t') chi: scale row tstp (and the diagonal-adjacent
-    // lesser column / lmix row); MATSUBARA scales the mat axis with
-    // the initial interaction
-    if tstp < 0 {
-        let uu = Complex::new(u[0] * u[0], 0.0);
-        for m in 0..=ntau {
-            w.mat.block_mut(m)[0] *= uu;
-        }
-    } else {
-        let u_n = u_at(u, tstp);
-        for j in 0..=tstp {
-            let uu = Complex::new(u_at(u, j) * u_n, 0.0);
-            w.ret.raw_block_at_mut(tstp, j)[0] *= uu;
-            w.less.raw_block_at_mut(j, tstp)[0] *= uu;
-        }
-        let uu = Complex::new(u[0] * u_n, 0.0);
-        for m in 0..=(ntau as i64) {
-            w.lmix.raw_block_at_mut(tstp, m)[0] *= uu;
-        }
-    }
-    kadanoffbaym::convolution::bubble2_herm(tstp, sig, 0, 0, ga, 0, 0, w, 0, 0);
-    // final -1 sign
-    if tstp < 0 {
-        for m in 0..=ntau {
-            sig.mat.block_mut(m)[0] = -sig.mat.block_mut(m)[0];
-        }
-    } else {
-        for j in 0..=tstp {
-            let r = sig.ret.raw_block_at_mut(tstp, j)[0];
-            sig.ret.raw_block_at_mut(tstp, j)[0] = -r;
-            let l = sig.less.raw_block_at_mut(j, tstp)[0];
-            sig.less.raw_block_at_mut(j, tstp)[0] = -l;
-        }
-        for m in 0..=(ntau as i64) {
-            let t = sig.lmix.raw_block_at_mut(tstp, m)[0];
-            sig.lmix.raw_block_at_mut(tstp, m)[0] = -t;
-        }
-    }
-}
-
 impl IptSolver {
     /// New solver with zero initial state.
     #[allow(clippy::too_many_arguments)]
@@ -628,6 +544,90 @@ impl IptSolver {
         let e_kin = (-Complex::I * acc * Complex::new(self.vstar2, 0.0)).re;
         let u = self.u_at(tstp);
         e_kin + u * (self.double_occupancy(tstp) - 0.25)
+    }
+}
+
+#[inline]
+fn u_at(u: &[f64], tstp: i64) -> f64 {
+    u[tstp as usize + 1]
+}
+
+/// Fill the real-time rows `tstp` of one spin's sunset self-energy
+/// (free function so the caller can split-borrow disjoint fields).
+///
+/// Component decomposition of
+/// `Sigma = U(t)U(t') A(t,t') B(t',t) C(t,t')` with `A = G0_sigma`,
+/// `B = C = G0_sbar`:
+/// * les `(j <= n)`: `u_j u_n A^<(j,n) (B^R(n,j) + B^<(j,n)) C^<(j,n)`
+///   (the reversed factor at (later, earlier) is simply the greater
+///   component `B^> = B^R + B^<`; greater and lesser are related only
+///   through their own anti-hermiticity, never by conjugation)
+/// * ret `(j <= n)` from `Sigma^> - Sigma^<`:
+///   `u_n u_j [(A^R + A^<) B^< (C^R + C^<)
+///   - A^< (B^R + B^<) C^<]`
+///
+/// Both components then satisfy the exact fermionic anti-hermiticity
+/// `Sigma^<(n,j) = -[Sigma^<(j,n)]^*` (and likewise for `>`) by
+/// construction, which preserves the particle-hole symmetry of the
+/// half-filled state.
+/// * tv `(n, m)`: `u_n u_i A^tv(n,m) conj(B^tv(n, N-m)) C^tv(n,m)`
+///   (fermionic `vt` view of the reversed factor)
+/// Fill the rows `tstp` (or the Matsubara component when `tstp ==
+/// MATSUBARA`) of one spin's sunset self-energy using the KB bubble
+/// primitives, composing the scheme of
+/// `ness2_bethe_prop.cpp::get_Sigma_timestep`:
+/// `chi(t,t') = i^2 G0_sbar(t,t') G0_sbar(t',t)` [`bubble1_herm`,
+/// a Bose bubble], `W = U(t)U(t') chi` (scalar row/column scaling),
+/// `Sigma = -i^2 G0_sigma(t,t') W(t',t)` [`bubble2_herm`].
+/// On the Matsubara axis this yields exactly
+/// `Sigma^M[m] = U_i^2 G0^M[m]^2 G0_sbar^M[N-m]` (paper Eq. 31).
+fn sigma_second_spin(
+    tstp: i64,
+    ntau: usize,
+    u: &[f64],
+    ga: &ContourGreen,
+    gb: &ContourGreen,
+    w: &mut ContourGreen,
+    sig: &mut ContourGreen,
+) {
+    kadanoffbaym::convolution::bubble1_herm(tstp, w, 0, 0, gb, 0, 0, gb, 0, 0);
+    // W = U(t)U(t') chi: scale row tstp (and the diagonal-adjacent
+    // lesser column / lmix row); MATSUBARA scales the mat axis with
+    // the initial interaction
+    if tstp < 0 {
+        let uu = Complex::new(u[0] * u[0], 0.0);
+        for m in 0..=ntau {
+            w.mat.block_mut(m)[0] *= uu;
+        }
+    } else {
+        let u_n = u_at(u, tstp);
+        for j in 0..=tstp {
+            let uu = Complex::new(u_at(u, j) * u_n, 0.0);
+            w.ret.raw_block_at_mut(tstp, j)[0] *= uu;
+            w.less.raw_block_at_mut(j, tstp)[0] *= uu;
+        }
+        let uu = Complex::new(u[0] * u_n, 0.0);
+        for m in 0..=(ntau as i64) {
+            w.lmix.raw_block_at_mut(tstp, m)[0] *= uu;
+        }
+    }
+    kadanoffbaym::convolution::bubble2_herm(tstp, sig, 0, 0, ga, 0, 0, w, 0, 0);
+    // final -1 sign
+    if tstp < 0 {
+        for m in 0..=ntau {
+            sig.mat.block_mut(m)[0] = -sig.mat.block_mut(m)[0];
+        }
+    } else {
+        for j in 0..=tstp {
+            let r = sig.ret.raw_block_at_mut(tstp, j)[0];
+            sig.ret.raw_block_at_mut(tstp, j)[0] = -r;
+            let l = sig.less.raw_block_at_mut(j, tstp)[0];
+            sig.less.raw_block_at_mut(j, tstp)[0] = -l;
+        }
+        for m in 0..=(ntau as i64) {
+            let t = sig.lmix.raw_block_at_mut(tstp, m)[0];
+            sig.lmix.raw_block_at_mut(tstp, m)[0] = -t;
+        }
     }
 }
 
