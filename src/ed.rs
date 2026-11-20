@@ -51,180 +51,6 @@ pub struct OpTerm {
     pub ops: Vec<(usize, bool)>,
 }
 
-/// Apply an operator string right-to-left on the occupation-basis
-/// state `st` with the Jordan-Wigner sign `(-1)^{n_below}`.
-/// `None` when any operator hits an incompatible occupation.
-fn apply_ops(ops: &[(usize, bool)], mut st: u64) -> Option<(u64, Complex)> {
-    let mut sign = 1.0f64;
-    for &(mode, cre) in ops.iter().rev() {
-        let bit = 1u64 << mode;
-        let odd = (st & (bit - 1)).count_ones() % 2 == 1;
-        if cre {
-            if st & bit != 0 {
-                return None;
-            }
-            if odd {
-                sign = -sign;
-            }
-            st |= bit;
-        } else {
-            if st & bit == 0 {
-                return None;
-            }
-            if odd {
-                sign = -sign;
-            }
-            st &= !bit;
-        }
-    }
-    Some((st, Complex::new(sign, 0.0)))
-}
-
-/// Impurity diagonal energy of the occupation pattern `psi`, taken
-/// from the solver Hamiltonian itself (same route as the dimer
-/// fixture, so the ED is convention-identical to the solver).
-fn impurity_energy(ham: &LocalHamiltonian, hs: &HilbertSpace, psi: u64, tstp: i64) -> f64 {
-    for (s, sec) in hs.sectors.iter().enumerate() {
-        if let Some(idx) = sec.states.iter().position(|&x| x == psi) {
-            return ham.sector_block(hs, s, tstp).get(idx, idx).re;
-        }
-    }
-    panic!("ed: impurity pattern {psi:b} not found in any sector");
-}
-
-fn apply_term(h: &mut DenseMat, dim: usize, coeff: Complex, ops: &[(usize, bool)]) {
-    for st in 0..dim as u64 {
-        if let Some((tgt, s)) = apply_ops(ops, st) {
-            let cur = h.get(tgt as usize, st as usize);
-            h.set(tgt as usize, st as usize, cur + coeff * s);
-        }
-    }
-}
-
-/// Full joint-space Hamiltonian: diagonal impurity energies via
-/// `sector_block` at time `tstp` + bath occupations + bath couplings
-/// and caller terms through the operator-string machinery.
-fn joint_hamiltonian(
-    ham: &LocalHamiltonian,
-    hs_imp: &HilbertSpace,
-    bath: &[BathCoupling],
-    terms: &[OpTerm],
-    tstp: i64,
-) -> DenseMat {
-    let imp_modes = 2 * hs_imp.norb;
-    let dim = 1usize << (imp_modes + bath.len());
-    let mut h = DenseMat::zeros(dim);
-    for st in 0..dim as u64 {
-        let mut e = impurity_energy(ham, hs_imp, st & ((1u64 << imp_modes) - 1), tstp);
-        for (b, bc) in bath.iter().enumerate() {
-            e += bc.eps * ((st >> (imp_modes + b)) & 1) as f64;
-        }
-        h.set(st as usize, st as usize, Complex::new(e, 0.0));
-    }
-    for (b, bc) in bath.iter().enumerate() {
-        let bb = imp_modes + b;
-        apply_term(
-            &mut h,
-            dim,
-            Complex::new(bc.v, 0.0),
-            &[(bc.imp_mode, true), (bb, false)],
-        );
-        apply_term(
-            &mut h,
-            dim,
-            Complex::new(bc.v, 0.0),
-            &[(bb, true), (bc.imp_mode, false)],
-        );
-    }
-    for t in terms {
-        apply_term(&mut h, dim, t.coeff, &t.ops);
-    }
-    // Hermiticity guard: a missing h.c. term fails here.
-    for i in 0..dim {
-        for j in (i + 1)..dim {
-            let d = h.get(i, j) - h.get(j, i).conj();
-            assert!(
-                (d * d.conj()).re < 1e-24,
-                "ed: non-Hermitian term assembly at ({i},{j}): {d:?}"
-            );
-        }
-    }
-    h
-}
-
-/// Assemble the full joint-space Hamiltonian at time slice `tstp`
-/// (solver `time_index` convention; `-1` = equilibrium slice).
-pub fn hamiltonian_at(
-    ham: &LocalHamiltonian,
-    hs_imp: &HilbertSpace,
-    bath: &[BathCoupling],
-    terms: &[OpTerm],
-    tstp: i64,
-) -> DenseMat {
-    joint_hamiltonian(ham, hs_imp, bath, terms, tstp)
-}
-
-/// Annihilation matrix of `mode` on the full space (Jordan-Wigner).
-fn c_matrix(dim: usize, mode: usize) -> DenseMat {
-    let mut cm = DenseMat::zeros(dim);
-    let bit = 1u64 << mode;
-    for st in 0..dim as u64 {
-        if st & bit != 0 {
-            let sign = if (st & (bit - 1)).count_ones() % 2 == 1 {
-                -1.0
-            } else {
-                1.0
-            };
-            cm.set((st & !bit) as usize, st as usize, Complex::new(sign, 0.0));
-        }
-    }
-    cm
-}
-
-fn identity(dim: usize) -> DenseMat {
-    let mut m = DenseMat::zeros(dim);
-    for i in 0..dim {
-        m.set(i, i, Complex::new(1.0, 0.0));
-    }
-    m
-}
-
-/// `Tr[a b]` as a dense double sum.
-fn trace_prod(a: &DenseMat, b: &DenseMat) -> Complex {
-    let n = a.size();
-    let mut t = Complex::ZERO;
-    for i in 0..n {
-        for j in 0..n {
-            t += a.get(i, j) * b.get(j, i);
-        }
-    }
-    t
-}
-
-fn same_matrix(a: &DenseMat, b: &DenseMat) -> bool {
-    let n = a.size();
-    let mut d2 = 0.0f64;
-    for i in 0..n {
-        for j in 0..n {
-            let d = a.get(i, j) - b.get(i, j);
-            d2 += (d * d.conj()).re;
-        }
-    }
-    d2 < 1e-24
-}
-
-/// `exp(-i h dt)` for Hermitian `h` via its spectral decomposition.
-fn spectral_propagator(h: &DenseMat, dt: f64) -> DenseMat {
-    let n = h.size();
-    let (e, v) = eigh(h);
-    let mut ph = DenseMat::zeros(n);
-    for i in 0..n {
-        let x = -e[i] * dt;
-        ph.set(i, i, Complex::new(x.cos(), x.sin()));
-    }
-    v.mat_mul(&ph).mat_mul(&v.adjoint())
-}
-
 // ------------------------------------------------------------------
 // static equilibrium reference (Lehmann)
 // ------------------------------------------------------------------
@@ -504,6 +330,180 @@ impl EdEvolution {
             .position(|&m| m == mode)
             .unwrap_or_else(|| panic!("ed: mode {mode} not tracked"))
     }
+}
+
+/// Apply an operator string right-to-left on the occupation-basis
+/// state `st` with the Jordan-Wigner sign `(-1)^{n_below}`.
+/// `None` when any operator hits an incompatible occupation.
+fn apply_ops(ops: &[(usize, bool)], mut st: u64) -> Option<(u64, Complex)> {
+    let mut sign = 1.0f64;
+    for &(mode, cre) in ops.iter().rev() {
+        let bit = 1u64 << mode;
+        let odd = (st & (bit - 1)).count_ones() % 2 == 1;
+        if cre {
+            if st & bit != 0 {
+                return None;
+            }
+            if odd {
+                sign = -sign;
+            }
+            st |= bit;
+        } else {
+            if st & bit == 0 {
+                return None;
+            }
+            if odd {
+                sign = -sign;
+            }
+            st &= !bit;
+        }
+    }
+    Some((st, Complex::new(sign, 0.0)))
+}
+
+/// Impurity diagonal energy of the occupation pattern `psi`, taken
+/// from the solver Hamiltonian itself (same route as the dimer
+/// fixture, so the ED is convention-identical to the solver).
+fn impurity_energy(ham: &LocalHamiltonian, hs: &HilbertSpace, psi: u64, tstp: i64) -> f64 {
+    for (s, sec) in hs.sectors.iter().enumerate() {
+        if let Some(idx) = sec.states.iter().position(|&x| x == psi) {
+            return ham.sector_block(hs, s, tstp).get(idx, idx).re;
+        }
+    }
+    panic!("ed: impurity pattern {psi:b} not found in any sector");
+}
+
+fn apply_term(h: &mut DenseMat, dim: usize, coeff: Complex, ops: &[(usize, bool)]) {
+    for st in 0..dim as u64 {
+        if let Some((tgt, s)) = apply_ops(ops, st) {
+            let cur = h.get(tgt as usize, st as usize);
+            h.set(tgt as usize, st as usize, cur + coeff * s);
+        }
+    }
+}
+
+/// Full joint-space Hamiltonian: diagonal impurity energies via
+/// `sector_block` at time `tstp` + bath occupations + bath couplings
+/// and caller terms through the operator-string machinery.
+fn joint_hamiltonian(
+    ham: &LocalHamiltonian,
+    hs_imp: &HilbertSpace,
+    bath: &[BathCoupling],
+    terms: &[OpTerm],
+    tstp: i64,
+) -> DenseMat {
+    let imp_modes = 2 * hs_imp.norb;
+    let dim = 1usize << (imp_modes + bath.len());
+    let mut h = DenseMat::zeros(dim);
+    for st in 0..dim as u64 {
+        let mut e = impurity_energy(ham, hs_imp, st & ((1u64 << imp_modes) - 1), tstp);
+        for (b, bc) in bath.iter().enumerate() {
+            e += bc.eps * ((st >> (imp_modes + b)) & 1) as f64;
+        }
+        h.set(st as usize, st as usize, Complex::new(e, 0.0));
+    }
+    for (b, bc) in bath.iter().enumerate() {
+        let bb = imp_modes + b;
+        apply_term(
+            &mut h,
+            dim,
+            Complex::new(bc.v, 0.0),
+            &[(bc.imp_mode, true), (bb, false)],
+        );
+        apply_term(
+            &mut h,
+            dim,
+            Complex::new(bc.v, 0.0),
+            &[(bb, true), (bc.imp_mode, false)],
+        );
+    }
+    for t in terms {
+        apply_term(&mut h, dim, t.coeff, &t.ops);
+    }
+    // Hermiticity guard: a missing h.c. term fails here.
+    for i in 0..dim {
+        for j in (i + 1)..dim {
+            let d = h.get(i, j) - h.get(j, i).conj();
+            assert!(
+                (d * d.conj()).re < 1e-24,
+                "ed: non-Hermitian term assembly at ({i},{j}): {d:?}"
+            );
+        }
+    }
+    h
+}
+
+/// Assemble the full joint-space Hamiltonian at time slice `tstp`
+/// (solver `time_index` convention; `-1` = equilibrium slice).
+pub fn hamiltonian_at(
+    ham: &LocalHamiltonian,
+    hs_imp: &HilbertSpace,
+    bath: &[BathCoupling],
+    terms: &[OpTerm],
+    tstp: i64,
+) -> DenseMat {
+    joint_hamiltonian(ham, hs_imp, bath, terms, tstp)
+}
+
+/// Annihilation matrix of `mode` on the full space (Jordan-Wigner).
+fn c_matrix(dim: usize, mode: usize) -> DenseMat {
+    let mut cm = DenseMat::zeros(dim);
+    let bit = 1u64 << mode;
+    for st in 0..dim as u64 {
+        if st & bit != 0 {
+            let sign = if (st & (bit - 1)).count_ones() % 2 == 1 {
+                -1.0
+            } else {
+                1.0
+            };
+            cm.set((st & !bit) as usize, st as usize, Complex::new(sign, 0.0));
+        }
+    }
+    cm
+}
+
+fn identity(dim: usize) -> DenseMat {
+    let mut m = DenseMat::zeros(dim);
+    for i in 0..dim {
+        m.set(i, i, Complex::new(1.0, 0.0));
+    }
+    m
+}
+
+/// `Tr[a b]` as a dense double sum.
+fn trace_prod(a: &DenseMat, b: &DenseMat) -> Complex {
+    let n = a.size();
+    let mut t = Complex::ZERO;
+    for i in 0..n {
+        for j in 0..n {
+            t += a.get(i, j) * b.get(j, i);
+        }
+    }
+    t
+}
+
+fn same_matrix(a: &DenseMat, b: &DenseMat) -> bool {
+    let n = a.size();
+    let mut d2 = 0.0f64;
+    for i in 0..n {
+        for j in 0..n {
+            let d = a.get(i, j) - b.get(i, j);
+            d2 += (d * d.conj()).re;
+        }
+    }
+    d2 < 1e-24
+}
+
+/// `exp(-i h dt)` for Hermitian `h` via its spectral decomposition.
+fn spectral_propagator(h: &DenseMat, dt: f64) -> DenseMat {
+    let n = h.size();
+    let (e, v) = eigh(h);
+    let mut ph = DenseMat::zeros(n);
+    for i in 0..n {
+        let x = -e[i] * dt;
+        ph.set(i, i, Complex::new(x.cos(), x.sin()));
+    }
+    v.mat_mul(&ph).mat_mul(&v.adjoint())
 }
 
 /// Thermal density matrix `e^{-beta h0} / Z` (shifted by `Emin`).
