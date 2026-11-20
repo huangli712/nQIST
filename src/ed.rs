@@ -377,9 +377,11 @@ fn apply_term(h: &mut DenseMat, dim: usize, coeff: Complex, ops: &[(usize, bool)
     }
 }
 
-/// Full joint-space Hamiltonian: diagonal impurity energies via
-/// `sector_block` at time `tstp` + bath occupations + bath couplings
-/// and caller terms through the operator-string machinery.
+/// Full joint-space Hamiltonian: the complete impurity sector
+/// blocks via `sector_block` at time `tstp` (diagonal AND, for the
+/// full-Kanamori variant, the off-diagonal spin-flip / pair-hopping
+/// entries) + bath occupations + bath couplings and caller terms
+/// through the operator-string machinery.
 fn joint_hamiltonian(
     ham: &LocalHamiltonian,
     hs_imp: &HilbertSpace,
@@ -390,12 +392,29 @@ fn joint_hamiltonian(
     let imp_modes = 2 * hs_imp.norb;
     let dim = 1usize << (imp_modes + bath.len());
     let mut h = DenseMat::zeros(dim);
+    // scatter every impurity sector block (full matrix per sector)
+    // into EVERY bath configuration subspace (H_imp tensor I_bath)
+    let ncfg = 1usize << bath.len();
+    for s in 0..hs_imp.ns() {
+        let blk = ham.sector_block(hs_imp, s, tstp);
+        for cfg in 0..ncfg {
+            let off = ((cfg as u64) << imp_modes) as usize;
+            for (i, &si) in hs_imp.sectors[s].states.iter().enumerate() {
+                for (j, &sj) in hs_imp.sectors[s].states.iter().enumerate() {
+                    h.set(si as usize + off, sj as usize + off, blk.get(i, j));
+                }
+            }
+        }
+    }
     for st in 0..dim as u64 {
-        let mut e = impurity_energy(ham, hs_imp, st & ((1u64 << imp_modes) - 1), tstp);
+        let mut e = 0.0;
         for (b, bc) in bath.iter().enumerate() {
             e += bc.eps * ((st >> (imp_modes + b)) & 1) as f64;
         }
-        h.set(st as usize, st as usize, Complex::new(e, 0.0));
+        if e != 0.0 {
+            let cur = h.get(st as usize, st as usize);
+            h.set(st as usize, st as usize, cur + Complex::new(e, 0.0));
+        }
     }
     for (b, bc) in bath.iter().enumerate() {
         let bb = imp_modes + b;
