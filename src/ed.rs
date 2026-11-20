@@ -41,15 +41,10 @@ pub struct BathCoupling {
     pub v: f64,
 }
 
-/// One off-diagonal Hamiltonian term: `coeff` times the ordered
-/// operator product `ops` applied right-to-left, e.g. the Kanamori
-/// spin-flip string `c^dag_{1u} c^dag_{2d} c_{1d} c_{2u}` is
-/// `ops = [(0, true), (3, false), (2, false), (1, false)]`.
-#[derive(Clone)]
-pub struct OpTerm {
-    pub coeff: Complex,
-    pub ops: Vec<(usize, bool)>,
-}
+// `OpTerm` (the shared off-diagonal-term declaration) lives in
+// `hamilton.rs`, the declaration owner; re-exported here for the ED
+// call sites.
+pub use crate::hamilton::OpTerm;
 
 // ------------------------------------------------------------------
 // static equilibrium reference (Lehmann)
