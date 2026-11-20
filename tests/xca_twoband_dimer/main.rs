@@ -117,6 +117,46 @@ fn twoband_exact(
     -acc / z
 }
 
+/// Port gate: the reference-grade ED module must reproduce the
+/// fixture's independently implemented exact Green's function on
+/// the dimer parameters (two independent JW/eigh routes).
+#[test]
+fn ed_module_matches_fixture_exact() {
+    use nqist::ed::{BathCoupling, EdReference};
+    let hs = build(2, SectorClass::SpinResolved);
+    let ham = TwoBand {
+        mu: 0.0,
+        u: vec![U_HUB; NT + 2],
+        j: vec![J_HUND; NT + 2],
+        delta: vec![CRYSTAL; NT + 2],
+        bz: vec![0.0; NT + 2],
+    };
+    let bath = [
+        BathCoupling {
+            imp_mode: 0,
+            eps: EPS_B1,
+            v: V1,
+        },
+        BathCoupling {
+            imp_mode: 1,
+            eps: EPS_B2,
+            v: V2,
+        },
+    ];
+    let ed = EdReference::build(&ham, &hs, &bath, &[], BETA);
+    for orb in [0usize, 1] {
+        for i in [1usize, 12, 24, 48, 72, 95] {
+            let tau = BETA * i as f64 / NTAU as f64;
+            let a = twoband_exact(&ham, &hs, orb, tau);
+            let b = ed.greens_tau(orb, tau);
+            assert!(
+                (a - b).abs() < 1e-10,
+                "ed port: orb {orb} tau {tau}: fixture {a} vs module {b}"
+            );
+        }
+    }
+}
+
 /// Solve the two-band impurity at expansion order `order` and return
 /// the Matsubara Green's functions of both orbitals.
 #[allow(clippy::needless_range_loop)]
