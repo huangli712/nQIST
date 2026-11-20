@@ -142,8 +142,7 @@ impl LocalHamiltonian {
                 let ij = time_index(tstp, j.len(), "J");
                 let idl = time_index(tstp, delta.len(), "delta");
                 let ib = time_index(tstp, bz.len(), "Bz");
-                let mut h =
-                    twoband_diagonal_block(hs, s, *mu, u[iu], j[ij], delta[idl], bz[ib]);
+                let mut h = twoband_diagonal_block(hs, s, *mu, u[iu], j[ij], delta[idl], bz[ib]);
                 for term in kanamori_offdiag_terms(j[ij]) {
                     add_term_via_cop(&mut h, hs, s, &term);
                 }
@@ -545,19 +544,14 @@ mod tests {
         w4.sort_by(|a, b| a.partial_cmp(b).unwrap());
         let want4 = [e_t, e_uj, e_uj, e_s];
         for (a, b) in w4.iter().zip(want4) {
-            assert!((a - b).abs() < 1e-10, "sector 4 spectrum {w4:?} vs {want4:?}");
+            assert!(
+                (a - b).abs() < 1e-10,
+                "sector 4 spectrum {w4:?} vs {want4:?}"
+            );
         }
         // M_S = +-1 sectors degenerate with the S = 1 triplet
-        assert_close(
-            &diag(&ham.sector_block(&hs, 2, -1)),
-            &[e_t],
-            "sector 2",
-        );
-        assert_close(
-            &diag(&ham.sector_block(&hs, 6, -1)),
-            &[e_t],
-            "sector 6",
-        );
+        assert_close(&diag(&ham.sector_block(&hs, 2, -1)), &[e_t], "sector 2");
+        assert_close(&diag(&ham.sector_block(&hs, 6, -1)), &[e_t], "sector 6");
         // PH consistency of the half-filling shift at delta = Bz = 0
         // (the off-diagonal strings live in the N = 2 sector only)
         assert_close(&diag(&ham.sector_block(&hs, 0, -1)), &[0.0], "sector 0");
