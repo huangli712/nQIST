@@ -106,7 +106,7 @@ pub(crate) fn families(m: usize, anchor: &Anchor) -> Vec<FamCut> {
 /// the backward flag alone corrupted every cut whose backward
 /// channel carried plain data (cutsum cut#1/cut#4 sector asymmetry
 /// 1.97x while the reference stayed symmetric).
-fn mirrored_line(li: usize, proj: &[CsoeProj], cs: &[usize]) -> bool {
+pub(crate) fn mirrored_line(li: usize, proj: &[CsoeProj], cs: &[usize]) -> bool {
     let p = &proj[cs[li]];
     let (mut wpos, mut wneg) = (0.0f64, 0.0f64);
     for (l, &w) in p.poles.iter().enumerate() {
@@ -142,7 +142,7 @@ thread_local! {
     > = std::cell::RefCell::new(std::collections::HashMap::new());
 }
 
-fn row_les_fit(
+pub(crate) fn row_les_fit(
     delta: &kadanoffbaym::types::ContourGreen,
     poles: &[f64],
     h: f64,
@@ -169,7 +169,46 @@ fn row_les_fit(
     })
 }
 
-fn row_gtr_fits(
+thread_local! {
+    /// Per-imaginary-index vt fit cache for the (4,2) per-m chord
+    /// (the tau anchor's fixed-m coefficient): the csoe_coeffs fit
+    /// of the raw vt data vt_c(delta, m, t) over t on the pole
+    /// basis - exactly what LineSep::vt computes internally (its
+    /// vt_coef). Keyed like ROW_LES_FITS (delta address + poles
+    /// fingerprint + m + n + h).
+    static ROW_VT_FITS: std::cell::RefCell<
+        std::collections::HashMap<(usize, u64, i64, i64, u64), Vec<Complex>>,
+    > = std::cell::RefCell::new(std::collections::HashMap::new());
+}
+
+pub(crate) fn vt_row_fit(
+    delta: &kadanoffbaym::types::ContourGreen,
+    poles: &[f64],
+    h: f64,
+    m: i64,
+    n: i64,
+) -> Vec<Complex> {
+    let key = (
+        delta as *const _ as usize,
+        poles
+            .iter()
+            .fold(0u64, |a, w| a.rotate_left(7) ^ w.to_bits()),
+        m,
+        n,
+        h.to_bits(),
+    );
+    ROW_VT_FITS.with(|c| {
+        if let Some(v) = c.borrow().get(&key) {
+            return v.clone();
+        }
+        let vals: Vec<Complex> = (0..=n).map(|t| super::vt_c(delta, m, t)).collect();
+        let fit = csoe_coeffs(poles, h, &vals);
+        c.borrow_mut().insert(key, fit.clone());
+        fit
+    })
+}
+
+pub(crate) fn row_gtr_fits(
     delta: &kadanoffbaym::types::ContourGreen,
     poles: &[f64],
     h: f64,
@@ -201,7 +240,7 @@ fn row_gtr_fits(
 /// The row multiplier at (vertex v, absolute time t): the per-row
 /// chord's data-derived shape, 1 when the vertex carries no
 /// row-anchored line.
-fn rm(rowmult: &[Option<Vec<Complex>>], v: usize, t: i64) -> Complex {
+pub(crate) fn rm(rowmult: &[Option<Vec<Complex>>], v: usize, t: i64) -> Complex {
     rowmult[v].as_ref().map_or(Complex::ONE, |a| a[t as usize])
 }
 
@@ -244,7 +283,7 @@ fn mat_read(g: &PseudoGreen, d: i64) -> Complex {
 }
 
 /// Fermi kernel with overflow-safe branch.
-fn k_tau(tau: f64, w: f64, beta: f64) -> f64 {
+pub(crate) fn k_tau(tau: f64, w: f64, beta: f64) -> f64 {
     if w >= 0.0 {
         -(-w * tau).exp() / (1.0 + (-beta * w).exp())
     } else {
@@ -448,6 +487,22 @@ pub(crate) fn eval_cut(
                 if matches!(anchor, Anchor::JUpper(_)) {
                     cprod *= p.c_gtr[combo[li]] * (-Complex::I * w * h * (n - jjl) as f64).exp();
                     wsum[rv] += -w;
+                } else if matches!(anchor, Anchor::Tau(_)) {
+                    // MIX per-row semantics (2026-11-20 Tau campaign,
+                    // the two-constant audit signature): the stock's
+                    // mix families evaluate line2 as LineSep::gtr(i1,
+                    // n) - the PER-ROW gtr fit (row_gtr_fits[u1][l] .
+                    // e^{-iwnh}, the INTMINE-L2E instrument's exact
+                    // form). The global column-0 c_gtr (the
+                    // JLower-calibrated choice) differs per pole; the
+                    // odd sectors' pole cancellations amplify the
+                    // difference into the per-class constant ratios.
+                    // The coefficient rides rowmult[rv] (applied at
+                    // the R-vertex time by the window's rm())
+                    let cgr = row_gtr_fits(pp_ints[cs[li]].delta, &p.poles, h, n);
+                    let l0 = combo[li];
+                    rowmult[rv] = Some((0..=n).map(|t| cgr[t as usize][l0]).collect());
+                    cprod *= (-Complex::I * w * h * n as f64).exp();
                 } else {
                     cprod *= p.c_gtr[combo[li]] * (Complex::I * w * h * (n - jjl) as f64).exp();
                     wsum[rv] += w;
@@ -752,22 +807,44 @@ pub(crate) fn eval_cut(
                 if ferm_line {
                     // FERMION: conj(c_tv) with e^{+iwt} phases
                     // (bisection-anchored vs the reference les4)
-                    cprod *= p.c_tv[combo[li]].conj();
-                    if be == 5 || bl == 5 {
-                        cprod *= (Complex::I * w * h * n as f64).exp();
-                    } else if be == 4 || bl == 4 {
-                        let s4 = if bwd { w } else { -w };
-                        cprod *= Complex::new((s4 * (beta - dtau * mm as f64)).exp(), 0.0);
+                    if be == 4 || bl == 4 {
+                        // PER-M ROW-FIT (the coefficient probe's
+                        // verdict 2026-11-20: the c_tv.fold
+                        // factorization is structurally different
+                        // from LineSep::vt's per-m fit coefficients
+                        // - the per-pole ratios are messy complex):
+                        // fold the per-m fit coefficient c_l^{(mm)}
+                        // directly - the raw vt data
+                        // vt_c(delta, mm, t) fitted on the pole
+                        // basis; the anchor is FIXED at tau_m so
+                        // this is a constant per pole. The R-vertex
+                        // t2-phase rides wsum (+w) as before.
+                        // NOTE (calibration 2026-11-20): the per-m fit uses the SAME m
+                        // for both classes on fixtures with shared
+                        // deltas (no materialized d_cc - the
+                        // reflected-index variant made s=1/s=0 mixed:
+                        // 0.15/3.43 vs 0.28/2.35 uniform); the
+                        // remaining per-class discrepancy lives
+                        // OUTSIDE the (4,2) arm (stat-decoration
+                        // class - see the per-chain audit)
+                        let cf = vt_row_fit(pp_ints[cs[li]].delta, &p.poles, h, mm, n);
+                        cprod *= cf[combo[li]];
+                        wsum[rv] += w;
                     } else {
-                        // INTERNAL real endpoint (R vertex, (1,2)/
-                        // (2,1) - m >= 3 only): the vt data's
-                        // t-phase is e^{+iwt} (FTVPROBE: the s=+1
-                        // variant reproduces vt_c at 1.4e-6 over the
-                        // full grid; the legacy +w gave e^{-iwt},
-                        // 1.1e-1). The flip also makes the internal
-                        // phase CONSISTENT with the (1,5) anchor
-                        // constant e^{+iwnh} (they ran opposite)
-                        wsum[rv] += -w;
+                        cprod *= p.c_tv[combo[li]].conj();
+                        if be == 5 || bl == 5 {
+                            cprod *= (Complex::I * w * h * n as f64).exp();
+                        } else {
+                            // INTERNAL real endpoint (R vertex, (1,2)/
+                            // (2,1) - m >= 3 only): the vt data's
+                            // t-phase is e^{+iwt} (FTVPROBE: the s=+1
+                            // variant reproduces vt_c at 1.4e-6 over the
+                            // full grid; the legacy +w gave e^{-iwt},
+                            // 1.1e-1). The flip also makes the internal
+                            // phase CONSISTENT with the (1,5) anchor
+                            // constant e^{+iwnh} (they ran opposite)
+                            wsum[rv] += -w;
+                        }
                     }
                     isum[tv].push((
                         w,
@@ -857,7 +934,7 @@ pub(crate) fn eval_cut(
                 // reference's sigma_mat_core places those K kernels
                 // through its own Matsubara backbone, which our mat
                 // segments + this bare coefficient reproduce)
-                cprod *= p.c_mat[combo[li]];
+                cprod *= -p.c_mat[combo[li]];
             }
             _ => {
                 // invalid combination for a well-formed cut
@@ -1154,7 +1231,13 @@ pub(crate) fn eval_cut(
                         // - wrong for the les context (and for any
                         // non-TTI data)
                         let gv = match anchor {
-                            Anchor::JLower(_) => gtr(g, u as i64, nsteps as i64),
+                            // MIX reads the CONTINUATION branch too
+                            // (the factor-6 probe: the stock's data_bc
+                            // reads psc(gb, t2, t1) = the -ret*+less
+                            // branch; the elapsed in-triangle form
+                            // differs by the real-part sign - the
+                            // two-constant audit's source)
+                            Anchor::JLower(_) | Anchor::Tau(_) => gtr(g, u as i64, nsteps as i64),
                             _ => gtr(g, (nsteps - u) as i64, 0),
                         };
                         f[u] = gv * state_r[u];
@@ -1700,7 +1783,18 @@ pub(crate) fn eval_cut(
             chain.sectors
         );
     }
-    cprod * oric * meas * closer * chain.ops[0] * total * chain.ops[2 * m - 1]
+    let val = cprod * oric * meas * closer * chain.ops[0] * total * chain.ops[2 * m - 1];
+    if matches!(anchor, Anchor::Tau(_)) {
+        // the mix's ADJOINT-SCATTER convention: the stock writes
+        // lmix += pref * [op1.S.op4]^dag - at 1x1 the pre-scatter
+        // sandwich IS this value, so the written value is its
+        // conjugate plus the global -1 (empirically stock =
+        // -conj(val), the factor-6 campaign's closing
+        // identification; the -1's principled home is under audit)
+        -val.conj()
+    } else {
+        val
+    }
 }
 
 /// Sum of ALL block cuts for the given anchor over topologies,
@@ -1730,7 +1824,20 @@ pub(crate) fn sigma_cuts_m(
     // embarrassingly parallel; chains are prebuilt (moved into the
     // work items) and each thread accumulates a per-sector partial
     let topos = connected_pairings(m);
-    let cuts = families(m, anchor);
+    let mut cuts = families(m, anchor);
+    // diagnostic knob (mirrors the evalfam2m one): "nl,ni,nr" keeps
+    // only that family; a leading '!' excludes it
+    if let Ok(f) = std::env::var("XCA_MCUT") {
+        let (excl, f) = match f.strip_prefix('!') {
+            Some(r) => (true, r.to_string()),
+            None => (false, f),
+        };
+        let p: Vec<usize> = f.split(',').map(|x| x.parse().unwrap()).collect();
+        cuts.retain(|c| {
+            let hit = (c.nl, c.ni, c.nr) == (p[0], p[1], p[2]);
+            if excl { !hit } else { hit }
+        });
+    }
     let chans = super::boson_rt::chans_with_bath(pp_ints, bath);
     let mut work = Vec::new();
     for (ti, topo) in topos.iter().enumerate() {

@@ -43,3 +43,22 @@ pub(crate) fn poly_integral_chain(
         poly_integral_scalar(v, i0, i1, integ)
     }
 }
+
+/// Entrywise matrix variant of [`poly_integral_chain`]: identical
+/// weights applied per matrix entry (the quadrature is
+/// entrywise-linear), so the result is exactly the scalar kernel
+/// applied to each entry channel of the block-valued array.
+pub(crate) fn poly_integral_chain_mat(
+    v: &[Vec<Complex>],
+    i0: usize,
+    i1: usize,
+    nel: usize,
+    integ: &Integrator,
+) -> Vec<Complex> {
+    let mut out = vec![Complex::ZERO; nel];
+    for q in 0..nel {
+        let col: Vec<Complex> = v.iter().map(|b| b[q]).collect();
+        out[q] = poly_integral_chain(&col, i0, i1, integ);
+    }
+    out
+}

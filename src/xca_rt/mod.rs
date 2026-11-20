@@ -25,8 +25,10 @@
 mod boson_rt;
 pub(crate) mod eval1;
 pub(crate) mod eval2;
+pub(crate) mod eval2m;
 pub(crate) mod evalfam;
 pub(crate) mod evalfam2;
+pub(crate) mod evalfam2m;
 pub(crate) mod evalm;
 pub(crate) mod fit;
 pub(crate) mod quad;

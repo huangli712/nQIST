@@ -150,6 +150,14 @@ pub(crate) fn add_sigma_tstp_xca2(
     fit2: &CsoeFit,
     pp_sigma: &mut [PseudoGreen],
 ) {
+    // multi-band sectors take the matrix path (the stock oca
+    // dispatch rule: ANY intermediate block > 1x1); the scalar ten
+    // families below stay the single-band production route,
+    // bit-identical
+    if pp_g[d.sa].size1 * pp_g[d.sb].size1 * pp_g[d.sc].size1 > 1 {
+        super::eval2m::add_sigma_tstp_xca2m(n, d, pp_g, beta, h, kt, integ, fit1, fit2, pp_sigma);
+        return;
+    }
     add_sigma_tstp_xca2_fam(n, d, pp_g, beta, h, kt, integ, fit1, fit2, pp_sigma, !0u32)
 }
 

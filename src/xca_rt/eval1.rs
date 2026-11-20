@@ -97,6 +97,16 @@ pub(crate) fn add_sigma_tstp_xca1(
     fit: &CsoeFit,
     pp_sigma: &mut [PseudoGreen],
 ) {
+    // multi-band sectors take the matrix path (the same dispatch
+    // rule as the stock oca kernel: ANY involved block > 1x1 - a
+    // dim-1 OUTPUT sector with dim-2 intermediates still needs the
+    // full op1 . G . op2 sandwich, the (0,0) corner would truncate
+    // it); the scalar fast path below is the all-1x1 single-band
+    // production route, kept bit-identical
+    if pp_g[d.sa].size1 > 1 || pp_sigma[d.out].size1 > 1 {
+        add_sigma_tstp_xca1_matrix(n, d, pp_g, h, fit, pp_sigma);
+        return;
+    }
     let dim_out = pp_sigma[d.out].size1;
     let ntau = pp_g[d.sa].ntau as i64;
     let ga = &pp_g[d.sa];
@@ -146,4 +156,83 @@ pub(crate) fn add_sigma_tstp_xca1(
 #[allow(dead_code)]
 pub(crate) fn _channels(_pp_ints: &[Hybridization]) -> usize {
     _pp_ints.len()
+}
+
+/// Multi-band (matrix-block) order-1 path: the SAME kernel
+/// structure as `nca::accumulate_sigma_tstp` (op1 · G^sa · op2
+/// sandwiches into every output entry) with every hybridization
+/// read replaced by the pole-basis reconstruction of [`Line1`] -
+/// the independent-implementation cross-check axis of the rt-XCA
+/// campaign, now band-generic (anchored by
+/// `xca1_matches_nca_realtime_twoband`).
+#[allow(clippy::too_many_arguments)]
+fn add_sigma_tstp_xca1_matrix(
+    n: i64,
+    d: &SigmaDiagram,
+    pp_g: &[PseudoGreen],
+    h: f64,
+    fit: &CsoeFit,
+    pp_sigma: &mut [PseudoGreen],
+) {
+    use crate::nca::{pp_greater, pp_les, pp_tv};
+    let dim_out = pp_sigma[d.out].size1;
+    let ntau = pp_g[d.sa].ntau as i64;
+    let ga = &pp_g[d.sa];
+    let line = Line1::new(d.delta, fit, h);
+    // non-equal-time ret (greater) and lesser
+    for j in 0..n {
+        let l = line.gtr(n, j);
+        let prod = d.op1.mat_mul(&pp_greater(ga, n, j)).mat_mul(&d.op2);
+        let idx = pp_sigma[d.out].ret.idx(n, j);
+        for i in 0..dim_out {
+            for k in 0..dim_out {
+                pp_sigma[d.out].ret.block_mut(idx)[i * dim_out + k] +=
+                    d.prefactor * l * prod.get(i, k);
+            }
+        }
+        let l = line.les(j, n, n as usize);
+        let prod = d.op1.mat_mul(&pp_les(ga, j, n)).mat_mul(&d.op2);
+        let idx = pp_sigma[d.out].less.idx(j, n);
+        for i in 0..dim_out {
+            for k in 0..dim_out {
+                pp_sigma[d.out].less.block_mut(idx)[i * dim_out + k] +=
+                    d.prefactor * l * prod.get(i, k);
+            }
+        }
+    }
+    // mixed component
+    for m in 0..=ntau {
+        let l = line.tv(n, m, n as usize);
+        let prod = d.op1.mat_mul(&pp_tv(ga, n, m)).mat_mul(&d.op2);
+        for i in 0..dim_out {
+            for k in 0..dim_out {
+                pp_sigma[d.out].lmix.raw_block_at_mut(n, m)[i * dim_out + k] +=
+                    d.prefactor * l * prod.get(i, k);
+            }
+        }
+    }
+    // equal-time contacts: raw point reads, exactly as the scalar
+    // path and the reference (the delta data is scalar per channel)
+    {
+        let l_nn = d.delta.les(n, n);
+        let r_nn = d.delta.ret(n, n);
+        let lam_et = l_nn - r_nn.conj();
+        let prod = d.op1.mat_mul(&pp_greater(ga, n, n)).mat_mul(&d.op2);
+        let idx = pp_sigma[d.out].ret.idx(n, n);
+        for i in 0..dim_out {
+            for k in 0..dim_out {
+                pp_sigma[d.out].ret.block_mut(idx)[i * dim_out + k] +=
+                    d.prefactor * lam_et * prod.get(i, k);
+            }
+        }
+        let l = -l_nn.conj();
+        let prod = d.op1.mat_mul(&pp_les(ga, n, n)).mat_mul(&d.op2);
+        let idx = pp_sigma[d.out].less.idx(n, n);
+        for i in 0..dim_out {
+            for k in 0..dim_out {
+                pp_sigma[d.out].less.block_mut(idx)[i * dim_out + k] +=
+                    d.prefactor * l * prod.get(i, k);
+            }
+        }
+    }
 }

@@ -128,6 +128,53 @@ pub(crate) fn build_rt_chain_mixed(
     Some(RtChain { sectors, ops })
 }
 
+/// MATRIX walk of [`build_rt_chain_mixed`]: identical sector
+/// semantics (fermion vertices transition through the flavor ops,
+/// boson vertices are same-sector diagonal insertions) but storing
+/// the FULL operator blocks. The scalar builder stays the all-1x1
+/// route.
+pub(crate) fn build_rt_chain_mixed_m(
+    hs: &HilbertSpace,
+    pairs: &[(usize, usize)],
+    cs: &[usize],
+    chans: &[RtChan],
+    s0: usize,
+) -> Option<super::evalm::RtChainM> {
+    let m = pairs.len();
+    let nv = 2 * m;
+    let mut owner = vec![(0usize, false); nv];
+    for (li, &(a, b)) in pairs.iter().enumerate() {
+        owner[a] = (li, false);
+        owner[b] = (li, true);
+    }
+    let mut sectors = vec![0usize; nv + 1];
+    sectors[0] = s0;
+    let mut ops = Vec::with_capacity(nv);
+    for v in 0..nv {
+        let (li, later) = owner[v];
+        match &chans[cs[li]] {
+            RtChan::Fermion(h) => {
+                let flav = if later { h.op_cre_fl } else { h.op_ann_fl };
+                let (target, blk) = hs.ops[flav].block(sectors[v])?;
+                sectors[v + 1] = *target;
+                ops.push(blk.clone());
+            }
+            RtChan::Boson { blocks, .. } => {
+                let ss = sectors[v];
+                let Some((_, blk)) = blocks.iter().find(|(s, _)| *s == ss) else {
+                    return None;
+                };
+                sectors[v + 1] = ss;
+                ops.push(blk.clone());
+            }
+        }
+    }
+    if sectors[nv] != s0 {
+        return None;
+    }
+    Some(super::evalm::RtChainM { sectors, ops })
+}
+
 /// Bosonic Matsubara kernel B(tau, w) = -e^{-w tau} / (1 - e^{-b w})
 /// (overflow-safe; the reflected branch for w < 0). Statistical
 /// limit: b*w*B -> -1 at w -> 0 (the Bose pole; NOT the fermion
