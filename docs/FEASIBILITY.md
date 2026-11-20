@@ -1410,18 +1410,360 @@ the double-I association at dim>1. The five-fix chain and all
 instruments (factor probes, per-sector probe, cutsum test) are
 in the tree.
 
-ALL-I PER-CHAIN PROBE (first run): the ops-based flavor matching
-is NOT injective at two-band - several pairs show ~1e-6 / ~1e6
-ratios (mismatched diagrams: mine~0 vs want-huge and vice
-versa). The RELIABLE pairs (the [0,0]/[1,1] swap-consistent
-families) give nearly-REAL but chain-dependent ratios
-(-0.198/+0.745/-1.731) - a real per-chain multiplicative error,
-not a global constant. NEXT: a stronger matching key (the ops'
-flavor identification + the channel deltas) or the direct
-per-factor probe for the all-I flow at two-band (mirror
-tau_factor_probe_singleband); the all-I shares the validated
-(1,5)+seed machinery with (0,1,1) so the suspects narrow to the
-I->I transition and the (4,1) chord.
+THE (4,1) NORMALIZATION BREAKTHROUGH + THE SYNTHETIC-CUTSUM
+CLARIFICATION (final session stretch): the two-band A/B found
+mode7-kernel + divide-by-(1+e^{-beta w}) + nosign = 2.898 (from
+16.86, 5.8x better!) - the c_mat projection basis carries the
+Matsubara (1+e^{-beta w}) normalization (the k_tau convention:
+k_tau = -e^{-wt}/(1+e^{-bw})). THE PARADOX RESOLVED: the single-
+band cutsum test (xca2_cutsum_fullcomp_isolation) uses a
+HAND-BUILT synthetic projection (poles=[0.0], hand constants)
+NOT the fixture fit - a constant-gate world where w=0 makes the
+kernel flat but the norm divides by 2 (hence its dev 1.5 under
+the variant = exactly the factor-2). AND the real single-band
+fixture NEVER FILLS delta.mat (ContourGreen::new(.., ZERO), no
+mat fill) - the real single-band all-I is trivially zero - NO
+real single-band constraint exists on the (4,1) form! The
+TWO-BAND fixture (deltas[ix]/deltas_cc[ix] with real mat data)
+is the only real (4,1) test - and there kernel+norm wins
+16.86 -> 2.898. REMAINING: the sign interplay (the principled
+k_tau form carries the built-in minus = the 'sign' variant at
+4.275 vs the empirical nosign 2.898) + the residual 2.9 to the
+8e-2 gate. NEXT: re-derive the (4,1) cleanly (k_tau basis + the
+stock's lam1(m-tau2) reading), update the synthetic cutsum
+constants to the new convention (x2 at w=0), and drive the
+two-band residual. All knobs in place: XCA_41K/S/C/N.
+
+THE (4,1) SEMANTICS FULLY DOCUMENTED (the final piece):
+csoe_project_all projects the mat on the SINGLE-BRANCH
+fermi_kernel (fit.rs:76): K(tau,w) = -e^{-w tau}/(1+e^{-beta
+w}) for ALL w (no w<0 branch, unlike evalfam2's k_tau!) - so
+the faithful (4,1) reconstruction per pole =
+[-c_mat . e^{-w mm} / (1+e^{-bw})] . e^{+w t2} = the 'sign+fp+
+mode7' variant (measured 4.275 at two-band; the empirical
+'nosign' 2.898 - the residual sign/structure is the remaining
+puzzle, per-family variation). Full suite 124/0/4. THE NEXT
+SESSION'S TASK: the two-band (4,1) factor probe (mirror the
+successful single-band (4,2) probe): print my per-pole
+reconstruction vs the stock's lam1 RAW values at (mm-t2) for
+the two-band fixture's real deltas - the divergence point
+names the final structure; then set the faithful default,
+update the synthetic cutsum constants (x2 at w=0), and drive
+the residual 2.9 -> the 8e-2 gate.
+
+THE FINAL ELIMINATION ROUND + THE CLEANED RESIDUAL STRUCTURE
+(2026-11-20 last stretch): the direction fix (XCA_41D=down,
+the downward Volterra q in [tau2..mm] matching the stock's
+triangle {tau2<=tau1}) measured 7.5-35 - WORSE; the rev route
+7.6-35 - worse; the forward + mode7 + fp + nosign (2.898)
+remains THE BEST. The per-chain ratios under the best variant
+are now NEARLY PURE REAL with the mirror pairs consistent:
+  A(ch0/1): {+0.031, -0.135, +0.294}
+  B(ch2/3): {+0.230, -0.404, +0.563}
+and after the sector-sign correction (which production applies
+- the hand-sum lacks it): ALL-POSITIVE fractional {0.031,
+0.135, 0.294}/{0.230, 0.404, 0.563} - my values are 2-30x TOO
+SMALL, a missing positive real factor per (bath x PH-class).
+The classes = the particle-hole mirror pairs of the chain
+origin sector. NEXT-LEVEL CANDIDATES: an occupation-dependent
+real factor (the (1-f)/f class), the double-application of
+the norm, or the imaginary-axis quadrature (the stock's
+sub-grid Gregory vs my poly_integral over the cancellation-
+heavy Matsubara integrals). The data-level factorization is
+EXACT (the (4,1) probe); the phases are all correct.
+
+THE COMPLETE STOCK vt3 REFERENCE (the last piece, eval2m:450-499
++ sigma_mat_core_blk): val = pref.(0,-sig.dtau^2).SUM_{l in
+poles(line2)} phase(w_l,n,0,h).[op1.INTEGR dtau1 ga.mat(m-tau1)
+.op2.prof_l(tau1).INTEGR dtau2<=tau1 gb.mat(tau1-tau2).op3.
+gc_vt(tau2).lam1raw(m-tau2).op4] then the T-CONJ scatter
+(blk[r*dim+c] += pref_v.acc[c*dim+r].conj()). KEY FACTS: line2's
+factor IS per-pole (prof_l = ls2.vt_coef_at per tau + the
+hoisted phase(w_l,n,0,h)); line1 = the RAW delta mat; gc_vt =
+ptv(gc,tau2,n) the propagator vt rows; the measure carries an
+EXPLICIT -i.sig.dtau^2. Factor-by-factor vs my window: the
+line1 phase post-conj consistent, line0 data-exact, the
+nesting Fubini-equal, the imaginary prefactor excluded by the
+real measured ratios - ALL STRUCTURALLY CONSISTENT yet the
+ratios are 0.03-0.56. THE REMAINING INSTRUMENT: the direct
+transcription test (the stock's formula at MY quadrature,
+three-way vs my eval_cut_m and the stock's fam value) - the
+divergence point is then mechanical. NEXT SESSION: write
+tau_all_i_transcription_twoband (use oca::sandwich + gregory_blk
+- both pub(crate); the [0,0]@s8 chain; delta-pointer matching).
+
+THE TRANSCRIPTION LANDED AND VALIDATED (the final stretch): the
+direct transcription (the stock formula at grid Gregory, in-tree
+as tau_all_i_transcription_twoband) reproduces the stock at
+trans/stock = -1.0101 (nearly pure real; the -1 = the unknown
+common family pref, the 1% = the quadrature difference) - THE
+FORMULA UNDERSTANDING IS VALIDATED and the correct reference
+implementation now EXISTS IN-TREE for factor-level comparison.
+My window under the best variant: mine/trans = -0.291 (my value
+~1/3.4x of the truth with a -1) - the per-(family,class)
+residual table now has a clean in-tree reference. STRUCTURAL
+ALIGNMENT RE-VERIFIED: the anchor-side segment = the MAT read,
+the n-side = the VT read in BOTH (the string comparison
+ops[3].MAT.ops[2].mat.ops[1].VT.ops[0]; the sector swap
+s1<->s3 is mirror-degenerate on this fixture). NEXT (the
+mechanical step): the per-tau integrand comparison - print my
+window's effective (tau1,tau2) integrand vs the transcription's
+f_bc/f_ac rows for the [0,0]@s8 chain - the divergence point
+is then directly visible; candidates: the line factors' forms
+(the (1,5) c_tv.conj-based kernel vs ls2.vt_coef_at profiles,
+the (4,1) pole form vs lam1raw), the decorations, or the
+quadrature warmup.
+
+THE V2 EXPLORATION ROUND (the final session stretch, fully
+documented for the next session): the manual formula (in
+tau_all_i_transcription_twoband) is machine-validated per-tau1,
+and the transcription's string ops[3].MAT.ops[2].mat2.ops[1].VT.
+ops[0] was derived to be the LEFTWARD accumulation with the
+seed reading VT (its own sector, at (tau,n)) and the close
+reading MAT (its own sector, at (mm-tau)) - implemented as the
+XCA_TAU_V2 knob (gated to the all-I cut nl==0,ni==2,nr==0,
+with the (4,1)->isum[1] and (1,5)->isum[2] kernel swaps).
+MEASURED (all gated, with the (4,1) variants):
+  forward (no V2): 2.898 (THE BEST)
+  V2 leftward + nosign: 7.448; + sign: 5.923
+  V2 rightward (the rev-algebra attempt): 7.622
+  V2 ungated leftward: 8.5e6 = the (0,1,1) CONTAMINATION
+    (the lesson: Tau-anchor branches MUST be gated to the cut!)
+  rev: 7.6-35; down (XCA_41D): 7.5-35
+THE PUZZLE: the leftward V2 derives to be structurally
+identical to the machine-validated manual yet measures 5.9-7.4
+- the equivalence derivation is missing a link. THE PRECISE
+NEXT STEP: dump the V2 window's per-tau close integrand (the
+XCA_DBG debug block in eval_cut_m, extended with the per-tau
+rows) and diff it against the manual's my_row - the divergence
+point is then exact and mechanical. Full suite 125/0/4 green
+(all knobs default-off).
+
+THE FINAL DUMP FINDING (the last instrument run): the V2
+window's per-COMBO close integrands are ~1e2-2.4e4 (combos
+with line0's pole l0=1 dominate at 1.9-2.4e4) while the
+manual's total my_row is only ~60-130 - because the (4,1)
+kernel e^{+w t2} rides the seed UNDAMPED (its constant
+e^{-w mm} lives in cprod, applied only at the RETURN, after
+the close) - the intermediates legitimately explode and cprod
+damps them at the end. THE CONSEQUENCE: massive inter-combo
+cancellations amplify any small structural error ~100x. THE
+MECHANICAL NEXT STEP: extend the dump comparison with the
+per-combo cprod weighting (the test knows cprod per combo:
+stat.parity x the (4,1) variant constant x the (1,5)
+constants) - then sum the weighted dumps per tau and diff
+against the manual's my_row directly; the divergence point
+is exact. THE OTHER ROUTE (cheaper): inline the cprod constant
+INTO the seed (fold e^{-w mm}/(1+e^{-bw}) into the ikern's
+per-entry coefficient - the isum entries support per-entry
+coefficients!) so the intermediates stay bounded and the
+per-tau diff is direct.
+
+THE V2 BREAKTHROUGH (the decisive session-stretch result): the
+V2 = the seed/close READ swap (the seed reads VT of its OWN
+sector at (tau,n); the close reads the MAT walk of its OWN
+sector at (mm-tau)) + the chord kernel attachment swaps
+((4,1)->isum[1] at the seed, (1,5)->isum[2] at the I->I output)
++ the best (4,1) variant (mode7+fp+nosign, the constant FOLDED
+into the isum per-entry coefficient - Route B). All gated to
+the all-I cut (nl==0,ni==2,nr==0) under XCA_TAU_V2.
+THE PER-CHAIN VERDICT (the probe under V2):
+  A(ch0/1): {1.00043, 1.00444, 1.01013} - CLOSED at the
+    quadrature level! (the -1 signs = the sector sign, which
+    production applies; the hand-sum lacks it)
+  B(ch2/3): {0.910, 0.919, 0.925} (+0.062i mirror-consistent)
+  C(ch4/5): {0.819, 0.821}
+THE STRUCTURE IS CORRECT (family A machine-closed!); the
+remaining per-family ~8%/18% deficits are a SECOND smaller
+issue (per-bath pole-quality class - the data probe verified
+the projections exact, so the deficit is in the kernel/pole
+treatment for those channels' poles). The gate's 7.448 = the
+family-B ~8% deficit on the big entries. NEXT: the per-combo
+dump for a [2,2] chain (mirror the transcription test's
+cs=[0,0] with cs=[2,2]) - the divergent combo/pole names the
+remaining factor. NOTE the V2 is OFF by default (the forward
+remains at 2.898); making the V2 the default + closing the
+B/C deficits completes the Tau two-band closure. Full suite
+125/0/4 green.
+
+THE FINAL SESSION-STRETCH VERDICT (the complete picture):
+(1) THE SAME-CHANNEL CLOSURE IS COMPLETE - with the CORRECT
+channel fits in the stock calls, ALL THREE same-channel
+families close under V2: [0,0]: 1.0101, [2,2]: 1.0171,
+[4,4]: 1.0032 (the earlier B/C 0.91/0.82 were the PROBE's
+wrong-fits artifacts - the stock fam calls must pass
+fits[cs[0]],fits[cs[1]] by the delta-pointer channels!).
+(2) THE MIXED-CHANNEL ISSUE IS ISOLATED AND CHARACTERIZED: the
+mixed combos ([a,b], a!=b) show the reciprocal pattern
+([0,2]: 0.647, [2,0]: 1.638, [0,4]: 0.246, [4,0]: 4.588)
+while the transcription is CORRECT for mixed (trans/stock
+= -1.00 to -1.02!) - the window evaluates the wrong
+channel-role combination. THE XCA_TCSWAP EXPERIMENT (the
+swapped cs to eval_cut_m, the chain unchanged): the values
+CHANGE but do NOT correct ([0,2]: -0.354, [2,0]: -2.824) -
+the simple cs-order swap is NOT the fix. THE CONCLUSION: the
+bug is in the CHAIN BUILDER's line-to-ops flavor assignment
+(build_rt_chain_mixed_m) for the mixed case - the same-
+channel closure is immune because both lines' flavor
+operators coincide. THE NEXT SESSION'S TASK: the flavor-op
+assignment - for the pairing (0,2),(1,3): line0's channel
+flavor must sit at ops[0]&ops[2] and line1's at ops[1]&ops[3]
+- audit the builder's convention vs the stock's diagram ops
+(the matched diagram's op1..op4 by the delta pointers) for
+a mixed combo; the fix is then local to the builder (or the
+cs interpretation at its call sites). NOTE: the gate's Tau
+residual under V2 (7.448) = the mixed-channel errors -
+fixing the builder closes the gate. THE FULL INSTRUMENT
+SET: the transcription test (parameterized XCA_TCS/XCA_TCS2/
+XCA_TCSWAP + the per-combo XCA_V2DBG dumps + the fam-vs-
+production per-diagram comparison), the per-chain probe,
+the knobs XCA_TAU_V2/41K/41S/41C/41N/41D.
+
+THE CHAIN-SWAP ROUND (the final experiment): building the chain
+with the swapped cs (the flavor ops swap, the projections stay)
+gives YET ANOTHER wrong value ([0,2]: -0.556, [2,0]: -1.767)
+- so all three variants (original/eval-swap/chain-swap) give
+three DIFFERENT wrong values for the mixed combos. THE FULL-
+SWAP HYPOTHESIS (the window's [a,b] computes the transcription's
+[b,a]) is consistent with the per-combo ratios (0.647*1.638 =
+1.06 ~ 1) BUT contradicted by the gate's sum (a clean relabel
+would leave the total invariant -> the gate should close, it
+says 7.448) - so the mixed issue is an ENTANGLED mis-assignment
+(the projections-to-lines AND the ops interact wrongly). THE
+NEXT SESSION'S DECISIVE STEP: the per-combo dump for a MIXED
+combo (XCA_TCS=0 XCA_TCS2=2 XCA_V2DBG=1) - the manual's
+per-(l0,l1) rows vs the window's v2close dumps side by side;
+the divergent pole-combo names the factor directly. NOTE the
+manual formula itself is only valid for ch0-based combos (the
+my-formula total for [2,2] was 3.43x off while the WINDOW was
+right at 1.017!) - the manual's own channel-dependence (its
+k41/k15 sectors/ops assumptions) is broken for non-ch0; use
+the window-vs-stock per-diagram comparison as the primary
+instrument (the transcription test's mine/stock line).
+ROOT CAUSE OF THE MANUAL'S BLINDNESS (the final dump): the
+mixed [0,2] manual rows are ALL ZERO - the manual takes the
+ops' [0,0] ENTRIES (dd.op2.raw()[0] etc.) and the mixed
+diagram's flavor operators have VANISHING (0,0) entries (they
+map between different basis states) - the scalar-entry
+diagnostic is structurally blind for the mixed diagrams; the
+full-matrix window/transcription comparisons are the only
+valid instruments there. The window's mixed per-combo dumps
+ARE valid (the v2close values non-zero: combo (1,1) dominates
+at ~6e4/-2e4) - the remaining task is a full-matrix
+per-pole-combo reference for the mixed case (e.g., a
+transcription variant that keeps the per-l1-pole
+decomposition with the (l0-summed) raw lam1 - the pieces
+exist in the transcription's loop). SESSION FINAL STATE:
+same-channel closure COMPLETE (1.003-1.017); the mixed-channel
+issue fully characterized (reciprocal pattern, 3 swap
+verdicts, the entangled mis-assignment); all instruments
+in-tree; full suite 125/0/4 green (default).
+
+THE ULTIMATE LOCALIZATION (the two-sided per-pole dumps, the
+final finding): the window-vs-transcription pole-COMBO
+decompositions disagree: [2,2] (CLOSED): the window's dominant
+= (l0=0, l1=1) carrying the FULL value while the
+transcription's dominant = l1=0 (fits/LineSep indexing); [0,0]
+(CLOSED): both (1,0)-dominant (consistent); the mixed [0,2]:
+the window has ONLY (1,1) non-zero (ch2's l1=0 terms vanish
+EVERYWHERE in the window - both [2,2] and the mixed - while
+the stock's LineSep prof_{l=0} is THE dominant for ch2).
+DIAGNOSIS: the (1,5)'s c_tv.conj().e^{+iwnh}.e^{-w(beta-tau)}
+factorization FAILS for ch2's pole-0 (proj[2].c_tv[0] ~ 0 -
+the projection's vt coefficient vanishes where the LineSep
+per-m fit is dominant) - THE SAME CLASS as the (4,2)-saga
+defect (the c_tv-based factorization is structurally
+different from LineSep::vt's per-m fit, FEASIBILITY
+2026-11-29). The same-channel totals close COINCIDENTALLY
+(the redistribution cancels in the full sum); the mixed
+exposes it (the two lines' redistributions fail to cancel).
+THE FIX (validated template in-tree): the (1,5) per-m
+ROW-FIT - mirror the (4,2)'s fix (evalfam2::vt_row_fit +
+the wsum phase, the arm at evalfam2m's (1,2)|(2,1)|(1,5)|...
+match, the be==5||bl==5 branch) - then the mixed combos
+carry the correct per-pole profiles and the gate closes.
+NOTE the (1,5)'s n-side endpoint differs from the (4,2)'s
+anchor endpoint (the e^{+iwnh} constant vs the wsum phase)
+- check vt_row_fit's argument convention (mm vs n) before
+applying.
+THE COMPLETE STRUCTURAL UNDERSTANDING + THE FIX DESIGN (the
+final consolidation): vt_row_fit (evalfam2:184) fits a
+FIXED-tau ROW's t-dependence (csoe_coeffs on the t-axis) -
+suited to the (4,2)'s anchor row, NOT the (1,5)! The (1,5)
+needs the TAU-COLUMN fit at the fixed t=n: the values
+vt_c(delta, m, n) for m in [0..ntau] fitted on the basis
+{e^{-w_l(beta - m.dtau)}} - a small complex LSQ (2x2 for the
+2-pole fixture; the normal equations on the dtau grid). THE
+ROOT MECHANISM: ch2's two poles are NEAR-DEGENERATE -> the
+per-pole assignment is non-unique -> the projection's c_tv
+assigns the vt weight to pole 1 while the stock's LineSeg
+per-m fit assigns it to pole 0 (both reproduce the data -
+the SUMS agree!); the same-channel totals close
+coincidentally (each line's redistribution is self-
+consistent) but the MIXED fails because the kernels'
+(l0,l1)-coupling (e^{+w_l0 t2}.e^{-w_l1(beta-q)} inside the
+core) makes the assignment visible. THE FIX: the (1,5)'s
+coefficient per pole from the TAU-COLUMN fit at t=n (the
+correct assignment aligned with the data's separated form
+A_l.e^{-iw_lnh}.e^{-w_l(beta-tau)}) -> the cprod constant +
+the mode-1 kernel unchanged (the machinery stays
+compatible). IMPLEMENTATION: add the column-fit helper (the
+normal-equations LSQ on the dtau grid, ~20 lines in
+evalfam2.rs mirroring vt_row_fit's cache pattern), use it in
+the (1,5) branch of BOTH files (evalfam2 + evalfam2m), then
+re-run: the same-channel closures must stay (the sums are
+assignment-invariant!) and the mixed should close -> the V2
+default -> the gate.
+
+THE COLUMN-FIT VERDICT (the experiment ran before the KB
+breakage): the (1,5) tau-column fit (vt_col_fit in fit.rs,
+knob XCA_15COL in evalfam2m's (1,5) branch) is ACTIVE (the
+same-channel values shifted: [2,2]: 1.0171->1.0185, [4,4]:
+1.0032->1.0067) but the mixed BARELY moved ([0,2]:
+0.6466069->0.6466097, [2,0]: 1.6383441->1.6383454) - the
+column fit recovers NEARLY THE SAME per-pole assignment as
+the c_tv projection -> THE (1,5)'s FACTORIZATION IS NOT THE
+MIXED BUG'S ROOT. The two-sided dump fact stands (the window
+[l0,l1=0]-terms vanish for ch2 while the stock's LineSep
+l1=0 is dominant) but the mechanism is NOT the c_tv
+assignment - the remaining candidates: (a) the poles arrays
+themselves differ between proj[2] and the fits/LineSep input
+(verify: print proj[2].poles vs fits[2].poles!), (b) the
+LineSep's t-axis per-row fit assigns differently than ANY
+tau-axis view can (the two views genuinely disagree on
+near-degenerate data - the fixture's ch2 poles may be EXACTLY
+degenerate making the assignment arbitrary and the sums'
+agreement coincidental), (c) the mixed failure is in the
+(l0,l1) kernel coupling elsewhere. NOTE: the KadanoffBaym
+dependency was left broken MID-EDIT by another session
+(dyson/timestep.rs `id`/`w`/`gles` undefined, 9 errors) -
+nQIST cannot build until they finish; the lib test target
+ran BEFORE the breakage (the verdict above is valid).
++ ops verification - TRUSTWORTHY): the per-chain ratios are
+CONSTANT per (channel-family, sector-class), nearly REAL, with
+sign pattern (-,+,-):
+  [0,0]/[1,1]: {-0.198, +0.746, -1.731}
+  [2,2]/[3,3]: {-0.787, +1.773, -2.349}
+  [4,4]/[5,5]: {-0.467, +2.152, -7.37}
+  [6,6]/[7,7]: {-0.293, +0.770, -1.166}
+(the sector classes are the particle-hole mirror pairs
+(s2,s6)/(s1,s7)/(s0,s8) - the chain origin's (N1,N2)
+occupation). The PHASES ARE ALL CORRECT - the error is a REAL
+multiplicative factor per (bath, sector-mat-data). Consistent
+with the (4,1) tau-structure hypothesis: the stock's vt3
+INTEGRATES lam1.mat as the Matsubara backbone kernel (a
+tau-dependent delta-mat convolution) while my (4,1) folds the
+CONSTANT c_mat - per pole the delta mat = A_l e^{-w_l(tau_m-
+tau)} = [A_l e^{-w_l tau_m}] . e^{+w_l tau} (the mode-7 kernel
+class!) - the integrated effect depends on BOTH the bath's
+poles AND the sector's propagator mat data (hence the
+per-family, per-sector-class table). OPEN QUESTION: why does
+the kernel-less + sign form pass at single-band (cutsum all
+mm, 0.41%) - the single-band fixture's shared-delta structure
+may make the two forms coincide there. NEXT: A/B the (4,1)
+isum kernel (mode 7 e^{+w tau} with the per-entry coefficient
+-c_mat . e^{-w mm dtau}) at two-band FIRST, then reconcile the
+single-band consistency.
 
 State: full suite 113 passed / 0 failed / 5 ignored. The m=1/
 m=2 production + m=3 greater/les gates all green and untouched.
