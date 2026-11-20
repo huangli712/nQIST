@@ -46,7 +46,7 @@ fn mul_acc(a: &[Complex], b: &[Complex], m: usize, k: usize, n: usize, out: &mut
 
 /// `out = a * m * b` for row-major `a (d1 x dk)`, `m (dk x dl)`,
 /// `b (dl x d2)` (nothing assumed square).
-fn sandwich(
+pub(crate) fn sandwich(
     a: &[Complex],
     m: &[Complex],
     b: &[Complex],
@@ -1809,7 +1809,7 @@ fn nel_of(pp: &PseudoGreen) -> usize {
 /// Matrix pseudo ret slot (holds greater); out-of-triangle reads fall
 /// back to `-[ret(j,n)]^dag` block (adjoint of the stored block).
 #[inline]
-fn psc_blk_into(pp: &PseudoGreen, n: i64, j: i64, dim: usize, out: &mut [Complex]) {
+pub(crate) fn psc_blk_into(pp: &PseudoGreen, n: i64, j: i64, dim: usize, out: &mut [Complex]) {
     let nel = dim * dim;
     if j <= n {
         out[..nel].copy_from_slice(pp.ret.raw_block_at(n, j));
@@ -1825,7 +1825,7 @@ fn psc_blk_into(pp: &PseudoGreen, n: i64, j: i64, dim: usize, out: &mut [Complex
 
 /// Matrix pseudo lesser with the `-[less(n,j)]^dag` fallback.
 #[inline]
-fn pls_blk_into(pp: &PseudoGreen, j: i64, n: i64, dim: usize, out: &mut [Complex]) {
+pub(crate) fn pls_blk_into(pp: &PseudoGreen, j: i64, n: i64, dim: usize, out: &mut [Complex]) {
     let nel = dim * dim;
     if j <= n {
         out[..nel].copy_from_slice(pp.less.raw_block_at(j, n));
@@ -1842,7 +1842,7 @@ fn pls_blk_into(pp: &PseudoGreen, j: i64, n: i64, dim: usize, out: &mut [Complex
 /// Matrix DIRECT pseudo tv block mirroring the scalar `ptv(pp, n, m)`:
 /// a plain copy of `G.lmix(n, m)`.
 #[inline]
-fn ptv_dir_blk(pp: &PseudoGreen, n: i64, m: i64, dim: usize, out: &mut [Complex]) {
+pub(crate) fn ptv_dir_blk(pp: &PseudoGreen, n: i64, m: i64, dim: usize, out: &mut [Complex]) {
     let nel = dim * dim;
     out[..nel].copy_from_slice(pp.lmix.raw_block_at(n, m));
 }
@@ -1852,7 +1852,7 @@ fn ptv_dir_blk(pp: &PseudoGreen, n: i64, m: i64, dim: usize, out: &mut [Complex]
 /// (adjoint) of the stored tv block, not an element-wise conjugate
 /// (identical only at dim = 1).
 #[inline]
-fn ptv_blk_into(pp: &PseudoGreen, tau: i64, t: i64, dim: usize, out: &mut [Complex]) {
+pub(crate) fn ptv_blk_into(pp: &PseudoGreen, tau: i64, t: i64, dim: usize, out: &mut [Complex]) {
     let src = pp.lmix.raw_block_at(t, pp.ntau as i64 - tau);
     let sgn = -Complex::new(pp.sign.as_i64() as f64, 0.0);
     for r in 0..dim {
@@ -1867,7 +1867,7 @@ fn ptv_blk_into(pp: &PseudoGreen, tau: i64, t: i64, dim: usize, out: &mut [Compl
 
 /// Gregory quadrature over a block-valued 1-D array (`nel` elements
 /// per point, `n+1` points).
-fn gregory_blk(n: usize, v: &[Complex], nel: usize, integ: &Integrator) -> Vec<Complex> {
+pub(crate) fn gregory_blk(n: usize, v: &[Complex], nel: usize, integ: &Integrator) -> Vec<Complex> {
     // the warmup weight rows (n < k) span all k+1 nodes: the column
     // must be zero-padded to max(n, k) + 1 (blueprint
     // gregory_sum on the full zero-padded array)
@@ -1895,7 +1895,7 @@ fn gregory_blk(n: usize, v: &[Complex], nel: usize, integ: &Integrator) -> Vec<C
 
 /// `conv2b` quadrature over a block-valued triangular grid (layout
 /// `data[i1 * n11 * nel + i2 * nel + q]`).
-fn conv2b_blk(
+pub(crate) fn conv2b_blk(
     data: &[Complex],
     n11: usize,
     nel: usize,
@@ -1912,7 +1912,7 @@ fn conv2b_blk(
 }
 
 /// Low-side (warmup) quadrature over block-valued arrays.
-fn lowside_blk(
+pub(crate) fn lowside_blk(
     j: usize,
     aa: &[Complex],
     bb: &[Complex],
@@ -2658,7 +2658,7 @@ pub(crate) fn add_sigma_tstp_oca_matrix(
 /// `lam1(mu) * (ga(mu1) * op2 * gb * op3 * gc_vt * op4)` on the
 /// sub-grid/gregory startup scheme (blueprint `sdiagram_mat_integral`).
 #[allow(clippy::too_many_arguments)]
-fn sigma_mat_core_blk(
+pub(crate) fn sigma_mat_core_blk(
     m: usize,
     k: usize,
     mmax: usize,
