@@ -538,6 +538,29 @@ pub(crate) fn chord_setup_m(
                             super::evalfam2::vt_row_fit(pp_ints[cs[li]].delta, &p.poles, h, mm, n);
                         cprod *= cf[combo[li]];
                         wsum[rv] += w;
+                    } else if std::env::var("XCA_15COL").is_ok() && (be == 5 || bl == 5) {
+                        // THE (1,5) TAU-COLUMN FIT (the two-sided dump
+                        // verdict: the c_tv projection MIS-ASSIGNS
+                        // near-degenerate poles - ch2's pole-0 vt
+                        // weight lands on pole 1; the same-channel
+                        // totals close coincidentally, the mixed
+                        // exposes it). vt(delta, tau, n) =
+                        // sum_l cf[l].e^{-w_l(beta-tau)} with the
+                        // n-phase ABSORBED into cf (no e^{+iwnh}!)
+                        if let Anchor::Tau(mma) = anchor {
+                            let cf = super::fit::vt_col_fit(
+                                pp_ints[cs[li]].delta,
+                                &p.poles,
+                                beta,
+                                dtau,
+                                *mma,
+                                n,
+                            );
+                            cprod *= cf[combo[li]];
+                        } else {
+                            cprod *= p.c_tv[combo[li]].conj();
+                            cprod *= (Complex::I * w * h * n as f64).exp();
+                        }
                     } else {
                         cprod *= p.c_tv[combo[li]].conj();
                         if be == 5 || bl == 5 {
@@ -554,7 +577,21 @@ pub(crate) fn chord_setup_m(
                             wsum[rv] += -w;
                         }
                     }
-                    isum[tv].push((
+                    // XCA_TAU_V2 (the all-I vertex-attachment swap,
+                    // validated by the transcription test's per-tau1
+                    // MACHINE match): the (1,5) kernel rides the
+                    // I->I output vertex (2) instead of tv=1 - the
+                    // stock's lam2/prof_l rides the ANCHOR-side
+                    // vertex's time (the outer variable q)
+                    let v2_all_i = (std::env::var("XCA_TAU_V2").is_ok()
+                        || std::env::var("XCA_TAU_V2K").is_ok())
+                        && matches!(anchor, Anchor::Tau(_))
+                        && cut.nl == 0
+                        && cut.ni == 2
+                        && cut.nr == 0
+                        && (be == 1 && bl == 5 || be == 5 && bl == 1);
+                    let push15 = if v2_all_i { 2 } else { tv };
+                    isum[push15].push((
                         w,
                         if bwd && mirrored_line(li, proj, cs) {
                             5
@@ -636,13 +673,81 @@ pub(crate) fn chord_setup_m(
                 }
             }
             (4, 1) | (1, 4) => {
-                // tau-anchor -> I chord: EMPIRICALLY c_mat only, no
-                // kernel factors (the m=2 constant gate matched the
-                // reference vt(3) exactly with this form; the
-                // reference's sigma_mat_core places those K kernels
-                // through its own Matsubara backbone, which our mat
-                // segments + this bare coefficient reproduce)
-                cprod *= -p.c_mat[combo[li]];
+                // tau-anchor -> I chord. The BASE form: c_mat only
+                // (with the minus sign, single-band-anchored). The
+                // XCA_41K variant: the delta mat per pole = A_l
+                // e^{-w(tau_m - tau)} = [A_l e^{-w tau_m}] e^{+w
+                // tau} - a TAU-DEPENDENT kernel (mode 7) at the
+                // I-vertex, mirroring the stock's lam1.mat backbone
+                // integration (the per-(family,sector) real-ratio
+                // table from the per-chain probe)
+                    if std::env::var("XCA_41K").is_ok() {
+                        // THE XCA_41X EXPERIMENT (the mixed-channel
+                        // arithmetic: the mixed ratios = the c_mat
+                        // channel ratio 4.0/6.25 - as if the (4,1)
+                        // reads the OTHER line's channel's
+                        // projection! Swap ONLY the (4,1)'s channel
+                        // index under this knob)
+                        let p41: &crate::xca_rt::fit::CsoeProj =
+                            if std::env::var("XCA_41X").is_ok() {
+                                &proj[cs[1 - li]]
+                            } else {
+                                p
+                            };
+                    // the kernel mode is selectable: XCA_41K=7/0/1/5;
+                    // XCA_41S=nosign drops the single-band -1;
+                    // XCA_41C=refl uses the reflected constant
+                    // e^{-w(beta-mm)} (NOTE vacuous at mm=ntau/2);
+                    // XCA_41N=fp/fm divides by (1+-e^{-beta w}) - the
+                    // Matsubara normalization convention of the
+                    // c_mat projection basis
+                    let mode: u8 = std::env::var("XCA_41K")
+                        .ok()
+                        .and_then(|v| v.parse().ok())
+                        .unwrap_or(7);
+                    let sgn = if std::env::var("XCA_41S").as_deref() == Ok("nosign") {
+                        1.0
+                    } else {
+                        -1.0
+                    };
+                    let w41 = p41.poles[combo[li]];
+                    let cexp = if std::env::var("XCA_41C").as_deref() == Ok("refl") {
+                        -w41 * (beta - dtau * mm as f64)
+                    } else {
+                        -w41 * dtau * mm as f64
+                    };
+                    let norm = match std::env::var("XCA_41N").as_deref() {
+                        Ok("fp") => 1.0 + (-beta * w41).exp(),
+                        Ok("fm") => 1.0 - (-beta * w41).exp(),
+                        _ => 1.0,
+                    };
+                    // ROUTE B (the dump finding): fold the
+                    // constant INTO the kernel's per-entry
+                    // coefficient - the intermediates stay bounded
+                    // (e^{-w(mm-tau)} <= 1 for w>0) and the ~1e4
+                    // inter-combo cancellations (which amplify any
+                    // quadrature/structural error ~100x) disappear.
+                    // The isum entries support per-entry coefficients
+                    // (the boson two-mate machinery)
+                    let k41_c = Complex::new(sgn, 0.0)
+                        * p41.c_mat[combo[li]]
+                        * Complex::new(cexp.exp(), 0.0)
+                        / Complex::new(norm, 0.0);
+                    // XCA_TAU_V2 (the all-I vertex-attachment
+                    // swap, validated by the transcription test's
+                    // per-tau1 MACHINE match): the (4,1) kernel
+                    // rides the SEED vertex (1) instead of l=2 -
+                    // the stock's lam1(m-tau2) rides the n-side
+                    // vertex's time (the inner variable t2)
+                    let v2_41 = std::env::var("XCA_TAU_V2").is_ok()
+                        && cut.nl == 0
+                        && cut.ni == 2
+                        && cut.nr == 0;
+                    let push41 = if v2_41 { 1 } else { l };
+                    isum[push41].push((w, mode, k41_c));
+                } else {
+                    cprod *= -p.c_mat[combo[li]];
+                }
             }
             _ => {
                 // invalid combination for a well-formed cut
@@ -711,6 +816,14 @@ pub(crate) fn eval_cut_m(
         rowmult,
         rev_i,
     } = cs0;
+    let v2p = m == 2
+        && cut.nl == 0
+        && cut.ni == 2
+        && cut.nr == 0
+        && !rev_i
+        && matches!(anchor, Anchor::Tau(_))
+        && std::env::var("XCA_TAU_V2").is_ok()
+        && std::env::var("XCA_TAU_V2P").is_ok();
     let jj = match anchor {
         Anchor::JUpper(jj) | Anchor::JLower(jj) => *jj,
         Anchor::Tau(_) => 0,
@@ -883,6 +996,61 @@ pub(crate) fn eval_cut_m(
                                 t[tau as usize] = scale_c(&prod, phi(vlast, 0) * ikern(vlast, tau));
                             }
                             state_i = t;
+                        } else if std::env::var("XCA_TAU_V2").is_ok()
+                            && cut.nl == 0
+                            && cut.ni == 2
+                            && cut.nr == 0
+                        {
+                            // V2 FINAL (the transcription-validated
+                            // LEFTWARD accumulation - the string
+                            // ops[3].MAT.ops[2].mat2.ops[1].VT.ops[0]):
+                            // the seed reads the VT of its OWN sector
+                            // at (tau, n); the anchor mat walk moves to
+                            // the close. The (4,1) kernel rides HERE
+                            // (isum[1] under V2) - the manual's k41(t2)
+                            // XCA_TAU_V2S: the SECTOR SWAP (the final
+                            // derivation: the transcription's vt@gc=s3
+                            // rides the t2/seed side and mat@sa=s1 the
+                            // q/close side - the V2 kept the original
+                            // greens; this swaps them; valid where
+                            // dim(s1)==dim(s3), e.g. the mirror fixture)
+                            let gseed: &kadanoffbaym::types::PseudoGreen =
+                                if std::env::var("XCA_TAU_V2S").is_ok() {
+                                    &pp_g[chain.sectors[2 * m - 1]]
+                                } else {
+                                    g1
+                                };
+                            // XCA_TAU_V2P: THE OPERATOR-PLACEMENT FIX (the
+                            // 17th-round mechanism): the stock's string is
+                            // mat.ops1.[gb.ops2.vt.k41] - op3(=ops2) INSIDE
+                            // the inner integral and op2(=ops1) at the OUTER
+                            // (adjacent to the mat read); my default has them
+                            // BACKWARDS (ops1 in the seed, ops2 at the I->I
+                            // output) - invisible for the same-channel (the
+                            // dim-1 scalar corners commute!) and exposed for
+                            // the mixed (the dim-2 intermediates)
+                            let mut t = vec![
+                                DenseMat::zeros_shape(chain.ops[v].nrows(), dim1);
+                                ntau as usize + 1
+                            ];
+                            for tau in 0..=*mma {
+                                let prod = if v2p {
+                                    // the transpose-aware placement: the
+                                    // stock's inner operator is ops[2]^T
+                                    // ((s2->s3)) on the s3-green's vt
+                                    chain.ops[2]
+                                        .adjoint()
+                                        .mat_mul(&vt_blk(
+                                            &pp_g[chain.sectors[2 * m - 1]],
+                                            tau,
+                                            n,
+                                        ))
+                                } else {
+                                    chain.ops[v].mat_mul(&vt_blk(gseed, tau, n))
+                                };
+                                t[tau as usize] = scale_c(&prod, ikern(v, tau));
+                            }
+                            state_i = t;
                         } else {
                             let mut t = vec![
                                 DenseMat::zeros_shape(chain.ops[v].nrows(), dim1);
@@ -1041,18 +1209,59 @@ pub(crate) fn eval_cut_m(
                     state_i = ti;
                 } else {
                     let (r0, c0) = (state_i[0].nrows(), state_i[0].ncols());
-                    let mut ti =
-                        vec![DenseMat::zeros_shape(chain.ops[veff].nrows(), c0); ntau as usize + 1];
+                    let rows = if v2p { r0 } else { chain.ops[veff].nrows() };
+                    let mut ti = vec![DenseMat::zeros_shape(rows, c0); ntau as usize + 1];
+                    // THE MIX DIRECTION FIX (XCA_41D=down): the
+                    // physical imaginary walk runs DOWNWARD from the
+                    // anchor (mm) to the real junction (0) - the
+                    // anchor-adjacent vertex (the seed's) sits at
+                    // HIGHER times than the real-adjacent (the
+                    // close's). The Volterra then integrates q in
+                    // [tau2..=i_max] with mat(q - tau2), matching
+                    // the stock's triangle {tau2 <= tau1} (the data
+                    // probe verified the (4,1) factorization exact;
+                    // the ordering was the application error)
+                    let downward = matches!(anchor, Anchor::Tau(_))
+                        && std::env::var("XCA_41D").as_deref() == Ok("down");
                     for tau2 in 0..=i_max {
-                        let mut f: Vec<Vec<Complex>> =
-                            vec![vec![Complex::ZERO; r0 * c0]; tau2 as usize + 1];
-                        for q in 0..=tau2 as usize {
-                            let prod = mat_blk(g, tau2 - q as i64).mat_mul(&state_i[q]);
-                            f[q] = prod.raw().to_vec();
+                        if downward {
+                            let len = (i_max - tau2) as usize + 1;
+                            let mut f: Vec<Vec<Complex>> = vec![vec![Complex::ZERO; r0 * c0]; len];
+                            for q in tau2..=i_max {
+                                let prod = mat_blk(g, q - tau2).mat_mul(&state_i[q as usize]);
+                                f[(q - tau2) as usize] = prod.raw().to_vec();
+                            }
+                            let integral = quad(&f, r0, c0, len - 1);
+                            let prod = if v2p {
+                                integral
+                            } else {
+                                chain.ops[veff].mat_mul(&integral)
+                            };
+                            ti[tau2 as usize] = scale_c(&prod, phi(veff, 0) * ikern(veff, tau2));
+                        } else {
+                            let mut f: Vec<Vec<Complex>> =
+                                vec![vec![Complex::ZERO; r0 * c0]; tau2 as usize + 1];
+                            for q in 0..=tau2 as usize {
+                                let prod = mat_blk(g, tau2 - q as i64).mat_mul(&state_i[q]);
+                                f[q] = prod.raw().to_vec();
+                            }
+                            let integral = quad(&f, r0, c0, tau2 as usize);
+                            if std::env::var("XCA_V2DBG").is_ok()
+                                && (tau2 == 0 || tau2 == 4 || tau2 == 12 || tau2 == 24)
+                            {
+                                eprintln!(
+                                    "  ItoIint tau2={tau2}: {:?}",
+                                    &integral.raw()[..4.min(integral.raw().len())]
+                                );
+                            }
+                            let prod = if v2p {
+                                integral
+                            } else {
+                                chain.ops[veff].mat_mul(&integral)
+                            };
+                            ti[tau2 as usize] =
+                                scale_c(&prod, phi(veff, 0) * ikern(veff, tau2));
                         }
-                        let integral = quad(&f, r0, c0, tau2 as usize);
-                        let prod = chain.ops[veff].mat_mul(&integral);
-                        ti[tau2 as usize] = scale_c(&prod, phi(veff, 0) * ikern(veff, tau2));
                     }
                     state_i = ti;
                 }
@@ -1127,6 +1336,7 @@ pub(crate) fn eval_cut_m(
         return DenseMat::zeros_shape(chain.ops[0].ncols(), chain.ops[0].ncols());
     }
     let (r0, c0) = match block_of(vlast) {
+        1 if v2p => (chain.ops[3].ncols(), chain.ops[0].nrows()),
         0 => (state_l[0].nrows(), state_l[0].ncols()),
         1 => (state_i[0].nrows(), state_i[0].ncols()),
         _ => (state_r[0].nrows(), state_r[0].ncols()),
@@ -1155,6 +1365,47 @@ pub(crate) fn eval_cut_m(
                     let ga = &pp_g[chain.sectors[1]];
                     for tau in 0..=i_max {
                         let prod = state_i[tau as usize].mat_mul(&mat_blk(ga, *mma - tau));
+                        f[tau as usize] = prod.raw().to_vec();
+                    }
+                } else if std::env::var("XCA_TAU_V2").is_ok()
+                    && cut.nl == 0
+                    && cut.ni == 2
+                    && cut.nr == 0
+                {
+                    // V2 FINAL (the LEFTWARD accumulation - the
+                    // string ops[3].MAT.ops[2].mat2.ops[1].VT.ops[0]):
+                    // the close reads the ANCHOR mat walk of its OWN
+                    // sector mat(gfin, mm - tau) - the MAT slot at
+                    // the ops[3]-side
+                    // XCA_TAU_V2S: the sector swap - the mat from
+                    // sectors[1] (the transcription's ga@sa)
+                    let gclose = if v2p || std::env::var("XCA_TAU_V2S").is_ok() {
+                        &pp_g[chain.sectors[1]]
+                    } else {
+                        gfin
+                    };
+                    for tau in 0..=i_max {
+                        let prod = if v2p {
+                            // the transpose-aware placement: f =
+                            // ti^T.ops[1].mat(m-tau) - the (s3 x s1)
+                            // orientation for the final sandwich
+                            // (ops[2m-1].total.ops[0]); ti^T = the
+                            // adjoint-then-conj (the plain transpose)
+                            let mut tr = state_i[tau as usize].adjoint();
+                            for q in tr.raw_mut().iter_mut() {
+                                *q = q.conj();
+                            }
+                            let mut mat = mat_blk(gclose, *mma - tau).adjoint();
+                            for q in mat.raw_mut().iter_mut() {
+                                *q = q.conj();
+                            }
+                            tr.mat_mul(&chain.ops[1]).mat_mul(&mat)
+                        } else {
+                            mat_blk(gclose, *mma - tau).mat_mul(&state_i[tau as usize])
+                        };
+                        if std::env::var("XCA_V2DBG").is_ok() {
+                            eprintln!("  v2close tau={tau}: f0 {:?}", prod.raw()[0]);
+                        }
                         f[tau as usize] = prod.raw().to_vec();
                     }
                 } else {
@@ -1246,7 +1497,9 @@ pub(crate) fn eval_cut_m(
     // stock's les families place the reads LEFT of the ops; the G
     // blocks of real-basis Hamiltonians are symmetric, making the
     // plain transpose the exact general relation)
-    let val = if matches!(anchor, Anchor::JUpper(_)) {
+    let val = if matches!(anchor, Anchor::JUpper(_))
+        || (matches!(anchor, Anchor::Tau(_)) && std::env::var("XCA_TAU_V2P").is_ok())
+    {
         val
     } else {
         let mut t = val.adjoint();

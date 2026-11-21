@@ -928,13 +928,41 @@ pub(crate) fn eval_cut(
                 }
             }
             (4, 1) | (1, 4) => {
-                // tau-anchor -> I chord: EMPIRICALLY c_mat only, no
-                // kernel factors (the m=2 constant gate matched the
-                // reference vt(3) exactly with this form; the
-                // reference's sigma_mat_core places those K kernels
-                // through its own Matsubara backbone, which our mat
-                // segments + this bare coefficient reproduce)
-                cprod *= -p.c_mat[combo[li]];
+                // tau-anchor -> I chord. The BASE form: -c_mat only
+                // (single-band-anchored). The XCA_41K variant
+                // (mirrored from the matrix side, the two-band
+                // normalization breakthrough): the mode-7 kernel
+                // e^{+w tau} at the I-vertex + the constant
+                // -c_mat . e^{-w mm} / (1 + e^{-beta w}) - the
+                // c_mat projection basis carries the Matsubara
+                // normalization (the two-band gate 16.9 -> 2.9)
+                if std::env::var("XCA_41K").is_ok() {
+                    let mode: u8 = std::env::var("XCA_41K")
+                        .ok()
+                        .and_then(|v| v.parse().ok())
+                        .unwrap_or(7);
+                    let sgn = if std::env::var("XCA_41S").as_deref() == Ok("nosign") {
+                        1.0
+                    } else {
+                        -1.0
+                    };
+                    let cexp = if std::env::var("XCA_41C").as_deref() == Ok("refl") {
+                        -w * (beta - dtau * mm as f64)
+                    } else {
+                        -w * dtau * mm as f64
+                    };
+                    let norm = match std::env::var("XCA_41N").as_deref() {
+                        Ok("fp") => 1.0 + (-beta * w).exp(),
+                        Ok("fm") => 1.0 - (-beta * w).exp(),
+                        _ => 1.0,
+                    };
+                    cprod *=
+                        Complex::new(sgn, 0.0) * p.c_mat[combo[li]] * Complex::new(cexp.exp(), 0.0)
+                            / Complex::new(norm, 0.0);
+                    isum[l].push((w, mode, Complex::ONE));
+                } else {
+                    cprod *= -p.c_mat[combo[li]];
+                }
             }
             _ => {
                 // invalid combination for a well-formed cut

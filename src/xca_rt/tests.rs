@@ -1676,6 +1676,36 @@ fn tau_factor_probe_singleband() {
             mine_c / buf[0]
         );
     }
+    // factor 6b: the (4,1) chord data - the stock's lam1 raw
+    // values at (mm - tau2) vs my kernel-less and kernel+norm
+    // reconstructions (the two-fixture paradox: kernel-less passes
+    // single-band, kernel+norm improves two-band)
+    {
+        let dl = pp_ints[0].delta;
+        let poles41 = &proj[0].poles;
+        let cmat41 = &proj[0].c_mat;
+        eprintln!("--- (4,1) factor probe (mm={mm}):",);
+        for t2 in [0i64, 4, 8, 12, 16] {
+            // the stock's raw lam1 at (mm - t2): the mat data
+            // interpolated
+            let d = mm - t2;
+            let stock_raw = dl.mat.raw()[d as usize];
+            let mine_const: Complex = cmat41.iter().enumerate().map(|(l, c)| -*c).sum();
+            let mine_kn: Complex = cmat41
+                .iter()
+                .enumerate()
+                .map(|(l, c)| {
+                    let w = poles41[l];
+                    -*c * Complex::new((-w * dtau * mm as f64).exp(), 0.0)
+                        / Complex::new(1.0 + (-BETA * w).exp(), 0.0)
+                        * Complex::new((w * dtau * t2 as f64).exp(), 0.0)
+                })
+                .sum();
+            eprintln!(
+                "  t2={t2}: stock_lam1 {stock_raw:?} mine_const {mine_const:?} mine_kn {mine_kn:?}"
+            );
+        }
+    }
     // factor 6: the MIDDLE read - elapsed vs absolute form (the
     // stock reads psc(gb, t2, t1) absolute; my R->R reads the
     // elapsed gtr(nsteps-u, 0) - identical only for TTI data)
@@ -1718,6 +1748,42 @@ fn tau_cut_vs_stock_family_probe() {
             )
         })
         .collect();
+    // THE (4,1) DATA PROBE: my per-pole reconstruction (the
+    // fermi_kernel basis) vs the stock's lam1 RAW values at
+    // (mm - t2) on the REAL two-band deltas - the data-level
+    // check (if the reconstruction reproduces the raw data the
+    // factorization is sound and the error is in the application)
+    {
+        eprintln!("--- (4,1) data probe (mm={mm}) ---");
+        for ch in 0..pp_ints.len() {
+            let dl = pp_ints[ch].delta;
+            let p = &proj[ch];
+            for t2 in [0i64, 8, 16, 24] {
+                let d = (mm - t2) as usize;
+                let stock_raw = dl.mat.raw()[d];
+                let faithful: Complex = p
+                    .poles
+                    .iter()
+                    .enumerate()
+                    .map(|(l, &w)| {
+                        p.c_mat[l]
+                            * Complex::new(
+                                -((-w * dtau2 * d as f64).exp() / (1.0 + (-BETA2 * w).exp())),
+                                0.0,
+                            )
+                    })
+                    .sum();
+                let ratio = if stock_raw.abs() > 1e-12 {
+                    faithful / stock_raw
+                } else {
+                    Complex::ZERO
+                };
+                eprintln!(
+                    "  ch={ch} t2={t2}: raw {stock_raw:?} faithful {faithful:?} ratio {ratio:?}"
+                );
+            }
+        }
+    }
     use super::eval2::{FAM_VT1, FAM_VT2, FAM_VT3};
     let mut stock_vals: Vec<(Vec<Complex>, &str)> = Vec::new();
     for (fam, name) in [(FAM_VT1, "vt1"), (FAM_VT2, "vt2"), (FAM_VT3, "vt3")] {
@@ -1873,28 +1939,21 @@ fn tau_cut_vs_stock_family_probe() {
                         if d.out != s0 {
                             continue;
                         }
-                        let l1 = pp_ints
-                            .iter()
-                            .position(|c| std::ptr::eq(c.delta, d.lam1));
-                        let l2 = pp_ints
-                            .iter()
-                            .position(|c| std::ptr::eq(c.delta, d.lam2));
+                        let l1 = pp_ints.iter().position(|c| std::ptr::eq(c.delta, d.lam1));
+                        let l2 = pp_ints.iter().position(|c| std::ptr::eq(c.delta, d.lam2));
                         if l1 != Some(cs[0]) || l2 != Some(cs[1]) {
                             continue;
                         }
-                        let blk_eq = |a: &kadanoffbaym::linalg::DenseMat,
-                                      b: &kadanoffbaym::linalg::DenseMat| {
-                            if a.nrows() != b.nrows() || a.ncols() != b.ncols() {
-                                return false;
-                            }
-                            a.raw()
-                                .iter()
-                                .zip(b.raw().iter())
-                                .all(|(x, y)| {
-                                    (*x - *y).abs() < 1e-10
-                                        || (*x - y.conj()).abs() < 1e-10
+                        let blk_eq =
+                            |a: &kadanoffbaym::linalg::DenseMat,
+                             b: &kadanoffbaym::linalg::DenseMat| {
+                                if a.nrows() != b.nrows() || a.ncols() != b.ncols() {
+                                    return false;
+                                }
+                                a.raw().iter().zip(b.raw().iter()).all(|(x, y)| {
+                                    (*x - *y).abs() < 1e-10 || (*x - y.conj()).abs() < 1e-10
                                 })
-                        };
+                            };
                         let ops_ok = blk_eq(&chain.ops[3], &d.op1)
                             && blk_eq(&chain.ops[2], &d.op2)
                             && blk_eq(&chain.ops[1], &d.op3)
@@ -1927,6 +1986,15 @@ fn tau_cut_vs_stock_family_probe() {
                     }
                     // my decorated per-chain value (sum over combos)
                     let mut mine = Complex::ZERO;
+                    // THE MIXED-CHANNEL SWAP TEST: pass the SWAPPED cs
+                    // to eval_cut_m (the chain unchanged) - if the
+                    // ratio corrects, the window's cs-order convention
+                    // for the all-I is the bug
+                    let cs_eval: [usize; 2] = if std::env::var("XCA_TCSWAP").is_ok() {
+                        [cs[1], cs[0]]
+                    } else {
+                        [cs[0], cs[1]]
+                    };
                     let mut combo = vec![0usize; 2];
                     loop {
                         let mut stat = 1.0f64;
@@ -1943,7 +2011,7 @@ fn tau_cut_vs_stock_family_probe() {
                                 &anchor,
                                 &chain,
                                 &topos[0].pairs,
-                                &cs,
+                                &cs_eval,
                                 &combo,
                                 &proj,
                                 &pp_ints,
@@ -1965,7 +2033,7 @@ fn tau_cut_vs_stock_family_probe() {
                                 break;
                             }
                             combo[idx] += 1;
-                            if combo[idx] < proj[cs[idx]].poles.len() {
+                            if combo[idx] < proj[cs_eval[idx]].poles.len() {
                                 break;
                             }
                             combo[idx] = 0;
@@ -1978,13 +2046,662 @@ fn tau_cut_vs_stock_family_probe() {
                     if mine.abs() < 1e-10 && want.abs() < 1e-10 {
                         continue 's0;
                     }
-                    let ratio = if want.abs() > 1e-10 { mine / want } else { Complex::ZERO };
+                    let ratio = if want.abs() > 1e-10 {
+                        mine / want
+                    } else {
+                        Complex::ZERO
+                    };
                     eprintln!(
                         "  all-I chain cs={cs:?} s0={s0}: mine {mine:?} want {want:?} ratio {ratio:?}"
                     );
                 }
             }
         }
+    }
+}
+
+#[test]
+fn tau_all_i_transcription_twoband() {
+    // DIRECT TRANSCRIPTION of the stock's vt3 (the FAM_VT3 +
+    // sigma_mat_core_blk structure) for the matched chain [0,0]@s8,
+    // evaluated with grid Gregory - three-way: transcription vs my
+    // eval_cut_m (structural) vs the stock's per-diagram fam value
+    // (validates the formula understanding). The stock formula:
+    // pref.(0,-sig.dtau^2).SUM_l phase(w_l,n,0,h).[op1. INT dtau1
+    // ga.mat(m-tau1).op2.prof_l(tau1). INT dtau2<=tau1 gb.mat(tau1-
+    // tau2).op3.gc_vt(tau2).lam1raw(m-tau2).op4]^T-conj
+    let fx = setup_2b();
+    let pp_ints = fx.pp_ints();
+    let npf: usize = std::env::var("XCA_NP")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(2);
+    let fits = fx.fits_npoles(npf);
+    // THE POLE INSPECTION: the fixture is SINGLE-pole per channel
+    // (bath2's eps = {0.5,-0.8,1.1,-0.4}); the 2-pole fits carry a
+    // SPURIOUS second pole whose coefficient assignment differs
+    // between the projection and the LineSep views. Print the
+    // actual poles + coefficients per channel
+    {
+        let ptest = fx.fits_npoles(npf);
+        for c in [0usize, 2, 4] {
+            eprintln!(
+                "  ch{c} poles {:?} coefs {:?}",
+                ptest[c].poles, ptest[c].coefs
+            );
+        }
+    }
+    let integ = Integrator::new(KT2);
+    let dtau2 = BETA2 / fx.ntau as f64;
+    let (n, mm) = (20i64, 24i64);
+    let topos = crate::xca::topology::connected_pairings(2);
+    let pairs = topos[0].pairs.clone();
+    let chans = super::boson_rt::chans_with_bath(&pp_ints, None);
+    let tc: usize = std::env::var("XCA_TCS")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(0);
+    let tc2: usize = std::env::var("XCA_TCS2")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(tc);
+    let cs = [tc, tc2];
+    // THE COMPLEMENTARY SWAP: build the CHAIN with the swapped cs
+    // (the flavor ops swap) while the eval keeps the original cs
+    // (the projections stay) - if the chain's flavor-op assignment
+    // is crossed, this compensates
+    let cs_chain: [usize; 2] = if std::env::var("XCA_TCSWAP").as_deref() == Ok("chain") {
+        [cs[1], cs[0]]
+    } else {
+        [cs[0], cs[1]]
+    };
+    let s0 = 8usize;
+    let chain =
+        super::boson_rt::build_rt_chain_mixed_m(&fx.hs, &pairs, &cs_chain, &chans, s0).unwrap();
+    let channels = crate::oca::channels_with_bath(&pp_ints, None);
+    let diagrams = crate::oca::build_sigma_diagrams_oca_channels(&fx.hs, &channels);
+    let dd = diagrams
+        .iter()
+        .find(|x| {
+            x.out == s0
+                && pp_ints.iter().position(|c| std::ptr::eq(c.delta, x.lam1)) == Some(cs[0])
+                && pp_ints.iter().position(|c| std::ptr::eq(c.delta, x.lam2)) == Some(cs[1])
+        })
+        .expect("matched diagram");
+    // (1) the stock's per-diagram vt3 value - COUNT ALL matches
+    // (the same-flavor channels may have op-permuted TWINS: the
+    // find-first matching could pick the wrong one)
+    let matched: Vec<_> = diagrams
+        .iter()
+        .filter(|x| {
+            x.out == s0
+                && pp_ints.iter().position(|c| std::ptr::eq(c.delta, x.lam1)) == Some(cs[0])
+                && pp_ints.iter().position(|c| std::ptr::eq(c.delta, x.lam2)) == Some(cs[1])
+        })
+        .collect();
+    eprintln!("matched diagrams for cs={cs:?} s0={s0}: {}", matched.len());
+    // THE SECTOR COMPARISON: the mixed chains' flavor-hop order
+    // could visit different intermediate sectors than the stock
+    // diagram's (sa,sb,sc) - with the mirror mapping
+    // (sa,sb,sc) <-> (sectors[3], sectors[2], sectors[1])
+    eprintln!(
+        "  chain sectors {:?} | stock (sa,sb,sc) = ({}, {}, {})",
+        chain.sectors, matched[0].sa, matched[0].sb, matched[0].sc
+    );
+    // THE OPS COMPARISON: the flavor operators at the vertices -
+    // for the mixed chains the two lines carry DIFFERENT flavors
+    // and the ops-to-vertices assignment could be crossed vs the
+    // stock's op1..op4 (the identity mapping ops[1]<->op3,
+    // ops[2]<->op2 established for [0,0] where both flavors
+    // coincide - the mixed exposes the ordering!)
+    eprintln!(
+        "  ops[1] {:?} vs op3 {:?} | ops[2] {:?} vs op2 {:?}",
+        chain.ops[1].raw(),
+        matched[0].op3.raw(),
+        chain.ops[2].raw(),
+        matched[0].op2.raw()
+    );
+    // THE FULL HOP-BY-HOP ALIGNMENT (identity mapping: ops[0]<->op1
+    // at (s0->s1), ops[1]<->op2 at (s1->s2), ops[2]<->op3 at
+    // (s2->s3), ops[3]<->op4 at (s3->s0)) - with the shapes
+    eprintln!(
+        "  full: ops[0] {}x{} {:?} | op1 {}x{} {:?}",
+        chain.ops[0].nrows(),
+        chain.ops[0].ncols(),
+        chain.ops[0].raw(),
+        matched[0].op1.nrows(),
+        matched[0].op1.ncols(),
+        matched[0].op1.raw()
+    );
+    eprintln!(
+        "  full: ops[1] {}x{} {:?} | op2 {}x{} {:?}",
+        chain.ops[1].nrows(),
+        chain.ops[1].ncols(),
+        chain.ops[1].raw(),
+        matched[0].op2.nrows(),
+        matched[0].op2.ncols(),
+        matched[0].op2.raw()
+    );
+    eprintln!(
+        "  full: ops[2] {}x{} {:?} | op3 {}x{} {:?}",
+        chain.ops[2].nrows(),
+        chain.ops[2].ncols(),
+        chain.ops[2].raw(),
+        matched[0].op3.nrows(),
+        matched[0].op3.ncols(),
+        matched[0].op3.raw()
+    );
+    eprintln!(
+        "  full: ops[3] {}x{} {:?} | op4 {}x{} {:?}",
+        chain.ops[3].nrows(),
+        chain.ops[3].ncols(),
+        chain.ops[3].raw(),
+        matched[0].op4.nrows(),
+        matched[0].op4.ncols(),
+        matched[0].op4.raw()
+    );
+    // THE PROPAGATOR SYMMETRY CHECK: the stock's string =
+    // (my-string-with-TRANSPOSED-propagator-reads)^T - identical
+    // only where the sector mats/vt are SYMMETRIC. The
+    // same-channel [0,0] walk (5,2,5) may be symmetric-blind;
+    // the mixed (5,4,7) may not!
+    for (si, sj) in [(5usize, 12usize), (4, 12), (7, 12), (2, 12)] {
+        let g5 = &fx.pp_g[si];
+        let d5 = g5.size1 as usize;
+        let raw5 = g5.mat.raw();
+        let mut sym = true;
+        for a in 0..d5 {
+            for b2 in 0..d5 {
+                let diff = raw5[sj * d5 * d5 + a * d5 + b2] - raw5[sj * d5 * d5 + b2 * d5 + a];
+                if diff.re.abs() > 1e-12 || diff.im.abs() > 1e-12 {
+                    sym = false;
+                }
+            }
+        }
+        eprintln!("  sector {si} mat[12] symmetric: {sym}");
+    }
+    let mut sig_prod = fx.sigma_buffers();
+    for (mi, dd) in matched.iter().enumerate() {
+        let mut pb = fx.sigma_buffers();
+        super::eval2m::add_sigma_tstp_xca2m_fam(
+            n,
+            dd,
+            &fx.pp_g,
+            BETA2,
+            fx.h,
+            KT2,
+            &integ,
+            &fits[cs[0]],
+            &fits[cs[1]],
+            &mut pb,
+            super::eval2::FAM_VT3,
+        );
+        // THE PRODUCTION stock per diagram (raw data, no fits):
+        // if fam != production the reference mismatch is exposed
+        crate::oca::add_sigma_tstp_oca(
+            n,
+            dd,
+            &fx.pp_g,
+            BETA2,
+            fx.h,
+            KT2,
+            &integ,
+            &mut sig_prod,
+        );
+        eprintln!(
+            "  stock[mi={mi}]: fam {:?} | prod {:?}",
+            pb[s0].lmix.raw_block_at(n, fx.ntau as i64 - mm)[0],
+            sig_prod[s0].lmix.raw_block_at(n, fx.ntau as i64 - mm)[0]
+        );
+    }
+    let dd = matched.first().copied().expect("matched diagram");
+    // the stock_val for the comparison (the first match, the
+    // correct channel fits)
+    let mut pb2 = fx.sigma_buffers();
+    super::eval2m::add_sigma_tstp_xca2m_fam(
+        n,
+        dd,
+        &fx.pp_g,
+        BETA2,
+        fx.h,
+        KT2,
+        &integ,
+        &fits[cs[0]],
+        &fits[cs[1]],
+        &mut pb2,
+        super::eval2::FAM_VT3,
+    );
+    let stock_val = pb2[s0].lmix.raw_block_at(n, fx.ntau as i64 - mm)[0];
+    // (2) my eval_cut_m (all combos, decorated)
+    let proj: Vec<_> = (0..pp_ints.len())
+        .map(|c| {
+            super::fit::csoe_project_all(
+                pp_ints[c].delta,
+                &fits[c],
+                BETA2,
+                dtau2,
+                fx.h,
+                fx.nt,
+                fx.ntau,
+            )
+        })
+        .collect();
+    // THE PROJECTION ASSIGNMENT INSPECTION: c_tv/c_mat per pole
+    // vs the LineSep's - the per-pole dump showed the window's
+    // (1,5) weight at the MIRROR pole for ch2
+    {
+        for c in [0usize, 2, 4] {
+            eprintln!(
+                "  proj ch{c} poles {:?}\n    c_tv {:?}\n    c_mat {:?}",
+                proj[c].poles, proj[c].c_tv, proj[c].c_mat
+            );
+        }
+        // THE COLUMN-FIT VERIFICATION: vt_col_fit fits the vt_c
+        // object (the REFLECTED read) - for ch2 it MUST give
+        // ~0.157 at pole 1 (the e^beta-scaled amplitude), not the
+        // c_tv's 0.0029
+        let p2 = &proj[2];
+        let cf2 = super::fit::vt_col_fit(
+            pp_ints[2].delta,
+            &p2.poles,
+            BETA2,
+            dtau2,
+            24,
+            n,
+        );
+        eprintln!("  vt_col_fit ch2: {:?}", cf2);
+        // THE RAW-MAT VERIFICATION: the projection's c_mat =
+        // exactly 25*v2 for ALL channels while the analytic LSQ
+        // on the fermi_kernel basis gives exactly v2 - is the
+        // STORED mat 25x the analytic formula, or is the
+        // projection off? Compare the raw data vs the formula
+        for c in [0usize, 2] {
+            let (v2c, eps) = if c == 0 { (0.25, 0.5) } else { (0.16, -0.8) };
+            for j in [12usize, 24] {
+                let tau = dtau2 * j as f64;
+                let analytic = -v2c * (-(eps) * (BETA2 - tau)).exp()
+                    / (1.0 + (-(BETA2) * eps).exp());
+                eprintln!(
+                    "  ch{c} mat[{j}] raw {:?} analytic {:?} ratio {:?}",
+                    pp_ints[c].delta.mat.raw()[j],
+                    Complex::new(analytic, 0.0),
+                    pp_ints[c].delta.mat.raw()[j] / Complex::new(analytic, 0.0)
+                );
+            }
+        }
+    }
+    let anchor = super::evalfam2::Anchor::Tau(mm);
+    let fc = super::evalfam2::FamCut {
+        nl: 0,
+        ni: 2,
+        nr: 0,
+    };
+    let mut mine = Complex::ZERO;
+    // THE MIXED-CHANNEL SWAP TEST: pass the SWAPPED cs to
+    // eval_cut_m (the chain unchanged) - if the ratio corrects,
+    // the window's cs-order convention for the all-I is the bug
+    let cs_eval: [usize; 2] = if std::env::var("XCA_TCSWAP").is_ok() {
+        [cs[1], cs[0]]
+    } else {
+        [cs[0], cs[1]]
+    };
+    let mut combo = vec![0usize; 2];
+    loop {
+        let mut stat = 1.0f64;
+        for &c in cs.iter() {
+            if pp_ints[c].backward {
+                stat *= -1.0;
+            }
+        }
+        let fac = Complex::new(stat * topos[0].parity, 0.0);
+        let vcombo = super::evalfam2m::eval_cut_m(
+                2, &fc, &anchor, &chain, &pairs, &cs_eval, &combo, &proj, &pp_ints, None,
+                &fx.pp_g, n, fx.h, BETA2, dtau2, KT2, &integ,
+            )
+            .raw()[0];
+        if std::env::var("XCA_V2DBG").is_ok() {
+            eprintln!(
+                "  window combo l0={} l1={}: {:?}",
+                combo[0],
+                combo[1],
+                fac * vcombo
+            );
+        }
+        mine += fac * vcombo;
+        let mut idx = 0;
+        let mut wrapped = false;
+        loop {
+            if idx == 2 {
+                wrapped = true;
+                break;
+            }
+            combo[idx] += 1;
+            if combo[idx] < proj[cs_eval[idx]].poles.len() {
+                break;
+            }
+            combo[idx] = 0;
+            idx += 1;
+        }
+        if wrapped {
+            break;
+        }
+    }
+    // (3) THE TRANSCRIPTION (the stock's formula, grid Gregory)
+    let ga = &fx.pp_g[dd.sa];
+    let gb = &fx.pp_g[dd.sb];
+    let gc = &fx.pp_g[dd.sc];
+    let (adim, bdim, cdim) = (ga.size1 as usize, gb.size1 as usize, gc.size1 as usize);
+    let sdim = fx.hs.sectors[s0].dim;
+    let (na, nb, ncc) = (adim * adim, bdim * bdim, cdim * cdim);
+    let lam1raw = dd.lam1.mat.raw();
+    // gc_vt rows: the propagator's vt view at (tau, n)
+    let mut gc_vt = vec![Complex::ZERO; (mm as usize + 1) * ncc];
+    for tau in 0..=mm {
+        let mut pv = vec![Complex::ZERO; ncc];
+        crate::oca::ptv_blk_into(gc, tau, n, cdim, &mut pv);
+        gc_vt[tau as usize * ncc..tau as usize * ncc + ncc].copy_from_slice(&pv);
+        // THE RAW VT COMPARISON: directly against the window's
+        // seedvt dump - if these differ (e.g. transposes!) the
+        // sector/green mismatch is real (the V2S no-op could have
+        // masked it via cancellation of the two simultaneous swaps)
+        if std::env::var("XCA_V2DBG").is_ok()
+            && (tau == 0 || tau == 4 || tau == 12 || tau == 24)
+        {
+            eprintln!("  trans_gcvt tau={tau}: {:?}", &pv[..pv.len().min(2)]);
+        }
+    }
+    let ls2 = super::eval2::LineSep::new(dd.lam2, &fits[cs[1]], fx.h);
+    // THE LINESEP PROFILE INSPECTION: the stock's actual vt
+    // profiles per pole - directly comparable with the printed
+    // projection c_tv (the two must represent the same data)
+    {
+        let np2 = fits[cs[1]].poles.len();
+        for l in 0..np2 {
+            eprintln!(
+                "  ls2 vt_coef l={l}: t0 {:?} t8 {:?} t16 {:?} t24 {:?}",
+                ls2.vt_coef_at(0, l, n as usize),
+                ls2.vt_coef_at(8, l, n as usize),
+                ls2.vt_coef_at(16, l, n as usize),
+                ls2.vt_coef_at(24, l, n as usize)
+            );
+        }
+    }
+    let mut acc = vec![Complex::ZERO; sdim * sdim];
+    let big = (na
+        .max(nb)
+        .max(ncc)
+        .max(adim * cdim)
+        .max(bdim * cdim)
+        .max(sdim * sdim))
+        * 2
+        + 8;
+    let mut scratch = vec![Complex::ZERO; big];
+    for l in 0..fits[cs[1]].poles.len() {
+        let mut f_ac = vec![vec![Complex::ZERO; adim * cdim]; mm as usize + 1];
+        for t1 in 0..=mm as usize {
+            let mut f_bc = vec![vec![Complex::ZERO; bdim * cdim]; t1 + 1];
+            for t2 in 0..=t1 {
+                let gbb = &gb.mat.raw()[(t1 - t2) * nb..(t1 - t2) * nb + nb];
+                let mut gcl = vec![Complex::ZERO; ncc];
+                for q in 0..ncc {
+                    gcl[q] = gc_vt[t2 * ncc + q] * lam1raw[mm as usize - t2];
+                }
+                let mut tmp = vec![Complex::ZERO; bdim * cdim];
+                crate::oca::sandwich(
+                    gbb,
+                    dd.op3.raw(),
+                    &gcl,
+                    bdim,
+                    bdim,
+                    cdim,
+                    cdim,
+                    &mut tmp,
+                    &mut scratch,
+                );
+                f_bc[t2] = tmp;
+            }
+            let mut flat: Vec<Complex> = Vec::with_capacity((t1 + 1) * bdim * cdim);
+            for row in &f_bc {
+                flat.extend_from_slice(row);
+            }
+            let inner = crate::oca::gregory_blk(t1, &flat, bdim * cdim, &integ);
+            // THE ENTRY-LEVEL DIVERGENCE TRACE: the inner integral's
+            // entries - directly comparable with the window's ItoI
+            // prod (before the ops multiplication; the sandwich
+            // here has op3 INSIDE - compare shapes/orientations)
+            if std::env::var("XCA_V2DBG").is_ok()
+                && (t1 == 4 || t1 == 12 || t1 == 24)
+            {
+                eprintln!(
+                    "  trans_inner t1={t1}: {:?}",
+                    &inner[..inner.len().min(4)]
+                );
+            }
+            let gaa = &ga.mat.raw()[(mm as usize - t1) * na..(mm as usize - t1) * na + na];
+            let mut tmp2 = vec![Complex::ZERO; adim * cdim];
+            crate::oca::sandwich(
+                gaa,
+                dd.op2.raw(),
+                &inner,
+                adim,
+                adim,
+                bdim,
+                cdim,
+                &mut tmp2,
+                &mut scratch,
+            );
+            let prof = ls2.vt_coef_at(t1 as i64, l, n as usize);
+            for q in 0..adim * cdim {
+                f_ac[t1][q] = tmp2[q] * prof;
+            }
+            // THE FINAL NUMERICAL DIVERGENCE TRACE: the outer
+            // integrand per tau1 - directly comparable with the
+            // window's v2close f[tau] (the accounting: the window's
+            // combo-(l0=1,l1=1) ~ this l=0 term x (-1.00786) x
+            // (54.598/(c_tv1-phase)) - the RATIO ACROSS tau is the
+            // verdict: constant = the integrands match (the bug is
+            // in the final write), varying = the divergence point)
+            if std::env::var("XCA_V2DBG").is_ok()
+                && l == 0
+                && (t1 == 4 || t1 == 12 || t1 == 24)
+            {
+                eprintln!("  trans_f_ac l={l} t1={t1} [0]: {:?}", f_ac[t1][0]);
+            }
+        }
+        let mut flat2: Vec<Complex> = Vec::with_capacity((mm as usize + 1) * adim * cdim);
+        for row in &f_ac {
+            flat2.extend_from_slice(row);
+        }
+        let total = crate::oca::gregory_blk(mm as usize, &flat2, adim * cdim, &integ);
+        let mut core = vec![Complex::ZERO; sdim * sdim];
+        crate::oca::sandwich(
+            dd.op1.raw(),
+            &total,
+            dd.op4.raw(),
+            sdim,
+            adim,
+            cdim,
+            sdim,
+            &mut core,
+            &mut scratch,
+        );
+        let w = fits[cs[1]].poles[l];
+        let ph = (-Complex::I * w * fx.h * n as f64).exp();
+        if std::env::var("XCA_V2DBG").is_ok() {
+            eprintln!("  trans l1={l}: {:?}", ph * core[0]);
+        }
+        for q in 0..sdim * sdim {
+            acc[q] += ph * core[q];
+        }
+    }
+    // the written value = pref.(0,-sig.dtau^2).acc^T-conj (the
+    // common family pref read off the stock ratio)
+    let sig = fx.pp_g[s0].sign.as_i64() as f64;
+    let meas = Complex::new(0.0, -sig * dtau2 * dtau2);
+    let trans_val = meas * acc[0].conj();
+    eprintln!("stock  {stock_val:?}");
+    eprintln!("mine   {mine:?}");
+    eprintln!("trans  {trans_val:?}");
+    eprintln!(
+        "trans/stock {:?} | mine/stock {:?} | mine/trans {:?}",
+        trans_val / stock_val,
+        mine / stock_val,
+        mine / trans_val
+    );
+    // THE PER-TAU1 COMPARISON: the transcription's outer integrand
+    // per tau1 (summed over l with phases) vs MY formula's (the
+    // down-orientation window with my chord factors) - the per-tau1
+    // ratio localizes the divergence mechanically
+    {
+        // (a) the transcription's per-tau1 outer integrand (recomputed)
+        let mut trans_row = vec![Complex::ZERO; mm as usize + 1];
+        for l in 0..fits[cs[1]].poles.len() {
+            let mut f_ac2 = vec![vec![Complex::ZERO; adim * cdim]; mm as usize + 1];
+            for t1 in 0..=mm as usize {
+                let mut f_bc = vec![vec![Complex::ZERO; bdim * cdim]; t1 + 1];
+                for t2 in 0..=t1 {
+                    let gbb = &gb.mat.raw()[(t1 - t2) * nb..(t1 - t2) * nb + nb];
+                    let mut gcl = vec![Complex::ZERO; ncc];
+                    for q in 0..ncc {
+                        gcl[q] = gc_vt[t2 * ncc + q] * lam1raw[mm as usize - t2];
+                    }
+                    let mut tmp = vec![Complex::ZERO; bdim * cdim];
+                    crate::oca::sandwich(
+                        gbb,
+                        dd.op3.raw(),
+                        &gcl,
+                        bdim,
+                        bdim,
+                        cdim,
+                        cdim,
+                        &mut tmp,
+                        &mut scratch,
+                    );
+                    f_bc[t2] = tmp;
+                }
+                let mut flat: Vec<Complex> = Vec::with_capacity((t1 + 1) * bdim * cdim);
+                for row in &f_bc {
+                    flat.extend_from_slice(row);
+                }
+                let inner = crate::oca::gregory_blk(t1, &flat, bdim * cdim, &integ);
+                let gaa = &ga.mat.raw()[(mm as usize - t1) * na..(mm as usize - t1) * na + na];
+                let mut tmp2 = vec![Complex::ZERO; adim * cdim];
+                crate::oca::sandwich(
+                    gaa,
+                    dd.op2.raw(),
+                    &inner,
+                    adim,
+                    adim,
+                    bdim,
+                    cdim,
+                    &mut tmp2,
+                    &mut scratch,
+                );
+                let prof = ls2.vt_coef_at(t1 as i64, l, n as usize);
+                for q in 0..adim * cdim {
+                    f_ac2[t1][q] = tmp2[q] * prof;
+                }
+            }
+            let w = fits[cs[1]].poles[l];
+            let ph = (-Complex::I * w * fx.h * n as f64).exp();
+            for t1 in 0..=mm as usize {
+                // the (0,0) entry of the outer integrand row
+                trans_row[t1] += ph * f_ac2[t1][0];
+            }
+        }
+        // (b) MY formula's per-tau1 outer integrand: the down-orientation
+        // structure with my chord factors - my q = tau1: the seed row
+        // state[q] = ops[1].mat_s1(m-q).K15(q); the ti at tau2 summed...
+        // for the per-tau1 view: the contribution of each q (=tau1) to the
+        // close sum: sum_{tau2<=q} W(tau2).vt_s3(tau2,n).ops[2].mat_s2(q-
+        // tau2).state[q].K41(tau2)
+        let p0 = &proj[cs[0]];
+        let p1 = &proj[cs[1]];
+        let vt_row = |t2: i64| -> Complex {
+            // the vt view of the s3-sector's propagator at (t2, n)
+            let mut pv = vec![Complex::ZERO; ncc];
+            crate::oca::ptv_blk_into(gc, t2, n, cdim, &mut pv);
+            pv[0]
+        };
+        let mut my_row = vec![Complex::ZERO; mm as usize + 1];
+        for l0 in 0..p0.poles.len() {
+            for l1 in 0..p1.poles.len() {
+                let w0 = p0.poles[l0];
+                let w1 = p1.poles[l1];
+                // the (1,5) factor at q: c_tv.conj().e^{+i w1 n h}.e^{-w1(beta-q)dtau}
+                // (mode 1) / mode 5 for bwd - cs[0]=ch0 fwd, cs[1]=ch0 fwd here
+                let k15 = |q: i64| -> Complex {
+                    p1.c_tv[l1].conj()
+                        * (Complex::I * w1 * fx.h * n as f64).exp()
+                        * Complex::new((-w1 * (BETA2 - dtau2 * q as f64)).exp(), 0.0)
+                };
+                // the (4,1) factor at tau2 (the best-variant form):
+                // -c_mat.e^{-w0 mm dtau}/(1+e^{-beta w0}).e^{+w0 tau2 dtau}
+                let k41 = |t2: i64| -> Complex {
+                    p0.c_mat[l0]
+                        * Complex::new(
+                            (-w0 * dtau2 * mm as f64).exp() / (1.0 + (-BETA2 * w0).exp()),
+                            0.0,
+                        )
+                        * Complex::new((w0 * dtau2 * t2 as f64).exp(), 0.0)
+                };
+                // the ops: ops[1] = dd.op3 (the q-vertex), ops[2] = dd.op2
+                // (the tau2-vertex) per the verified mapping
+                let o1 = dd.op3.raw()[0];
+                let o2 = dd.op2.raw()[0];
+                // the mat reads (scalar entries)
+                let mat1 = |q: i64| -> Complex {
+                    let g1 = &fx.pp_g[chain.sectors[1]];
+                    let d1 = g1.size1 as usize;
+                    let nel1 = d1 * d1;
+                    g1.mat.raw()[((mm - q) as usize) * nel1]
+                };
+                let mat2 = |dq: i64| -> Complex {
+                    let g2 = &fx.pp_g[chain.sectors[2]];
+                    let d2 = g2.size1 as usize;
+                    let nel2 = d2 * d2;
+                    g2.mat.raw()[dq as usize * nel2]
+                };
+                // per tau1 (=q): sum over tau2 <= q of the close integrand
+                for q in 0..=mm {
+                    let mut fq = vec![Complex::ZERO; q as usize + 1];
+                    for t2 in 0..=q {
+                        fq[t2 as usize] =
+                            vt_row(t2) * o2 * mat2(q - t2) * o1 * mat1(q) * k15(q) * k41(t2);
+                    }
+                    let integ2 = crate::oca::gregory_blk(q as usize, &fq, 1, &integ);
+                    my_row[q as usize] += integ2[0];
+                    if std::env::var("XCA_V2DBG").is_ok() && q % 4 == 0 {
+                        eprintln!(
+                            "  manual combo l0={l0} l1={l1} q={q}: {:?}",
+                            integ2[0]
+                        );
+                    }
+                }
+            }
+        }
+        eprintln!("--- per-tau1 outer integrand (entry 0): trans vs my-formula");
+        for t1 in (0..=mm as usize).step_by(4) {
+            let r = if trans_row[t1].abs() > 1e-12 {
+                my_row[t1] / trans_row[t1]
+            } else {
+                Complex::ZERO
+            };
+            eprintln!(
+                "  t1={t1}: trans {:?} my {:?} ratio {r:?}",
+                trans_row[t1], my_row[t1]
+            );
+        }
+        // THE MY-FORMULA TOTAL: sum my_row with the outer Gregory +
+        // the measure + the conj - if ~matches the stock (up to the
+        // -1 pref) the window restructure is fully specified
+        let my_total_raw = crate::oca::gregory_blk(mm as usize, &my_row, 1, &integ)[0];
+        let my_total = meas * my_total_raw.conj();
+        eprintln!(
+            "my-formula total {my_total:?} | vs stock {:?} | vs trans {:?}",
+            my_total / stock_val,
+            my_total / trans_val
+        );
     }
 }
 

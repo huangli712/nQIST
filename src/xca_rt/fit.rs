@@ -79,6 +79,55 @@ fn fermi_kernel(tau: f64, w: f64, beta: f64) -> f64 {
     -(-w * tau).exp() / (1.0 + (-beta * w).exp())
 }
 
+thread_local! {
+    static COL_VT_FITS: std::cell::RefCell<
+        std::collections::HashMap<(usize, u64, i64, i64, u64, u64), Vec<Complex>>,
+    > = std::cell::RefCell::new(std::collections::HashMap::new());
+}
+
+/// The TAU-COLUMN fit of the vt data at the fixed real time n:
+///   vt(delta, tau_m, n) = sum_l cf[l] e^{-w_l (beta - m dtau)}
+/// The per-pole assignment ALIGNED with the data's separated
+/// form (the (1,5) chord's factorization; the two-sided dump
+/// verdict: the c_tv projection mis-assigns near-degenerate
+/// poles - the same-channel totals close coincidentally, the
+/// mixed combos expose it)
+pub(crate) fn vt_col_fit(
+    delta: &kadanoffbaym::types::ContourGreen,
+    poles: &[f64],
+    beta: f64,
+    dtau: f64,
+    ntau: i64,
+    n: i64,
+) -> Vec<Complex> {
+    let key = (
+        delta as *const _ as usize,
+        poles
+            .iter()
+            .fold(0u64, |a, w| a.rotate_left(7) ^ w.to_bits()),
+        n,
+        ntau,
+        beta.to_bits(),
+        dtau.to_bits(),
+    );
+    COL_VT_FITS.with(|c| {
+        if let Some(v) = c.borrow().get(&key) {
+            return v.clone();
+        }
+        let np = poles.len();
+        let mut b = vec![0.0f64; (ntau as usize + 1) * np];
+        for j in 0..=ntau {
+            for (l, &w) in poles.iter().enumerate() {
+                b[j as usize * np + l] = (-w * (beta - dtau * j as f64)).exp();
+            }
+        }
+        let values: Vec<Complex> = (0..=ntau).map(|m| super::vt_c(delta, m, n)).collect();
+        let fit = project_real_basis(&b, &values);
+        c.borrow_mut().insert(key, fit.clone());
+        fit
+    })
+}
+
 /// Real least squares of complex `values` on a REAL basis matrix
 /// `b[j][l]` (solve real and imaginary parts separately through the
 /// Jacobi eigensolver with the same equilibration as `csoe_coeffs`).
