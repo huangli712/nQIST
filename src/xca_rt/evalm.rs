@@ -634,7 +634,7 @@ fn recurse_simplex(
     let mut total = Complex::ZERO;
     for t in 0..=above {
         tv[vnext] = t;
-        let w = integ.giw.at(above, t);
+        let w = super::quad::chain_weight(above, t, integ);
         if w == 0.0 {
             continue;
         }
@@ -937,7 +937,7 @@ fn rec_gtr_mat(
     // BEFORE ops[v] left-multiplies the total
     let mut total = DenseMat::zeros_shape(chain.ops[v - 1].nrows(), chain.ops[0].ncols());
     for tp in 0..=t {
-        let w = integ.giw.at(t, tp);
+        let w = super::quad::chain_weight(t, tp, integ);
         if w == 0.0 {
             continue;
         }

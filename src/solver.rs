@@ -712,61 +712,87 @@ impl ImpuritySolver {
                     })
                     .collect();
                 use xca_rt::evalfam2::{Anchor, sigma_cuts_m};
+                if tstp == 1 && std::env::var_os("NQIST_TTI_FIRST_ROW").is_some() {
+                    for (c, (delta, p)) in chan_deltas.iter().zip(&proj).enumerate() {
+                        let mirrored = pp_ints.get(c).is_some_and(|line| line.backward)
+                            && xca_rt::evalfam2::mirrored_line(0, &proj, &[c]);
+                        let mut errors = [0.0_f64; 4];
+                        for left in 0..=tstp {
+                            for right in 0..=tstp {
+                                let expected = xca_rt::les_c(delta, left, right);
+                                for (i, coefficients) in [&p.c_les, &p.c_gtr].into_iter().enumerate() {
+                                    let actual: Complex = p.poles.iter().zip(coefficients)
+                                        .map(|(&w, &coefficient)| coefficient * (-Complex::I * w * h * (right - left) as f64).exp())
+                                        .fold(Complex::ZERO, |sum, value| sum + value);
+                                    errors[i] = errors[i].max((actual - expected).abs());
+                                }
+                            }
+                            for mu in 0..=ntau {
+                                let (mut tv, mut vt) = (Complex::ZERO, Complex::ZERO);
+                                for (&w, &coefficient) in p.poles.iter().zip(&p.c_tv) {
+                                    let thermal = if mirrored { -w } else { w };
+                                    let phase = (Complex::I * w * h * left as f64).exp();
+                                    tv += coefficient * phase * (-thermal * dtau * mu as f64).exp();
+                                    vt += coefficient.conj() * phase * (-thermal * dtau * (ntau - mu) as f64).exp();
+                                }
+                                errors[2] = errors[2].max((tv - xca_rt::tv_c(delta, left, mu)).abs());
+                                errors[3] = errors[3].max((vt - xca_rt::vt_c(delta, mu, left)).abs());
+                            }
+                        }
+                        eprintln!("bath reconstruction channel={c} poles={:?} mirrored={mirrored} errors [less, greater-as-less, tv, vt]={errors:?}", p.poles);
+                    }
+                }
+                let matrix = self.pp_g.iter().any(|g| g.size1 > 1);
+                let evaluate = |m, anchor: &Anchor| {
+                    if matrix {
+                        xca_rt::evalfam2m::sigma_cuts_m_mat(
+                            m, &self.hs, pp_ints, self.boson.as_ref(), &proj, &self.pp_g,
+                            anchor, tstp, h, beta, dtau, kt, &integ,
+                        )
+                        .into_iter().map(|block| block.raw().to_vec()).collect::<Vec<_>>()
+                    } else {
+                        sigma_cuts_m(
+                            m, &self.hs, pp_ints, self.boson.as_ref(), &proj, &self.pp_g,
+                            anchor, tstp, h, beta, dtau, kt, &integ,
+                        )
+                        .into_iter().map(|value| vec![value]).collect()
+                    }
+                };
                 for m in 3..=self.order {
+                    let use_tau_boundary = matrix && m == 3 && self.boson.is_none()
+                        && std::env::var_os("XCA_M3_LESS_BOUNDARY").is_some();
                     for j in 0..=tstp {
-                        let g = sigma_cuts_m(
-                            m,
-                            &self.hs,
-                            pp_ints,
-                            self.boson.as_ref(),
-                            &proj,
-                            &self.pp_g,
-                            &Anchor::JUpper(j),
-                            tstp,
-                            h,
-                            beta,
-                            dtau,
-                            kt,
-                            &integ,
-                        );
-                        let l = sigma_cuts_m(
-                            m,
-                            &self.hs,
-                            pp_ints,
-                            self.boson.as_ref(),
-                            &proj,
-                            &self.pp_g,
-                            &Anchor::JLower(j),
-                            tstp,
-                            h,
-                            beta,
-                            dtau,
-                            kt,
-                            &integ,
-                        );
+                        let g = evaluate(m, &Anchor::JUpper(j));
+                        let l = if j == 0 && use_tau_boundary {
+                            let mut blocks = evaluate(m, &Anchor::Tau(ntau));
+                            for (si, block) in blocks.iter_mut().enumerate() {
+                                let dim = self.pp_g[si].size1;
+                                let source = block.clone();
+                                for row in 0..dim {
+                                    for col in 0..dim {
+                                        block[row * dim + col] = -source[col * dim + row].conj();
+                                    }
+                                }
+                            }
+                            blocks
+                        } else {
+                            evaluate(m, &Anchor::JLower(j))
+                        };
                         for si in 0..ns {
-                            self.pp_sigma[si].ret.raw_block_at_mut(tstp, j)[0] += g[si];
-                            self.pp_sigma[si].less.raw_block_at_mut(j, tstp)[0] += l[si];
+                            for (dest, src) in self.pp_sigma[si].ret.raw_block_at_mut(tstp, j).iter_mut().zip(&g[si]) {
+                                *dest += *src;
+                            }
+                            for (dest, src) in self.pp_sigma[si].less.raw_block_at_mut(j, tstp).iter_mut().zip(&l[si]) {
+                                *dest += *src;
+                            }
                         }
                     }
                     for mu in 0..=ntau {
-                        let mx = sigma_cuts_m(
-                            m,
-                            &self.hs,
-                            pp_ints,
-                            self.boson.as_ref(),
-                            &proj,
-                            &self.pp_g,
-                            &Anchor::Tau(mu),
-                            tstp,
-                            h,
-                            beta,
-                            dtau,
-                            kt,
-                            &integ,
-                        );
+                        let mx = evaluate(m, &Anchor::Tau(mu));
                         for si in 0..ns {
-                            self.pp_sigma[si].lmix.raw_block_at_mut(tstp, ntau - mu)[0] += mx[si];
+                            for (dest, src) in self.pp_sigma[si].lmix.raw_block_at_mut(tstp, ntau - mu).iter_mut().zip(&mx[si]) {
+                                *dest += *src;
+                            }
                         }
                     }
                 }

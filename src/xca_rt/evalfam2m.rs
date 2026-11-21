@@ -133,6 +133,22 @@ pub(crate) fn chord_setup_m(
         && cut.nl == 0
         && cut.nr == 0
         && (cut.ni == 2 || (cut.ni == 4 && std::env::var("XCA_M3_REV").is_ok()));
+    let mixed_031 = m == 3 && match (cut.nl, cut.ni, cut.nr) {
+        (0, 3, 1) => std::env::var_os("XCA_M3_FORWARD_031").is_some(),
+        (0, 2, 2) => std::env::var_os("XCA_M3_FORWARD_022").is_some(),
+        _ => false,
+    };
+    let forward_130 = m == 3 && (cut.nl, cut.ni, cut.nr) == (1, 3, 0)
+        && std::env::var_os("XCA_M3_FORWARD_130").is_some();
+    let forward_less = m == 3 && matches!(anchor, Anchor::JLower(_))
+        && (cut.ni == 4 || mixed_031 || forward_130) && !rev_i && bath.is_none()
+        && std::env::var_os("XCA_M3_LESS_FORWARD").is_some();
+    let forward_contact = m == 3 && matches!(anchor, Anchor::Tau(_))
+        && (cut.ni == 4 || mixed_031) && !rev_i && bath.is_none()
+        && std::env::var_os("XCA_M3_TAU_FORWARD").is_some();
+    let native_mixed = m == 3 && matches!(anchor, Anchor::JLower(_))
+        && (cut.nl, cut.ni, cut.nr) == (1, 2, 1)
+        && std::env::var_os("XCA_M3_NATIVE_MIXED").is_some();
     for li in 0..m {
         let (e, l) = pairs[li];
         let p = &proj[cs[li]];
@@ -411,7 +427,8 @@ pub(crate) fn chord_setup_m(
             (0, 2) | (2, 0) => {
                 // Delta^<(t_L, t_R) = c e^{-i w t_L} e^{+i w t_R};
                 // BACKWARD: partner c_gtr/pole (see (3,2) above)
-                let cl = if bwd_line && ferm_line {
+                let use_lesser = m == 3 && std::env::var_os("XCA_M3_CROSS_LESS").is_some();
+                let cl = if bwd_line && ferm_line && !use_lesser {
                     p.c_gtr[combo[li]]
                 } else {
                     p.c_les[combo[li]]
@@ -465,7 +482,24 @@ pub(crate) fn chord_setup_m(
                 let bwd = bwd_line;
                 let rv = if be != 1 { e } else { l };
                 let tv = if be != 1 { l } else { e };
-                if ferm_line {
+                if native_mixed && ferm_line {
+                    // The time fit uses exp(-i*w*t). The imaginary
+                    // displacement in t+i*tau gives exp(+w*tau).
+                    cprod *= p.c_tv[combo[li]];
+                    if be == 3 || bl == 3 {
+                        cprod *= (-Complex::I * w * h * jj as f64).exp();
+                    } else {
+                        wsum[rv] += w;
+                    }
+                    isum[tv].push((w, 7, Complex::ONE));
+                } else if forward_less && forward_130 && (be == 0 || bl == 0) {
+                    cprod *= p.c_tv[combo[li]];
+                    wsum[rv] += w;
+                    isum[tv].push((w, 5, Complex::ONE));
+                } else if forward_less {
+                    let coeff = super::fit::vt_col_fit(pp_ints[cs[li]].delta, &p.poles, beta, dtau, pp_ints[cs[li]].delta.ntau as i64, jj);
+                    isum[tv].push((w, 1, coeff[combo[li]].conj()));
+                } else if ferm_line {
                     cprod *= p.c_tv[combo[li]];
                     if be == 3 || bl == 3 {
                         // real endpoint is the lower anchor: constant
@@ -521,7 +555,27 @@ pub(crate) fn chord_setup_m(
                 let bwd = bwd_line;
                 let rv = if be != 1 && be != 4 { e } else { l };
                 let tv = if be == 1 || be == 4 { e } else { l };
-                if ferm_line {
+                if native_mixed && ferm_line {
+                    // The reflected, conjugated tv profile gives vt.
+                    cprod *= p.c_tv[combo[li]].conj();
+                    if be == 5 || bl == 5 {
+                        cprod *= (Complex::I * w * h * n as f64).exp();
+                    } else {
+                        wsum[rv] -= w;
+                    }
+                    isum[tv].push((w, 5, Complex::ONE));
+                } else if forward_less && (be == 5 || bl == 5) {
+                    let coeff = super::fit::vt_col_fit(pp_ints[cs[li]].delta, &p.poles, beta, dtau, pp_ints[cs[li]].delta.ntau as i64, n);
+                    isum[tv].push((w, 0, coeff[combo[li]]));
+                } else if mixed_031 && ferm_line && (be, bl) == (1, 2) {
+                    cprod *= p.c_tv[combo[li]].conj();
+                    wsum[rv] -= w;
+                    if let Anchor::Tau(_) = anchor {
+                        isum[tv].push((-w, 8, Complex::ONE));
+                    } else {
+                        isum[tv].push((w, 7, Complex::ONE));
+                    }
+                } else if ferm_line {
                     // FERMION: conj(c_tv) with e^{+iwt} phases
                     // (bisection-anchored vs the reference les4)
                     if be == 4 || bl == 4 {
@@ -538,7 +592,7 @@ pub(crate) fn chord_setup_m(
                             super::evalfam2::vt_row_fit(pp_ints[cs[li]].delta, &p.poles, h, mm, n);
                         cprod *= cf[combo[li]];
                         wsum[rv] += w;
-                    } else if std::env::var("XCA_15COL").is_ok() && (be == 5 || bl == 5) {
+                    } else if (forward_contact || std::env::var("XCA_15COL").is_ok()) && (be == 5 || bl == 5) {
                         // THE (1,5) TAU-COLUMN FIT (the two-sided dump
                         // verdict: the c_tv projection MIS-ASSIGNS
                         // near-degenerate poles - ch2's pole-0 vt
@@ -583,9 +637,7 @@ pub(crate) fn chord_setup_m(
                     // I->I output vertex (2) instead of tv=1 - the
                     // stock's lam2/prof_l rides the ANCHOR-side
                     // vertex's time (the outer variable q)
-                    let v2_all_i = (std::env::var("XCA_TAU_V2").is_ok()
-                        || std::env::var("XCA_TAU_V2K").is_ok())
-                        && matches!(anchor, Anchor::Tau(_))
+                    let v2_all_i = matches!(anchor, Anchor::Tau(_))
                         && cut.nl == 0
                         && cut.ni == 2
                         && cut.nr == 0
@@ -593,7 +645,9 @@ pub(crate) fn chord_setup_m(
                     let push15 = if v2_all_i { 2 } else { tv };
                     isum[push15].push((
                         w,
-                        if bwd && mirrored_line(li, proj, cs) {
+                        if forward_contact {
+                            8
+                        } else if bwd && mirrored_line(li, proj, cs) {
                             5
                         } else {
                             1
@@ -648,7 +702,8 @@ pub(crate) fn chord_setup_m(
                 // independent direct-transcription cross-check
                 // (forward/backward ratio groups differed 3.09x)
                 let bwd = bwd_line;
-                let wm = if bwd
+                let reverse_tau = tau_rev_on && rev_i && m == 3;
+                let wm = if !forward_less && !forward_contact && !reverse_tau && bwd
                     && (if ferm_line {
                         mirrored_line(li, proj, cs)
                     } else {
@@ -660,8 +715,9 @@ pub(crate) fn chord_setup_m(
                 };
                 if ferm_line {
                     cprod *= p.c_mat[combo[li]] / Complex::new(k_tau(beta, wm, beta), 0.0);
-                    isum[l].push((wm, 3, Complex::ONE));
-                    isum[e].push((wm, 4, Complex::ONE));
+                    let (later_time, earlier_time) = if reverse_tau { (e, l) } else { (l, e) };
+                    isum[later_time].push((wm, 3, Complex::ONE));
+                    isum[earlier_time].push((wm, 4, Complex::ONE));
                 } else {
                     // boson matsubara chord: the B kernel (Bose
                     // statistics; same negated-pole rule for the
@@ -681,7 +737,17 @@ pub(crate) fn chord_setup_m(
                 // I-vertex, mirroring the stock's lam1.mat backbone
                 // integration (the per-(family,sector) real-ratio
                 // table from the per-chain probe)
-                    if std::env::var("XCA_41K").is_ok() {
+                    if forward_contact {
+                        cprod *= -p.c_mat[combo[li]];
+                        isum[l].push((w, 3, Complex::ONE));
+                    } else if m == 2 && cut.ni == 2 && cut.nl == 0 && cut.nr == 0 && !rev_i {
+                        let coef = p.c_mat[combo[li]] * (-w * dtau * mm as f64).exp()
+                            / (1.0 + (-beta * w).exp());
+                        isum[1].push((w, 7, coef));
+                    } else if m == 3 && tau_rev_on && rev_i && ferm_line {
+                        let coef = -p.c_mat[combo[li]] * k_tau(dtau * mm as f64, w, beta);
+                        isum[l].push((w, 7, coef));
+                    } else if std::env::var("XCA_41K").is_ok() {
                         // THE XCA_41X EXPERIMENT (the mixed-channel
                         // arithmetic: the mixed ratios = the c_mat
                         // channel ratio 4.0/6.25 - as if the (4,1)
@@ -816,14 +882,29 @@ pub(crate) fn eval_cut_m(
         rowmult,
         rev_i,
     } = cs0;
+    let mixed_031 = m == 3 && match (cut.nl, cut.ni, cut.nr) {
+        (0, 3, 1) => std::env::var_os("XCA_M3_FORWARD_031").is_some(),
+        (0, 2, 2) => std::env::var_os("XCA_M3_FORWARD_022").is_some(),
+        _ => false,
+    };
+    let forward_130 = m == 3 && (cut.nl, cut.ni, cut.nr) == (1, 3, 0)
+        && std::env::var_os("XCA_M3_FORWARD_130").is_some();
+    let forward_less = m == 3 && matches!(anchor, Anchor::JLower(_))
+        && (cut.ni == 4 || mixed_031 || forward_130) && !rev_i && bath.is_none()
+        && std::env::var_os("XCA_M3_LESS_FORWARD").is_some();
+    let forward_contact = m == 3 && matches!(anchor, Anchor::Tau(_))
+        && (cut.ni == 4 || mixed_031) && !rev_i && bath.is_none()
+        && std::env::var_os("XCA_M3_TAU_FORWARD").is_some();
     let v2p = m == 2
         && cut.nl == 0
         && cut.ni == 2
         && cut.nr == 0
         && !rev_i
-        && matches!(anchor, Anchor::Tau(_))
-        && std::env::var("XCA_TAU_V2").is_ok()
-        && std::env::var("XCA_TAU_V2P").is_ok();
+        && matches!(anchor, Anchor::Tau(_));
+    let reflect_mixed = m == 3
+        && matches!(anchor, Anchor::JLower(_))
+        && (cut.nl, cut.ni, cut.nr) == (1, 2, 1)
+        && std::env::var_os("XCA_M3_REFLECT_MIXED").is_some();
     let jj = match anchor {
         Anchor::JUpper(jj) | Anchor::JLower(jj) => *jj,
         Anchor::Tau(_) => 0,
@@ -848,7 +929,7 @@ pub(crate) fn eval_cut_m(
             return Complex::ONE;
         }
         let mut acc = Complex::ZERO;
-        let tauf = dtau * tau as f64;
+        let tauf = dtau * (if reflect_mixed { ntau - tau } else { tau }) as f64;
         for &(w, mode, cf) in &isum[v] {
             let k = match mode {
                 0 => Complex::new((-w * tauf).exp(), 0.0),
@@ -857,6 +938,10 @@ pub(crate) fn eval_cut_m(
                 // component; pairs with the mode-0 normal mate under
                 // one shared t-phase)
                 7 => Complex::new((w * tauf).exp(), 0.0),
+                8 => {
+                    let Anchor::Tau(mm) = anchor else { unreachable!() };
+                    Complex::new((-w * (beta - dtau * (*mm - tau) as f64)).exp(), 0.0)
+                }
                 1 => Complex::new((-w * (beta - tauf)).exp(), 0.0),
                 5 => Complex::new((w * (beta - tauf)).exp(), 0.0),
                 6 => Complex::new((w * tauf).exp(), 0.0),
@@ -970,7 +1055,8 @@ pub(crate) fn eval_cut_m(
                         } else {
                             let mut t = Vec::with_capacity(ntau as usize + 1);
                             for tau in 0..=ntau {
-                                let prod = chain.ops[v].mat_mul(&tv_blk(g1, *jja, tau));
+                                let index = if forward_less { ntau - tau } else { tau };
+                                let prod = chain.ops[v].mat_mul(&tv_blk(g1, *jja, index));
                                 t.push(scale_c(&prod, phi(v, 0) * ikern(v, tau)));
                             }
                             state_i = t;
@@ -996,7 +1082,7 @@ pub(crate) fn eval_cut_m(
                                 t[tau as usize] = scale_c(&prod, phi(vlast, 0) * ikern(vlast, tau));
                             }
                             state_i = t;
-                        } else if std::env::var("XCA_TAU_V2").is_ok()
+                        } else if (v2p || std::env::var("XCA_TAU_V2").is_ok())
                             && cut.nl == 0
                             && cut.ni == 2
                             && cut.nr == 0
@@ -1057,7 +1143,8 @@ pub(crate) fn eval_cut_m(
                                 ntau as usize + 1
                             ];
                             for tau in 0..=*mma {
-                                let prod = chain.ops[v].mat_mul(&mat_blk(g1, *mma - tau));
+                                 let index = if forward_contact { tau } else { *mma - tau };
+                                 let prod = chain.ops[v].mat_mul(&mat_blk(g1, index));
                                 t[tau as usize] = scale_c(&prod, ikern(v, tau));
                             }
                             state_i = t;
@@ -1150,7 +1237,12 @@ pub(crate) fn eval_cut_m(
                     let mut f: Vec<Vec<Complex>> =
                         vec![vec![Complex::ZERO; r0 * c0]; j as usize + 1];
                     for tt in 0..=j {
-                        let prod = tv_blk(g, tt, tau).mat_mul(&state_l[tt as usize]);
+                        let index = if reflect_mixed || (forward_less && forward_130) {
+                            ntau - tau
+                        } else {
+                            tau
+                        };
+                        let prod = tv_blk(g, tt, index).mat_mul(&state_l[tt as usize]);
                         f[tt as usize] = prod.raw().to_vec();
                     }
                     let integral = quad(&f, r0, c0, j as usize);
@@ -1274,7 +1366,12 @@ pub(crate) fn eval_cut_m(
                     let mut f: Vec<Vec<Complex>> =
                         vec![vec![Complex::ZERO; r0 * c0]; ntau as usize + 1];
                     for tau in 0..=i_max {
-                        let prod = vt_blk(g, tau, tt).mat_mul(&state_i[tau as usize]);
+                        let index = if reflect_mixed || forward_less || forward_contact {
+                            i_max - tau
+                        } else {
+                            tau
+                        };
+                        let prod = vt_blk(g, index, tt).mat_mul(&state_i[tau as usize]);
                         f[tau as usize] = prod.raw().to_vec();
                     }
                     let integral = quad(&f, r0, c0, i_max as usize);
@@ -1367,7 +1464,7 @@ pub(crate) fn eval_cut_m(
                         let prod = state_i[tau as usize].mat_mul(&mat_blk(ga, *mma - tau));
                         f[tau as usize] = prod.raw().to_vec();
                     }
-                } else if std::env::var("XCA_TAU_V2").is_ok()
+                } else if (v2p || std::env::var("XCA_TAU_V2").is_ok())
                     && cut.nl == 0
                     && cut.ni == 2
                     && cut.nr == 0
@@ -1411,7 +1508,8 @@ pub(crate) fn eval_cut_m(
                 } else {
                     // forward close: the n-side vt read (leftward)
                     for tau in 0..=i_max {
-                        let prod = vt_blk(gfin, tau, n).mat_mul(&state_i[tau as usize]);
+                        let index = if forward_contact { *mma - tau } else { tau };
+                        let prod = vt_blk(gfin, index, n).mat_mul(&state_i[tau as usize]);
                         f[tau as usize] = prod.raw().to_vec();
                     }
                 }
@@ -1424,7 +1522,8 @@ pub(crate) fn eval_cut_m(
                 }
             } else {
                 for tau in 0..=i_max {
-                    let prod = vt_blk(gfin, tau, n).mat_mul(&state_i[tau as usize]);
+                    let index = if forward_less { ntau - tau } else { tau };
+                    let prod = vt_blk(gfin, index, n).mat_mul(&state_i[tau as usize]);
                     f[tau as usize] = prod.raw().to_vec();
                 }
             }
@@ -1475,6 +1574,15 @@ pub(crate) fn eval_cut_m(
     if matches!(anchor, Anchor::Tau(_)) && cut.ni % 2 == 1 {
         oric *= Complex::I;
     }
+    // Diagnostic: restore the third-order vertex phase relative to
+    // OCA and convert imaginary bath lines from Matsubara storage.
+    if m == 3
+        && matches!(anchor, Anchor::JLower(_))
+        && (cut.nl, cut.ni, cut.nr) == (1, 2, 1)
+        && std::env::var_os("XCA_M3_CONTOUR_PHASE").is_some()
+    {
+        oric *= -Complex::I;
+    }
     let meas = Complex::new(
         h.powi((cut.nl + cut.nr) as i32) * dtau.powi(cut.ni as i32),
         0.0,
@@ -1497,9 +1605,7 @@ pub(crate) fn eval_cut_m(
     // stock's les families place the reads LEFT of the ops; the G
     // blocks of real-basis Hamiltonians are symmetric, making the
     // plain transpose the exact general relation)
-    let val = if matches!(anchor, Anchor::JUpper(_))
-        || (matches!(anchor, Anchor::Tau(_)) && std::env::var("XCA_TAU_V2P").is_ok())
-    {
+    let val = if forward_less || !matches!(anchor, Anchor::JLower(_)) {
         val
     } else {
         let mut t = val.adjoint();
@@ -1606,7 +1712,14 @@ pub(crate) fn sigma_cuts_m_mat(
         Err(_) => cuts,
     };
     let chans = chans_with_bath(pp_ints, bath);
-    for topo in topos.iter() {
+    let endpoint_audit = m == 3 && n == 1
+        && (matches!(anchor, Anchor::JLower(0))
+            || matches!(anchor, Anchor::Tau(mu) if *mu == pp_g[0].ntau as i64))
+        && std::env::var_os("NQIST_TTI_ENDPOINT_AUDIT").is_some();
+    let mut audit = (endpoint_audit || (m == 3 && n == 1 && matches!(anchor, Anchor::JLower(1))
+        && std::env::var_os("NQIST_TTI_FIRST_ROW").is_some()))
+        .then(|| vec![vec![out.clone(); cuts.len()]; topos.len()]);
+    for (topology_index, topo) in topos.iter().enumerate() {
         for cs in ChannelIter::new(chans.len(), m) {
             for s0 in 0..ns {
                 let Some(chain) =
@@ -1633,7 +1746,7 @@ pub(crate) fn sigma_cuts_m_mat(
                         1.0
                     };
                     let fac = Complex::new(msign * stat * parity_eff, 0.0);
-                    for cut in cuts.iter() {
+                    for (index, cut) in cuts.iter().enumerate() {
                         let val = eval_cut_m(
                             m,
                             cut,
@@ -1655,6 +1768,11 @@ pub(crate) fn sigma_cuts_m_mat(
                         );
                         for q in 0..out[s0].len() {
                             out[s0].raw_mut()[q] += fac * val.raw()[q];
+                        }
+                        if let Some(blocks) = &mut audit {
+                            for (dest, src) in blocks[topology_index][index][s0].raw_mut().iter_mut().zip(val.raw()) {
+                                *dest += fac * *src;
+                            }
                         }
                     }
                     // pole odometer
@@ -1688,6 +1806,50 @@ pub(crate) fn sigma_cuts_m_mat(
             for q in 0..out[s0].len() {
                 out[s0].raw_mut()[q] *= sg;
             }
+        }
+    }
+    if let Some(blocks) = audit {
+        if endpoint_audit {
+            for (index, cut) in cuts.iter().enumerate().filter(|(_, cut)| cut.nl == 0) {
+                for s in 0..ns {
+                    let dim = hs.sectors[s].dim;
+                    for row in 0..dim {
+                        for col in 0..dim {
+                            let value = blocks.iter().map(|topology| {
+                                let block = &topology[index][s];
+                                if matches!(anchor, Anchor::Tau(_)) {
+                                    block.get(col, row).conj() * pp_g[s].sign.as_i64() as f64
+                                } else {
+                                    block.get(row, col)
+                                }
+                            }).fold(Complex::ZERO, |a, b| a + b);
+                            eprintln!("endpoint {anchor:?} {} {s} {row} {col} {:.16e} {:.16e}", cut.ni, value.re, value.im);
+                        }
+                    }
+                }
+            }
+            return out;
+        }
+        for (topo, cut_blocks) in topos.iter().zip(blocks) {
+        for (cut, sectors) in cuts.iter().zip(cut_blocks) {
+            if (cut.nl, cut.ni, cut.nr) != (1, 2, 1) {
+                continue;
+            }
+            let mut norm = 0.0_f64;
+            let mut defect = 0.0_f64;
+            for block in sectors {
+                for row in 0..block.nrows() {
+                    for col in 0..block.ncols() {
+                        let value = block.get(row, col);
+                        norm = norm.max(value.abs());
+                        defect = defect.max((value + block.get(col, row).conj()).abs());
+                    }
+                }
+            }
+            if norm > 0.0 {
+                eprintln!("lesser cut (1,2,1) pairs={:?} norm={norm:.6e} defect={defect:.6e}", topo.pairs);
+            }
+        }
         }
     }
     out

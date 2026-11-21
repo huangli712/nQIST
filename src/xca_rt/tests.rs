@@ -1121,11 +1121,7 @@ fn xca_m2_cuts_match_oca_three_component_twoband() {
         all_worst.push((name, worst));
     }
     for (name, worst) in &all_worst {
-        // Tau asserts only behind XCA_TAU_GATE (campaign in progress)
-        let is_tau = name.starts_with("Tau");
-        if !is_tau || std::env::var("XCA_TAU_GATE").is_ok() {
-            assert!(worst < &8.0e-2, "m=2 cuts {name} {worst}");
-        }
+        assert!(worst < &8.0e-2, "m=2 cuts {name} {worst}");
     }
 }
 

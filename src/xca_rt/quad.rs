@@ -11,37 +11,44 @@ pub(crate) use crate::oca::{conv2b_scalar, gregory_scalar, lowside_scalar, poly_
 use kadanoffbaym::complex::Complex;
 use kadanoffbaym::weights::Integrator;
 
-/// Sub-interval integral for the chain evaluator: identical to the
-/// reference `poly_integral_scalar` on long buffers; short buffers
-/// (length <= i0 + k, which the xiw branch cannot index) fall back
-/// to the Gregory startup rows, clamped to the buffer.
+/// Quadrature weight on the interval's own nodes. Short intervals use
+/// the interpolant through those nodes, without truncating a Gregory row.
+pub(crate) fn chain_weight(n: usize, j: usize, integ: &Integrator) -> f64 {
+    use kadanoffbaym::weights::PolynomialIntegrationWeights;
+    use std::sync::OnceLock;
+
+    if n == 0 {
+        return 0.0;
+    }
+    if n > integ.k as usize {
+        return integ.giw.at(n, j);
+    }
+    static WEIGHTS: OnceLock<[PolynomialIntegrationWeights; 10]> = OnceLock::new();
+    let weights = WEIGHTS.get_or_init(|| {
+        std::array::from_fn(|index| PolynomialIntegrationWeights::new((index + 1) as i64))
+    });
+    weights[n - 1].at(0, n, j)
+}
+
+/// Sub-interval integral using the full startup stencil when available.
 pub(crate) fn poly_integral_chain(
     v: &[Complex],
     i0: usize,
     i1: usize,
     integ: &Integrator,
 ) -> Complex {
-    if i1 <= i0 {
-        // zero-width interval: contributes nothing
+    let n = i1.saturating_sub(i0);
+    if n == 0 {
         return Complex::ZERO;
     }
     let k = integ.k as usize;
-    if i1 - i0 > k || v.len() <= i0 + k {
-        // Gregory on the sub-interval with the startup rows clamped
-        let n = i1 - i0;
-        let slice = &v[i0..=i1];
-        let jmax = n.max(k).min(slice.len().saturating_sub(1));
-        let mut out = Complex::ZERO;
-        for j in 0..=jmax {
-            let w = integ.giw.at(n, j);
-            if w != 0.0 {
-                out += Complex::new(w, 0.0) * slice[j];
-            }
-        }
-        out
-    } else {
-        poly_integral_scalar(v, i0, i1, integ)
+    if n <= k && v.len() > i0 + k && i1 <= k {
+        return poly_integral_scalar(v, i0, i1, integ);
     }
+    v[i0..=i1].iter().enumerate().fold(Complex::ZERO, |sum, (j, &value)| {
+        let w = chain_weight(n, j, integ);
+        if w == 0.0 { sum } else { sum + Complex::new(w, 0.0) * value }
+    })
 }
 
 /// Entrywise matrix variant of [`poly_integral_chain`]: identical
@@ -61,4 +68,29 @@ pub(crate) fn poly_integral_chain_mat(
         out[q] = poly_integral_chain(&col, i0, i1, integ);
     }
     out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn short_chain_integral_preserves_constant() {
+        let integ = Integrator::new(5);
+        for n in 1..=5 {
+            let values = vec![Complex::ONE; n + 1];
+            let got = poly_integral_chain(&values, 0, n, &integ);
+            assert!((got - Complex::new(n as f64, 0.0)).abs() < 1e-12, "n={n}: {got:?}");
+        }
+    }
+
+    #[test]
+    fn short_chain_integral_preserves_affine_offset_interval() {
+        let integ = Integrator::new(5);
+        let values = [Complex::ZERO; 7].map(|_| Complex::new(2.0, 1.0));
+        let mut values = values;
+        values[6] = Complex::new(4.0, 3.0);
+        let got = poly_integral_chain(&values, 5, 6, &integ);
+        assert!((got - Complex::new(3.0, 2.0)).abs() < 1e-12, "{got:?}");
+    }
 }
