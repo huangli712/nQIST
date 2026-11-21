@@ -1739,6 +1739,249 @@ dependency was left broken MID-EDIT by another session
 (dyson/timestep.rs `id`/`w`/`gles` undefined, 9 errors) -
 nQIST cannot build until they finish; the lib test target
 ran BEFORE the breakage (the verdict above is valid).
+
+THE FIXTURE'S POLE STRUCTURE - FULLY EXPOSED (the decisive
+print, tests.rs's transcription test): the fits find the
++-eps PAIR per channel; c_tv (the (1-f) particle side) and
+c_mat (the f side) live on OPPOSITE poles of the pair!
+  ch0 (eps=+0.5): poles [+0.5,-0.5], c_tv main pole 0 (0.231),
+    c_mat main pole 1 (6.25)
+  ch2 (eps=-0.8): poles [+0.8,-0.8], c_tv TINY on pole 1
+    (0.0029 - 80x smaller than ch0!), c_mat main pole 0 (4.0)
+  ch4 (eps=+1.1): poles [+1.1,-1.1], c_tv main pole 0 (0.199),
+    c_mat main pole 1 (5.0)
+THE PHYSICS: eps<0 (ch2, below mu) -> the level nearly
+OCCUPIED -> (1-f)=0.018 -> the vt component is tiny. THE
+PER-POLE DUMP REINTERPRETATION: ch2's l1=0 terms vanish NOT
+from an assignment disagreement but because CH2'S VT DATA IS
+NEARLY ZERO at its main pole - the two-sided dump's
+'l1=0-dominant transcription' reflects the LineSep's
+per-ROW t-fits of the tiny vt data redistributing onto the
++-pair differently. THE NP=1 EXPERIMENT INVALID:
+fits_npoles(1) is broken machinery (everything collapses,
+[2,2] -> 0.0003 - the single-pole projection path fails).
+THE REMAINING QUESTION (now fully concrete): why does the
+mixed [0,2] fail when both sides' factors are this clear -
+the (1,5) rides ch2's tiny c_tv (pole 1, kernel
+ e^{-w(beta-tau)} with w=-0.8) and the (4,1) ch0's c_mat
+(pole 1, kernel e^{+w t2} with w=-0.5) - vs the stock's raw-
+data evaluation. With the structure exposed, the mechanism
+analysis is now arithmetic on visible numbers (the next
+session's focused task - or compare the per-combo window
+dumps against a hand-computed stock decomposition using
+these printed coefficients).
+
+THE FINAL CONTRAST (the LineSep profile print, the campaign's
+deepest characterization): the stock's ls2.vt_coef_at for
+ch2 = pole 0 (+0.8) amplitude 0.157 decaying (the v^2.f HOLE
+side!) while my projection's c_tv = pole 1 (-0.8) amplitude
+0.0029 (the v^2.(1-f) PARTICLE side - 54x smaller!). THE TWO
+SIDES USE DIFFERENT vt OBJECTS: for ch0 (eps=+0.5 near mu)
+the two sides COINCIDE (both 0.231 at pole 0 -> [0,0]
+closes!); for ch2 (eps=-0.8 far from mu) they differ 54x ->
+the mixed fails! THE REMAINING PUZZLE: why does [2,2] close
+(1.0171) when my (1-f)-side evaluation meets the stock's
+f-side - presumably a compensating structure in the full
+(4,1)x(1,5) product that only breaks when the two lines
+carry different channels. THE FIX DIRECTION (now concrete):
+align the (1,5)'s object with the stock's - the LineSep::vt
+semantics (eval2.rs:93's per-m fits of WHAT data?) must be
+read and the (1,5)'s factorization rebuilt on the same
+object (the per-m row-fit pattern with the f-side data),
+or the c_tv projection must be switched to the f-side
+convention. All numbers printed and comparable in the
+tree (the transcription test's inspection blocks).
+
+THE FINAL OBJECT VERIFICATION (every factor now verified
+consistent): vt_c = -sig.conj(lmix(t, ntau - tau)) - the
+REFLECTED-tau read (mod.rs:251) - ch2's growing lmix
+(e^{+0.8tau}, amplitude 0.00287) becomes the decaying vt
+profile 0.157.e^{-0.8tau} (the e^{beta}=54.6 scaling). The
+column-fit helper VERIFIED CORRECT: cf[1] = 0.00288 =
+0.157/54.6 (the basis e^{-w(beta-tau)} itself carries the
+e^beta factor; cf.kernel = 0.157.e^{-0.8tau} = the exact
+data). THE TWO REPRESENTATIONS ARE EQUIVALENT: the stock's
+t-pole assignment (pole 0, +0.8, per-tau amplitudes) and my
+tau-pole assignment (pole 1, -0.8, e^beta-scaled
+coefficients) factorize the SAME data - and the (1,5)'s
+cprod e^{+iwnh} with w=-0.8 gives e^{-i0.8nh} = the data's
+t-phase ✓. EVERY per-factor object verified; the mixed
+failure's mechanism is at the COMBINATION level (the
+(l0,l1)-kernel pairing across the two lines' OPPOSITE pole
+representations - the stock sums l0 internally via the raw
+lam1 while my combo loop sums explicitly; the remaining
+divergence is in how the cross terms pair). THE NEXT
+SESSION: dump BOTH decompositions of ONE mixed combo
+hand-computed from the printed numbers (c_mat[1]=6.25,
+kernel e^{+w0 t2} w0=-0.5; cf[1]=0.00288, kernel
+e^{+0.8(beta-tau)}, phase e^{-i0.8nh}) vs the stock's
+core_l1=0 term - the arithmetic will show the mismatch
+directly.
+
+THE BUG LOCATED (the ops comparison, the campaign's final
+find): for the MIXED combos the chain's flavor OPERATORS are
+MISASSIGNED vs the stock's matched diagram while the
+same-channel matches exactly ([0,0]: ops[1]==op3,
+ops[2]==op2 verbatim!). The mixed [0,2]: ops[1] carries a -1
+sign pattern vs op3's +1, and ops[2] has the flavor-hop at a
+DIFFERENT entry position ([1] vs [2]) than op2 - the chain
+builder's hop-to-vertex assignment for the mixed produces a
+CROSSED arrangement (mine[a,b].ops ~ stock[b,a]'s, modulo
+transposes from the rectangular shapes). THE FULL MECHANISM:
+the same-channel closures were immune (both lines carry the
+same flavor -> the arrangements coincide); the mixed exposes
+the crossing; the reciprocal ratio = the crossed diagram's
+value; the chain-swap failed because swapping cs at the
+builder swaps BOTH the ops AND the sectors while the correct
+fix needs the ops of the [b,a]-built chain with the [a,b]
+sector walk. THE FIX: in build_rt_chain_mixed_m, the
+cs-to-hop assignment must order the flavor hops to match the
+stock's diagram convention (line0's channel drives the hop
+the stock's lam1-side op carries) - read the builder's cs
+loop and swap the hop order for the mixed (or assign by the
+pairing's line-to-vertex map). Then: the mixed closes -> the
+V2 default -> the gate -> B-4 -> B-5.
+
+THE TRANSPOSE RESOLUTION + THE (4,1) SIGN LEAD (the follow-up
+round): the full hop-by-hop print shows the stock's
+op1..op4 = EXACTLY ops[0..3] TRANSPOSED (every pair,
+shape-and-entries verified: op1=ops[0]^T, op2=ops[1]^T,
+op3=ops[2]^T, op4=ops[3]^T!) - the §1691 'misassignment' was
+a shape-blind comparison artifact; the chain level is FULLY
+CONSISTENT (sectors identity-mapped, ops the uniform
+transpose). The propagator mats at all walk sectors (5,4,7,2)
+are SYMMETRIC and the 1x1 output is transpose-blind - the
+transpose convention cannot explain the mixed failure. THE
+NEW LEAD (the hand-arithmetic on the printed numbers): the
+(4,1) at the nosign variant = +1.6549.e^{-0.0521 t2} while
+the raw lam1 data = -1.6428.e^{-0.0521 t2} (0.7% = fit level
+but THE SIGN FLIPPED) - and the §1348 data probe verified
+the (4,1) reconstruction with the BASE -c_mat form (the sign!)
+- the nosign variant's better gate value (2.898 vs 4.275) may
+be an aggregate compensation, not correctness! THE NEXT
+TEST: the mixed with XCA_41S=sign (the data-matching sign) +
+the V2 - if the mixed improves, the sign story holds and the
+same-channel closures need re-examination (they closed with
+nosign - possibly a compensating (1,5) conj sign for the
+same-channel!). Also worth: print the (4,1)'s k41_c vs the
+raw mat directly per combo (the per-factor sign audit).
+
+THE SIGN TEST VERDICT (refuted): the sign variant just FLIPS
+EVERYTHING (the same-channel +1.0101 -> -1.0101 WRONG SIGN,
+the mixed 0.647 -> -0.647 same magnitude error) - the nosign
+is correct (the same-channel proves it) and the (4,1)'s
+apparent sign flip vs the raw data is COMPENSATED elsewhere
+in the window's decoration chain. TWELVE hypotheses now
+eliminated with full instrumentation (per-pole assignment,
+(1,5) factorization, eval/chain swaps, column fit, NP=1,
+multiplets, 25x, kernels/bases, sectors, ops, propagator
+symmetry, (4,1) sign). THE SURVIVING EMPIRICAL FACT: the
+mixed fails by a ~1.55x scale + small phase with EVERY
+structural element verified - the final instrument is the
+per-tau FACTOR-LEVEL integrand comparison for the single
+surviving combo [0,2](l0=1,l1=1): dump the window's v2close
+per-tau rows against a hand-built stock-equivalent from the
+printed numbers (prof0(q)=-0.1571i.e^{-0.8qdtau},
+ph0=e^{-i1.6}, lam1raw(m-t2)=-1.6428.e^{-0.0521t2}) - pure
+arithmetic, the divergence point will be exact.
+
+THE (4,1)-CROSSED EXPERIMENT (13th elimination): swapping
+ONLY the (4,1)'s channel index (XCA_41X: p41 =
+proj[cs[1-li]] with the pole w41 from p41) does NOT correct
+([0,2]: 0.647->0.384 WORSE, [2,0]: 1.638->1.325, [0,0]
+unchanged - same-channel blind as expected) - the
+c_mat-ratio hypothesis as a projection-index swap is
+refuted. The striking 0.64/1.56 pattern (the c_mat channel
+ratio 4.0/6.25!) likely arises in the CORE (the walks
+traverse (5,4,7) vs (7,4,5) - the seed's mat at sector 5
+vs 7!) rather than the chord factors - CHECK: the mat
+amplitudes at sectors 5 vs 7 (if their ratio ~1.55 the
+mechanism is the sector-dependent propagator reads, and
+the question becomes which side's walk convention is
+right). All instruments in-tree; the default suite green
+125/0/4 (every experiment knob-gated/inert).
+
+THE COMPLETE MECHANISM (the final understanding, 14
+eliminations deep): the V2's read swap (seed=vt(s1),
+close=mat(s3)) vs the stock's (mat(sa=s1), vt(sc=s3)) -
+for the SAME-CHANNEL (s1==s3, e.g. [0,0]'s (5,2,5)) the
+swap is INVISIBLE (the 1x1 output makes the whole product
+a complex SCALAR chain - commutative - my product = the
+stock's reversed product!) - the same-channel closure
+NEVER validated the swap; for the MIXED (s1=5 != s3=7) the
+components sit on DIFFERENT sectors' greens -> genuinely
+different -> the extra -0.64 factor (hand-verified: the
+factor level gives -1.008 (sign+fit-level) and the total
+0.647 = (-1.008)*(-0.64) - the -0.64 = the swapped-read
+sector effect). THE V2K EXPERIMENT (kernel swaps only,
+original reads) REFUTED: breaks even [0,0] (3.27!) - the
+kernel swaps and the read swap are COUPLED (both needed
+as the V2 bundle). THE REMAINING TASK (one careful
+derivation): the correct read-kernel pairing - the stock
+has mat@sa + k41-riding-t2 vs vt@sc + k15-riding-q; map
+which window vertex carries which (the seed's tau variable
+vs the transcription's tau1/tau2 naming tangles) and
+build the un-swapped-reads + correctly-attached-kernels
+variant (neither the V2 bundle nor the V2K achieved this) -
+then the mixed closes and (by the scalar argument) the
+same-channel stays closed. All instruments in-tree.
+
+THE V2S RESULT (15th elimination + a deep paradox): the
+sector swap (seed reads vt(s3), close reads mat(s1)) is a
+BIT-IDENTICAL NO-OP - the fixture's propagator data is
+MIRROR-DEGENERATE (vt(5)==vt(7), mat(5)==mat(7))! Combined
+with all prior verifications (ops = exact transposes, mats
+symmetric, vt mirror-degenerate, the kernels/bases/factors
+confirmed), the ALGEBRA SAYS mine == stock for the mixed -
+but the empirical says 0.647 - A CONTRADICTION, meaning one
+'verified' assumption silently fails for the mixed.
+THE SURVIVING SUSPECTS (for the next session, in order):
+(a) the IKERN's time-variable mapping for the mixed (the
+isum kernels' evaluation points - the seed's tau vs the
+I->I's tau2 - the naming tangles; dump the ikern values at
+specific taus vs the transcription's k41(t2)/k15(q)),
+(b) the COMBO-INDEX semantics for the mixed (combo[0]/[1]
+into the OTHER channel's poles under the V2's crossed
+kernel attachments - the (4,1) at isum[1] uses p41's pole
+but combo[li]'s index range is p's!),
+(c) the phI/wsum accumulations' interaction with the mixed
+channels' different poles. The instrument set is complete
+and the same-channel closure + all the eliminations are
+solid; this is a fresh-context algebra task.
+
+THE MECHANISM FOUND (round 17, the complete numerical
+divergence trace - the approach that finally worked after 16
+hypothesis rounds): THE OPERATOR-PLACEMENT SWAP. The stock's
+string is ga.op2.[gb.op3.gcl] - op3 (= ops[2]^T, the
+(s2->s3)-shaped operator!) INSIDE the inner integral and
+op2 (= ops[1]^T) at the OUTER (adjacent to the mat read); MY
+WINDOW HAS THEM BACKWARDS (ops[1] in the seed's state, ops[2]
+at the I->I output). Matrix products do not commute - THE
+SAME-CHANNEL CLOSURES WERE PLACEMENT-BLIND (the dim-1 corner
+sectors' scalar operators commute!) and the MIXED EXPOSES IT
+(the dim-2 intermediates). This single mechanism explains ALL
+observations: the reciprocal ratio ([a,b] vs [b,a] are the
+mirrored placements), the V2K coupling, the outer-integrand
+oscillation vs the stock's smooth decay, and why every
+component verified identical (vt bit-identical, kernels
+machine-exact, ops exact transposes, greens mirror-degenerate)
+while the totals diverged. THE EVIDENCE CHAIN (the complete
+numerical diff, all dumps in-tree): the outer integrands
+f[tau] vs f_ac[t1] shapes differ (tests.rs's trans_f_ac dump);
+the inner integrals differ (the ItoIint dump); the RAW vt
+values BIT-IDENTICAL (seedvt vs trans_gcvt - every tau every
+entry); the kernels correct per combo (the ikern dumps); the
+naive placement swap (XCA_TAU_V2P) PANICS ON SHAPES - itself
+the confirmation: the stock's inner operator is ops[2]^T (the
+(s2->s3) shape) not ops[2], the close's is ops[1]^T, and the
+close's output must be (s3 x s1)-shaped for the final
+sandwich. THE CORRECT FIX (fully specified): the seed's state
+= ops[2].adjoint().vt(s3-green - combine with V2S).k41; the
+I->I: ti = integral (no ops); the close: f =
+mat(s1).ops[1].adjoint().ti with the (s3 x s1) output
+orientation rederived; then the mixed closes -> the
+same-channel must stay (scalar-blind) -> V2+P default -> the
+gate -> B-4 -> B-5.
 + ops verification - TRUSTWORTHY): the per-chain ratios are
 CONSTANT per (channel-family, sector-class), nearly REAL, with
 sign pattern (-,+,-):
