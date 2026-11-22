@@ -181,15 +181,15 @@ fn main() {
             let pp_ints = get_pp_ints(&delta, &delta_cc, &solver);
             let gf = solver.get_spgf(&verts, n, &pp_ints).remove(0);
             set_gloc_row(&mut gloc, &gf);
-            let ts = kadanoffbaym::basics::timestep_at(&gloc, n);
-            kadanoffbaym::basics::set_timestep_at(&mut delta, &ts);
+            let ts = kadanoffbaym::storage::timestep_at(&gloc, n);
+            kadanoffbaym::storage::set_timestep_at(&mut delta, &ts);
             set_bwd_from_fwd_tstp(n, &mut delta_cc, &delta);
         }
         let mut err = 0.0;
         for n in 0..=kt {
             err = gtmp.distance_at(&gloc, n);
-            let ts = kadanoffbaym::basics::timestep_at(&gloc, n);
-            kadanoffbaym::basics::set_timestep_at(&mut gtmp, &ts);
+            let ts = kadanoffbaym::storage::timestep_at(&gloc, n);
+            kadanoffbaym::storage::set_timestep_at(&mut gtmp, &ts);
             println!("START time: {n} iter:  {iter} err: {}", fmt_g6(err));
         }
         println!();
@@ -211,12 +211,12 @@ fn main() {
             solver.pp_step(tstp, &pp_ints);
             let gf = solver.get_spgf(&verts, tstp, &pp_ints);
             set_gloc_row(&mut gloc, &gf[0]);
-            let ts = kadanoffbaym::basics::timestep_at(&gloc, tstp);
-            kadanoffbaym::basics::set_timestep_at(&mut delta, &ts);
+            let ts = kadanoffbaym::storage::timestep_at(&gloc, tstp);
+            kadanoffbaym::storage::set_timestep_at(&mut delta, &ts);
             set_bwd_from_fwd_tstp(tstp, &mut delta_cc, &delta);
             let err = gtmp.distance_at(&gloc, tstp);
-            let ts = kadanoffbaym::basics::timestep_at(&gloc, tstp);
-            kadanoffbaym::basics::set_timestep_at(&mut gtmp, &ts);
+            let ts = kadanoffbaym::storage::timestep_at(&gloc, tstp);
+            kadanoffbaym::storage::set_timestep_at(&mut gtmp, &ts);
             println!("time: {tstp} iter  {iter} err: {}", fmt_g6(err));
             if err < cfg.errmax {
                 break;

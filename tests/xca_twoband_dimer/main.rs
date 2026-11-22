@@ -32,6 +32,27 @@ const EPS_B1: f64 = 0.5;
 const V2: f64 = 0.35;
 const EPS_B2: f64 = -0.8;
 
+/// Initialize the `t = 0` row (ret/les/lmix) of a pseudo-particle
+/// green from its Matsubara component. Local copy of the KB
+/// `variants::pseudo::set_t0_from_mat_pseudo` kernel, which the KB
+/// module-surface narrowing made crate-private (identical body).
+fn set_t0_from_mat_pseudo(g: &mut kadanoffbaym::types::PseudoGreen) {
+    let ntau = g.ntau;
+    let s = Complex::new(0.0, g.sign.as_i64() as f64);
+    for m in 0..=ntau {
+        let src = g.mat.block(ntau - m).to_vec();
+        for (d, x) in g.lmix.raw_block_at_mut(0, m as i64).iter_mut().zip(src) {
+            *d = s * x;
+        }
+    }
+    let l00 = g.lmix.raw_block_at(0, 0).to_vec();
+    g.less.raw_block_at_mut(0, 0).copy_from_slice(&l00);
+    let m0 = g.mat.block(0).to_vec();
+    for (d, x) in g.ret.raw_block_at_mut(0, 0).iter_mut().zip(m0) {
+        *d = Complex::I * x;
+    }
+}
+
 fn k_tau(tau: f64, w: f64) -> f64 {
     -(-w * tau).exp() / (1.0 + (-BETA * w).exp())
 }
@@ -293,7 +314,7 @@ fn check_kanamori_dimer_realtime(order: usize, nt_rt: usize, ntau: usize, checks
             &hf,
             BETA,
             kt,
-            kadanoffbaym::matsubara::MatsubaraMethod::Fixpoint,
+            kadanoffbaym::base::MatsubaraMethod::Fixpoint,
             true,
             None,
             1e-12,
@@ -420,6 +441,24 @@ fn check_kanamori_dimer_realtime(order: usize, nt_rt: usize, ntau: usize, checks
                 eprintln!("[dimer m={order} {case}] equilibrium iteration {iter}/200 started");
             }
             solver.pp_step(-1, &pp_ints);
+            // per-iteration mirror-sector audit of the Matsubara
+            // propagator (NOTE: the model is up-only hybridization -
+            // mirror sectors are PHYSICALLY inequivalent; this dump
+            // measures the MODEL's asymmetry, not a defect)
+            if std::env::var_os("NQIST_TTI_FIRST_ROW").is_some() && (iter <= 3 || iter % 10 == 0) {
+                for &(sa, sb) in &[(1usize, 3usize), (2usize, 6usize), (5usize, 7usize)] {
+                    let va = solver.pp_g[sa].mat.raw();
+                    let vb = solver.pp_g[sb].mat.raw();
+                    let d = va
+                        .iter()
+                        .zip(vb)
+                        .map(|(x, y)| (*x - *y).abs())
+                        .fold(0.0f64, f64::max);
+                    eprintln!(
+                        "[dimer m={order} {case}] iter {iter} mat mirror ({sa},{sb}) diff {d:.3e}"
+                    );
+                }
+            }
             let g = solver.get_spgf_mat(&verts, &pp_ints);
             let cur: Vec<f64> = g.iter().flatten().map(|z| z.re).collect();
             let converged = !last.is_empty() && last.iter().zip(&cur).all(|(a, b)| (a - b).abs() < 1.0e-10);
@@ -433,18 +472,55 @@ fn check_kanamori_dimer_realtime(order: usize, nt_rt: usize, ntau: usize, checks
         }
         eprintln!("[dimer m={order} {case}] starting real-time propagation after {:.2?}", started.elapsed());
         solver.set_t0();
+        // t=0 mirror audit BEFORE any real-time propagation (the
+        // model's up-only hybridization makes mirror sectors
+        // physically inequivalent - this measures the MODEL's
+        // asymmetry, not a defect)
+        if std::env::var_os("NQIST_TTI_FIRST_ROW").is_some() {
+        for &(sa, sb) in &[(1usize, 3usize), (2usize, 6usize), (5usize, 7usize)] {
+            let ga = &solver.pp_g[sa];
+            let gb = &solver.pp_g[sb];
+            let mut dl = 0.0f64;
+            let mut dr = 0.0f64;
+            let mut dm = 0.0f64;
+            for (x, y) in ga
+                .less
+                .raw_block_at(0, 0)
+                .iter()
+                .zip(gb.less.raw_block_at(0, 0))
+            {
+                dl = dl.max((*x - *y).abs());
+            }
+            for (x, y) in ga.ret.raw_block_at(0, 0).iter().zip(gb.ret.raw_block_at(0, 0)) {
+                dr = dr.max((*x - *y).abs());
+            }
+            for mu in 0..=ntau as i64 {
+                for (x, y) in ga
+                    .lmix
+                    .raw_block_at(0, mu)
+                    .iter()
+                    .zip(gb.lmix.raw_block_at(0, mu))
+                {
+                    dm = dm.max((*x - *y).abs());
+                }
+            }
+            eprintln!(
+                "[dimer m={order} {case}] t0 mirror ({sa},{sb}): less {dl:.3e} ret {dr:.3e} lmix {dm:.3e}"
+            );
+        }
+        }
         if std::env::var_os("NQIST_TTI_CONTACT").is_some() && vscale != 0.0 {
             solver.update_sigma(-1, &pp_ints);
             let mut reference = solver.pp_sigma.clone();
             for sigma in &mut reference {
-                kadanoffbaym::basics::set_t0_from_mat_pseudo(sigma);
+                set_t0_from_mat_pseudo(sigma);
             }
             solver.update_sigma(0, &pp_ints);
             let full = solver.pp_sigma.clone();
             solver.order = 2;
             solver.update_sigma(-1, &pp_ints);
             for sigma in &mut solver.pp_sigma {
-                kadanoffbaym::basics::set_t0_from_mat_pseudo(sigma);
+                set_t0_from_mat_pseudo(sigma);
             }
             let baseline_reference = solver.pp_sigma.clone();
             solver.update_sigma(0, &pp_ints);
@@ -537,6 +613,131 @@ fn check_kanamori_dimer_realtime(order: usize, nt_rt: usize, ntau: usize, checks
                     }
                 }
                 eprintln!("[dimer m={order} {case}] row differences [OCA, XCA increment], greater lag, lesser lag, lesser diagonal, mixed: {translation:?}");
+                // per-sector decomposition of the les/mix increment
+                // residuals (the drift-driver localization
+                // instrument): [les_lag_resid, les_diag_resid,
+                // les_diag_scale, mix_resid, mix_scale]
+                let mut per_sector: Vec<[f64; 7]> = vec![[0.0; 7]; solver.pp_sigma.len()];
+                for (sector, (sigma, base)) in solver.pp_sigma.iter().zip(&baseline).enumerate() {
+                    let (a1, b1) = (sigma.less.raw_block_at(0, 1), sigma.less.raw_block_at(1, 2));
+                    let (a0, b0) = (base.less.raw_block_at(0, 1), base.less.raw_block_at(1, 2));
+                    let (d1, e1) = (sigma.less.raw_block_at(1, 1), sigma.less.raw_block_at(2, 2));
+                    let (d0, e0) = (base.less.raw_block_at(1, 1), base.less.raw_block_at(2, 2));
+                    for q in 0..a1.len() {
+                        per_sector[sector][0] = per_sector[sector][0]
+                            .max(((a1[q] - a0[q]) - (b1[q] - b0[q])).abs());
+                        per_sector[sector][1] = per_sector[sector][1]
+                            .max(((d1[q] - d0[q]) - (e1[q] - e0[q])).abs());
+                        per_sector[sector][2] = per_sector[sector][2].max((d1[q] - d0[q]).abs());
+                        per_sector[sector][5] = per_sector[sector][5].max((d0[q] - e0[q]).abs());
+                    }
+                    for tau in 0..=ntau as i64 {
+                        let m1 = sigma.lmix.raw_block_at(1, tau);
+                        let m2 = sigma.lmix.raw_block_at(2, tau);
+                        let m10 = base.lmix.raw_block_at(1, tau);
+                        let m20 = base.lmix.raw_block_at(2, tau);
+                        for q in 0..m1.len() {
+                            per_sector[sector][3] = per_sector[sector][3]
+                                .max(((m1[q] - m10[q]) - (m2[q] - m20[q])).abs());
+                            per_sector[sector][4] =
+                                per_sector[sector][4].max((m1[q] - m10[q]).abs());
+                            per_sector[sector][6] =
+                                per_sector[sector][6].max((m10[q] - m20[q]).abs());
+                        }
+                    }
+                }
+                eprintln!(
+                    "[dimer m={order} {case}] increment per-sector [les_lag_resid, les_diag_resid, les_diag_scale, mix_resid, mix_scale, oca_les_diag, oca_mix]: {per_sector:?}"
+                );
+                let labels: Vec<(u32, u32, usize)> = hs
+                    .sectors
+                    .iter()
+                    .map(|sec| {
+                        let psi = sec.states[0];
+                        let nup = (0..2).filter(|&o| psi >> o & 1 == 1).count() as u32;
+                        let ndn = (0..2).filter(|&o| psi >> (2 + o) & 1 == 1).count() as u32;
+                        (nup, ndn, sec.dim)
+                    })
+                    .collect();
+                eprintln!(
+                    "[dimer m={order} {case}] sector labels (Nup,Ndn,dim): {labels:?}"
+                );
+                // spin-mirror audit: up<->down mirror sector pairs
+                // must produce identical m=3 increments on symmetric
+                // propagators (the (0,2)/(2,0) residual asymmetry is
+                // 570x while the OCA baseline stays symmetric)
+                for &(sa, sb) in &[(1usize, 3usize), (2usize, 6usize), (5usize, 7usize)] {
+                    let mut pg = 0.0f64;
+                    for t in 0..=2i64 {
+                        let va = solver.pp_g[sa].less.raw_block_at(t, t).to_vec();
+                        let vb = solver.pp_g[sb].less.raw_block_at(t, t).to_vec();
+                        for q in 0..va.len() {
+                            pg = pg.max((va[q] - vb[q]).abs());
+                        }
+                    }
+                    let incmag = |s: usize| -> [f64; 4] {
+                        let mut out = [0.0f64; 4];
+                        let pts = [
+                            (solver.pp_sigma[s].less.raw_block_at(0, 1), baseline[s].less.raw_block_at(0, 1)),
+                            (solver.pp_sigma[s].less.raw_block_at(1, 2), baseline[s].less.raw_block_at(1, 2)),
+                            (solver.pp_sigma[s].less.raw_block_at(1, 1), baseline[s].less.raw_block_at(1, 1)),
+                            (solver.pp_sigma[s].less.raw_block_at(2, 2), baseline[s].less.raw_block_at(2, 2)),
+                        ];
+                        for (k, (a, b)) in pts.iter().enumerate() {
+                            for q in 0..a.len() {
+                                out[k] = out[k].max((a[q] - b[q]).abs());
+                            }
+                        }
+                        out
+                    };
+                    let va = incmag(sa);
+                    let vb = incmag(sb);
+                    eprintln!(
+                        "[dimer m={order} {case}] mirror ({sa},{sb}): pg_diff {pg:.3e} | inc s{sa} [lag1 {:.3e}, lag2 {:.3e}, diag1 {:.3e}, diag2 {:.3e}] vs s{sb} [lag1 {:.3e}, lag2 {:.3e}, diag1 {:.3e}, diag2 {:.3e}] | magdiff {:.3e}",
+                        va[0], va[1], va[2], va[3], vb[0], vb[1], vb[2], vb[3],
+                        (va[0] - vb[0]).abs().max((va[2] - vb[2]).abs())
+                    );
+                }
+                // argmax entry coordinates (row, col) within each
+                // sector block for the les diag/lag and mix residuals -
+                // diagonal vs off-diagonal discrimination
+                let mut argmax: Vec<[(usize, usize); 3]> = vec![[(0, 0); 3]; solver.pp_sigma.len()];
+                for (sector, (sigma, base)) in solver.pp_sigma.iter().zip(&baseline).enumerate() {
+                    let dim = (sigma.less.raw_block_at(1, 1).len() as f64).sqrt() as usize;
+                    let mut worst = [0.0f64; 3];
+                    let (a1, b1) = (sigma.less.raw_block_at(0, 1), sigma.less.raw_block_at(1, 2));
+                    let (a0, b0) = (base.less.raw_block_at(0, 1), base.less.raw_block_at(1, 2));
+                    let (d1, e1) = (sigma.less.raw_block_at(1, 1), sigma.less.raw_block_at(2, 2));
+                    let (d0, e0) = (base.less.raw_block_at(1, 1), base.less.raw_block_at(2, 2));
+                    for q in 0..d1.len() {
+                        let rl = ((a1[q] - a0[q]) - (b1[q] - b0[q])).abs();
+                        if rl > worst[0] {
+                            worst[0] = rl;
+                            argmax[sector][0] = (q / dim, q % dim);
+                        }
+                        let rd = ((d1[q] - d0[q]) - (e1[q] - e0[q])).abs();
+                        if rd > worst[1] {
+                            worst[1] = rd;
+                            argmax[sector][1] = (q / dim, q % dim);
+                        }
+                    }
+                    for tau in 0..=ntau as i64 {
+                        let m1 = sigma.lmix.raw_block_at(1, tau);
+                        let m2 = sigma.lmix.raw_block_at(2, tau);
+                        let m10 = base.lmix.raw_block_at(1, tau);
+                        let m20 = base.lmix.raw_block_at(2, tau);
+                        for q in 0..m1.len() {
+                            let rm = ((m1[q] - m10[q]) - (m2[q] - m20[q])).abs();
+                            if rm > worst[2] {
+                                worst[2] = rm;
+                                argmax[sector][2] = (q / dim, q % dim);
+                            }
+                        }
+                    }
+                }
+                eprintln!(
+                    "[dimer m={order} {case}] increment argmax entries (row,col) per sector [les_lag, les_diag, mix]: {argmax:?}"
+                );
                 let mut residual = [[0.0_f64; 2]; 2];
                 let mut increment_max = 0.0_f64;
                 for (sigma, base) in solver.pp_sigma.iter().zip(&baseline) {

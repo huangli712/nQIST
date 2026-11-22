@@ -412,6 +412,20 @@ pub(crate) fn eval_cut(
         && cut.nl == 0
         && cut.nr == 0
         && (cut.ni == 2 || (cut.ni == 4 && std::env::var("XCA_M3_REV").is_ok()));
+    // The REFLECTED I-walk for the m=3 all-I cut - the DEFAULT per
+    // the 2026-11-22 contact adjudication (mirrored from evalfam2m:
+    // the t=0 contact with the Matsubara equilibrium is
+    // machine-level only with the reflected I-seed/close indices)
+    let forward_less = m == 3
+        && matches!(anchor, Anchor::JLower(_))
+        && cut.ni == 4
+        && !rev_i
+        && bath.is_none();
+    let forward_contact = m == 3
+        && matches!(anchor, Anchor::Tau(_))
+        && cut.ni == 4
+        && !rev_i
+        && bath.is_none();
     for li in 0..m {
         let (e, l) = pairs[li];
         let p = &proj[cs[li]];
@@ -451,6 +465,17 @@ pub(crate) fn eval_cut(
                     wsum[e] += -w;
                 } else {
                     cprod *= p.c_gtr[combo[li]];
+                    // the les-class form is the ABSOLUTE-time greater
+                    // gtr(t_e, t_l); the R seed and R->R steps apply
+                    // time RELATIVE to j - compensate per endpoint
+                    // (both-relative cancels: the all-R cut stays
+                    // exact; m=3 direct-transcription verdict)
+                    if block_of(l.wrapping_sub(1)) == 2 || l == 1 {
+                        cprod *= (Complex::I * w * h * jj as f64).exp();
+                    }
+                    if block_of(e.wrapping_sub(1)) == 2 || e == 1 {
+                        cprod *= (-Complex::I * w * h * jj as f64).exp();
+                    }
                     wsum[l] += -w;
                     wsum[e] += w;
                 }
@@ -504,15 +529,30 @@ pub(crate) fn eval_cut(
                     rowmult[rv] = Some((0..=n).map(|t| cgr[t as usize][l0]).collect());
                     cprod *= (-Complex::I * w * h * n as f64).exp();
                 } else {
-                    cprod *= p.c_gtr[combo[li]] * (Complex::I * w * h * (n - jjl) as f64).exp();
+                    // the n-side constant must match the R endpoint's
+                    // phase reference: R->R steps and the R seed apply
+                    // time RELATIVE to j ((n - j) + relative = the raw
+                    // gtr(t_R, n) form); the I->R crossing applies
+                    // ABSOLUTE time (constant n)
+                    let nref = if rv == 1 || block_of(rv.wrapping_sub(1)) == 2 {
+                        (n - jjl) as f64
+                    } else {
+                        n as f64
+                    };
+                    cprod *= p.c_gtr[combo[li]] * (Complex::I * w * h * nref).exp();
                     wsum[rv] += w;
                 }
             }
             (0, 0) => {
-                // Delta^>(t_e, t_l): e = earlier contour = BIGGER time
+                // Delta^>(t_e, t_l): e = walk-earlier = the anchor-side
+                // (HIGHER-time) L vertex hosts the d-side operator and
+                // is contour-LATER on the upper branch - the raw read
+                // is gtr_c(d, t_e, t_l) with t_e FIRST (the legacy
+                // signs encoded the swapped form; m=3
+                // direct-transcription verdict on the (3,1,0) cut)
                 cprod *= p.c_gtr[combo[li]];
-                wsum[e] += -w;
-                wsum[l] += w;
+                wsum[e] += w;
+                wsum[l] += -w;
             }
             (3, 0) | (0, 3) => {
                 // Delta^>(j, t_L) = c e^{-i w j} e^{+i w t}: the
@@ -692,17 +732,24 @@ pub(crate) fn eval_cut(
                 wsum[rv] += wl;
             }
             (0, 2) | (2, 0) => {
-                // Delta^<(t_L, t_R) = c e^{-i w t_L} e^{+i w t_R};
-                // BACKWARD: partner c_gtr/pole (see (3,2) above)
-                let cl = if bwd_line && ferm_line {
-                    p.c_gtr[combo[li]]
-                } else {
-                    p.c_les[combo[li]]
-                };
+                // Delta^<(t_L, t_R) = c e^{-i w t_L} e^{+i w t_R}; the
+                // coefficient is ALWAYS the channel's own lesser
+                // projection (the reference les families project
+                // LineSeg::les regardless of direction - the same
+                // lesson as the (3,2) anchor; the legacy bwd->c_gtr
+                // swap broke every cut whose line-1 chain was
+                // backward; m=3 direct-transcription verdict)
+                let cl = p.c_les[combo[li]];
                 let wl = w;
                 cprod *= cl;
                 let lv = if be == 0 { e } else { l };
                 let rv = if be == 2 { e } else { l };
+                // the R endpoint's phase rides ABSOLUTE time at the
+                // crossings but RELATIVE time at R->R steps -
+                // compensate the relative case to the absolute form
+                if block_of(rv.wrapping_sub(1)) == 2 {
+                    cprod *= (-Complex::I * w * h * jj as f64).exp();
+                }
                 wsum[lv] += -wl;
                 wsum[rv] += wl;
             }
@@ -748,23 +795,52 @@ pub(crate) fn eval_cut(
                 let bwd = bwd_line;
                 let rv = if be != 1 { e } else { l };
                 let tv = if be != 1 { l } else { e };
-                if ferm_line {
-                    cprod *= p.c_tv[combo[li]];
-                    if be == 3 || bl == 3 {
-                        // real endpoint is the lower anchor: constant
-                        cprod *= (-Complex::I * w * h * jj as f64).exp();
-                    } else {
-                        wsum[rv] += -w;
-                    }
-                    isum[tv].push((
-                        w,
-                        if bwd && mirrored_line(li, proj, cs) {
-                            6
+                if forward_less {
+                    // reflected I-walk (the contact-validated default,
+                    // mirrored from evalfam2m): the tv line rides the
+                    // column fit at the anchor column jj with the
+                    // REFLECTED (beta - tau) kernel (mode 1), conjugated
+                    let coeff = super::fit::vt_col_fit(
+                        pp_ints[cs[li]].delta,
+                        &p.poles,
+                        beta,
+                        dtau,
+                        pp_ints[cs[li]].delta.ntau as i64,
+                        jj,
+                    );
+                    isum[tv].push((w, 1, coeff[combo[li]].conj()));
+                } else if ferm_line {
+                    // TWO-MATE fermion tv (mirrored from evalfam2m,
+                    // 2026-11-22 root-cause fix); m == 2 keeps the
+                    // legacy single-mate form bit-exact
+                    if m == 2 {
+                        cprod *= p.c_tv[combo[li]];
+                        if be == 3 || bl == 3 {
+                            cprod *= (-Complex::I * w * h * jj as f64).exp();
                         } else {
-                            0
-                        },
-                        Complex::ONE,
-                    ));
+                            wsum[rv] += w;
+                        }
+                        isum[tv].push((
+                            w,
+                            if bwd && mirrored_line(li, proj, cs) {
+                                6
+                            } else {
+                                0
+                            },
+                            Complex::ONE,
+                        ));
+                    } else {
+                        if be == 3 || bl == 3 {
+                            // real endpoint is the lower anchor: constant
+                            cprod *= (-Complex::I * w * h * jj as f64).exp();
+                        } else {
+                            // the tv data form is c_tv e^{-i w t} - the
+                            // vertex phase must be e^{-iwt} (wsum +w)
+                            wsum[rv] += w;
+                        }
+                        isum[tv].push((w, 0, p.c_tv_a[combo[li]]));
+                        isum[tv].push((w, 7, p.c_tv_b[combo[li]]));
+                    }
                 } else {
                     // TWO-MATE boson tv (2026-11-29, XCA_TVPROBE
                     // instrument): the free-boson D^tv carries two
@@ -785,8 +861,8 @@ pub(crate) fn eval_cut(
                     } else {
                         wsum[rv] += w;
                     }
-                    isum[tv].push((w, 0, p.c_tv[combo[li]]));
-                    isum[tv].push((w, 7, p.c_tv_r[combo[li]]));
+                    isum[tv].push((w, 0, p.c_tv_a[combo[li]]));
+                    isum[tv].push((w, 7, p.c_tv_b[combo[li]]));
                 }
             }
             // ---- vt chords (tau endpoint first) ----
@@ -804,7 +880,21 @@ pub(crate) fn eval_cut(
                 let bwd = bwd_line;
                 let rv = if be != 1 && be != 4 { e } else { l };
                 let tv = if be == 1 || be == 4 { e } else { l };
-                if ferm_line {
+                let mut ferm_two_mate = false;
+                if forward_less && (be == 5 || bl == 5) {
+                    // reflected (1,5) (mirrored from evalfam2m): the
+                    // column fit at column n with the plain tau
+                    // kernel (mode 0)
+                    let coeff = super::fit::vt_col_fit(
+                        pp_ints[cs[li]].delta,
+                        &p.poles,
+                        beta,
+                        dtau,
+                        pp_ints[cs[li]].delta.ntau as i64,
+                        n,
+                    );
+                    isum[tv].push((w, 0, coeff[combo[li]]));
+                } else if ferm_line {
                     // FERMION: conj(c_tv) with e^{+iwt} phases
                     // (bisection-anchored vs the reference les4)
                     if be == 4 || bl == 4 {
@@ -830,31 +920,70 @@ pub(crate) fn eval_cut(
                         let cf = vt_row_fit(pp_ints[cs[li]].delta, &p.poles, h, mm, n);
                         cprod *= cf[combo[li]];
                         wsum[rv] += w;
+                    } else if forward_contact && (be == 5 || bl == 5) {
+                        // THE (1,5) TAU-COLUMN FIT (mirrored from the
+                        // matrix): vt(delta, tau, n) with the n-phase
+                        // ABSORBED into the column coefficient (the
+                        // c_tv projection mis-assigns near-degenerate
+                        // poles)
+                        let cf = super::fit::vt_col_fit(
+                            pp_ints[cs[li]].delta,
+                            &p.poles,
+                            beta,
+                            dtau,
+                            mm,
+                            n,
+                        );
+                        cprod *= cf[combo[li]];
                     } else {
-                        cprod *= p.c_tv[combo[li]].conj();
-                        if be == 5 || bl == 5 {
-                            cprod *= (Complex::I * w * h * n as f64).exp();
+                        // TWO-MATE fermion vt (mirrored from
+                        // evalfam2m, 2026-11-22 root-cause fix); m == 2
+                        // keeps the legacy single-mate form bit-exact
+                        let st = Complex::new((-w * beta).exp(), 0.0);
+                        let c_ref = p.c_tv_a[combo[li]].conj() * st;
+                        let c_norm = p.c_tv_b[combo[li]].conj() / st;
+                        if m == 2 {
+                            cprod *= p.c_tv[combo[li]].conj();
+                            if be == 5 || bl == 5 {
+                                cprod *= (Complex::I * w * h * n as f64).exp();
+                            } else {
+                                if block_of(rv.wrapping_sub(1)) == 2 {
+                                    cprod *= (Complex::I * w * h * jj as f64).exp();
+                                }
+                                wsum[rv] += -w;
+                            }
                         } else {
-                            // INTERNAL real endpoint (R vertex, (1,2)/
-                            // (2,1) - m >= 3 only): the vt data's
-                            // t-phase is e^{+iwt} (FTVPROBE: the s=+1
-                            // variant reproduces vt_c at 1.4e-6 over the
-                            // full grid; the legacy +w gave e^{-iwt},
-                            // 1.1e-1). The flip also makes the internal
-                            // phase CONSISTENT with the (1,5) anchor
-                            // constant e^{+iwnh} (they ran opposite)
-                            wsum[rv] += -w;
+                            if be == 5 || bl == 5 {
+                                cprod *= (Complex::I * w * h * n as f64).exp();
+                            } else {
+                                // INTERNAL real endpoint (R vertex,
+                                // (1,2)/(2,1) - m >= 3 only): the vt
+                                // data's t-phase is e^{+iwt} ABSOLUTE;
+                                // the R->R steps apply relative time -
+                                // compensate
+                                if block_of(rv.wrapping_sub(1)) == 2 {
+                                    cprod *= (Complex::I * w * h * jj as f64).exp();
+                                }
+                                wsum[rv] += -w;
+                            }
+                            isum[tv].push((w, 0, c_norm));
+                            isum[tv].push((w, 7, c_ref));
+                            ferm_two_mate = true;
                         }
                     }
-                    isum[tv].push((
-                        w,
-                        if bwd && mirrored_line(li, proj, cs) {
-                            5
-                        } else {
-                            1
-                        },
-                        Complex::ONE,
-                    ));
+                    if !ferm_two_mate {
+                        isum[tv].push((
+                            w,
+                            if forward_contact {
+                                8
+                            } else if bwd && mirrored_line(li, proj, cs) {
+                                5
+                            } else {
+                                1
+                            },
+                            Complex::ONE,
+                        ));
+                    }
                 } else {
                     // TWO-MATE boson vt (2026-11-29): the Bosonic vt
                     // read is vt_c = -conj(lmix(t, beta-tau)) (Sign::
@@ -903,16 +1032,15 @@ pub(crate) fn eval_cut(
                 // independent direct-transcription cross-check
                 // (forward/backward ratio groups differed 3.09x)
                 let bwd = bwd_line;
-                let wm = if bwd
-                    && (if ferm_line {
-                        mirrored_line(li, proj, cs)
-                    } else {
-                        true
-                    }) {
-                    -w
-                } else {
-                    w
-                };
+                // the fermion mat chord pole: NO negation - c_mat is
+                // projected on the channel's OWN data in the K basis
+                // (the time reflection is already carried by the
+                // coefficients); the legacy bwd negation double-flipped
+                // the kernel (m=3 direct-transcription verdict: the
+                // e^{eps beta}-class scale error on the all-I cuts).
+                // The BOSON negation stays (its c_mat projection is
+                // gated on the Holstein anchors).
+                let wm = if !ferm_line && bwd { -w } else { w };
                 if ferm_line {
                     cprod *= p.c_mat[combo[li]] / Complex::new(k_tau(beta, wm, beta), 0.0);
                     isum[l].push((wm, 3, Complex::ONE));
@@ -936,7 +1064,12 @@ pub(crate) fn eval_cut(
                 // -c_mat . e^{-w mm} / (1 + e^{-beta w}) - the
                 // c_mat projection basis carries the Matsubara
                 // normalization (the two-band gate 16.9 -> 2.9)
-                if std::env::var("XCA_41K").is_ok() {
+                if forward_contact {
+                    // reflected I-walk (mirrored from evalfam2m): the
+                    // K-kernel form at the I vertex, coefficient -c_mat
+                    cprod *= -p.c_mat[combo[li]];
+                    isum[l].push((w, 3, Complex::ONE));
+                } else if std::env::var("XCA_41K").is_ok() {
                     let mode: u8 = std::env::var("XCA_41K")
                         .ok()
                         .and_then(|v| v.parse().ok())
@@ -960,6 +1093,19 @@ pub(crate) fn eval_cut(
                         Complex::new(sgn, 0.0) * p.c_mat[combo[li]] * Complex::new(cexp.exp(), 0.0)
                             / Complex::new(norm, 0.0);
                     isum[l].push((w, mode, Complex::ONE));
+                } else if m >= 3 {
+                    // m >= 3 default: the TAU-DEPENDENT kernel form -
+                    // the raw line data mat(mm - tau) carries the tau
+                    // profile; the old constant-only form cannot
+                    // represent it. SIGN per the m=3 canonical
+                    // arrangement (mirrored from the matrix fix:
+                    // magnitude exact, sep = -dir with +c_mat). The
+                    // m == 2 all-I cut keeps the CONSTANT form below
+                    // (analytic-reference anchored, the cutsum
+                    // isolation gate)
+                    let coef = -p.c_mat[combo[li]] * (-w * dtau * mm as f64).exp()
+                        / (1.0 + (-beta * w).exp());
+                    isum[l].push((w, 7, coef));
                 } else {
                     cprod *= -p.c_mat[combo[li]];
                 }
@@ -1002,6 +1148,13 @@ pub(crate) fn eval_cut(
                 1 => Complex::new((-w * (beta - tauf)).exp(), 0.0),
                 5 => Complex::new((w * (beta - tauf)).exp(), 0.0),
                 6 => Complex::new((w * tauf).exp(), 0.0),
+                // mode 8: the reflected Tau-anchor kernel
+                // e^{-w (beta - (tau_m - tau) dtau)} (mirrored from
+                // evalfam2m; used by the (1,5) forward_contact chord)
+                8 => {
+                    let Anchor::Tau(mm) = anchor else { unreachable!() };
+                    Complex::new((-w * (beta - dtau * (*mm - tau) as f64)).exp(), 0.0)
+                }
                 3 => Complex::new(k_tau(tauf, w, beta), 0.0),
                 4 => Complex::new(k_tau(beta - tauf, w, beta), 0.0),
                 13 => Complex::new(super::boson_rt::boson_k_tau(tauf, w, beta), 0.0),
@@ -1066,10 +1219,15 @@ pub(crate) fn eval_cut(
                             }
                         } else {
                             for tau in 0..=ntau {
+                                // reflected I-walk: the seed reads the
+                                // MIRRORED tau column (the contact-
+                                // validated default, mirrored from
+                                // evalfam2m)
+                                let index = if forward_less { ntau - tau } else { tau };
                                 t[tau as usize] = phi(v, 0)
                                     * ikern(v, tau)
                                     * chain.ops[v]
-                                    * tv_slot(g1, *jj, tau);
+                                    * tv_slot(g1, *jj, index);
                             }
                         }
                     }
@@ -1080,8 +1238,12 @@ pub(crate) fn eval_cut(
                         // contour start and the anchor - vt(2)'s
                         // lowside-to-m and vt(3)'s m^2 scaling)
                         for tau in 0..=*mm {
+                            // reflected I-walk (mirrored from
+                            // evalfam2m): the seed reads the DIRECT tau
+                            // index
+                            let index = if forward_contact { tau } else { *mm - tau };
                             t[tau as usize] =
-                                ikern(v, tau) * chain.ops[v] * mat_read(g1, *mm - tau);
+                                ikern(v, tau) * chain.ops[v] * mat_read(g1, index);
                         }
                     }
                     Anchor::JUpper(_) => unreachable!(),
@@ -1214,7 +1376,14 @@ pub(crate) fn eval_cut(
                 for tt in 0..=n {
                     let mut f = vec![Complex::ZERO; ntau as usize + 1];
                     for tau in 0..=i_max {
-                        f[tau as usize] = vt_fwd(g, tau, tt) * state_i[tau as usize];
+                        // reflected I-walk: the crossing reads the
+                        // mirrored tau (mirrored from evalfam2m)
+                        let index = if forward_less || forward_contact {
+                            i_max - tau
+                        } else {
+                            tau
+                        };
+                        f[tau as usize] = vt_fwd(g, index, tt) * state_i[tau as usize];
                     }
                     if probe && tt == 5 {
                         eprintln!(
@@ -1317,7 +1486,20 @@ pub(crate) fn eval_cut(
                 }
             } else {
                 for tau in 0..=i_max {
-                    f[tau as usize] = vt_fwd(gfin, tau, n) * state_i[tau as usize];
+                    // reflected I-walk (mirrored from evalfam2m): the
+                    // JLower close mirrors about ntau; the Tau close
+                    // about tau_m
+                    let index = if forward_less {
+                        ntau - tau
+                    } else if forward_contact {
+                        match anchor {
+                            Anchor::Tau(mma) => *mma - tau,
+                            _ => tau,
+                        }
+                    } else {
+                        tau
+                    };
+                    f[tau as usize] = vt_fwd(gfin, index, n) * state_i[tau as usize];
                 }
             }
             total = poly_integral_chain(&f, 0, i_max as usize, integ);

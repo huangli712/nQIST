@@ -5,7 +5,7 @@
 //           (arXiv:1306.0307v2) Sec. III and V.
 
 use kadanoffbaym::complex::Complex;
-use kadanoffbaym::matsubara::MatsubaraMethod;
+use kadanoffbaym::base::MatsubaraMethod;
 use kadanoffbaym::dyson::{dyson_mat, dyson_start, dyson_timestep};
 use kadanoffbaym::types::{Contour, ContourGreen, MATSUBARA, Sign, TimeFunction};
 use kadanoffbaym::weights::Integrator;

@@ -69,6 +69,13 @@ pub(crate) struct CsoeProj {
     /// tv is single-exponential; the fermion path stays
     /// bit-identical)
     pub c_tv_r: Vec<Complex>,
+    /// The KMS-complete TWO-MATE tv amplitudes (fermion m >= 3
+    /// chords): tv(t,tau) = sum_l e^{-i w_l t h}
+    /// (c_tv_a[l] e^{-w_l tau} + c_tv_b[l] e^{+w_l tau}) with
+    /// c_tv_b = b_l e^{-w_l beta} (the e^{w(tau-beta)} mate in
+    /// mode-7 form). Equals (c_tv, 0) on single-exponential data.
+    pub c_tv_a: Vec<Complex>,
+    pub c_tv_b: Vec<Complex>,
     pub tau_ref: usize,
     pub c_mat: Vec<Complex>,
 }
@@ -231,11 +238,17 @@ pub(crate) fn csoe_project_all(
         .collect();
     let c_gtr = csoe_coeffs(&base.poles, h, &v_gtr);
     let c_les = csoe_coeffs(&base.poles, h, &v_les);
-    // tv: the fermion route keeps the tau_ref = 0 column fit (its
-    // fixture tv is single-exponential); the BOSON route needs the
-    // TWO-MATE split (see c_tv_r's doc) - the amplitudes come from
-    // the tau=0 / tau=beta column fits
-    let (c_tv, c_tv_r) = if matches!(g.sign, kadanoffbaym::types::Sign::Bose) {
+    // tv: the FERMION route keeps the legacy tau_ref = 0 column fit
+    // (c_tv) bit-exact - every m=1/m=2 consumer (eval1/eval2/evalm
+    // and the stock-anchored m=2 family gates) depends on it. The
+    // KMS-complete TWO-MATE values ride the SEPARATE c_tv_a/c_tv_b
+    // fields consumed only by the m >= 3 chord arms: the TRUE tv of
+    // a production bath is
+    //   tv(t,tau) = sum_l e^{-i w_l t h} (a_l e^{-w_l tau} + b_l e^{w_l (tau-beta)})
+    // (machine-verified 1e-13 on the dimer deltas); the legacy
+    // single-column form was exact only on the fixture's
+    // single-exponential fill.
+    let (c_tv, c_tv_r, c_tv_a, c_tv_b) = if matches!(g.sign, kadanoffbaym::types::Sign::Bose) {
         let vals0: Vec<Complex> = (0..=nt as i64)
             .map(|t| g.lmix.raw_block_at(t, 0)[0])
             .collect();
@@ -260,11 +273,36 @@ pub(crate) fn csoe_project_all(
                 br.push(b_ * st);
             }
         }
-        (a, br)
+        (a.clone(), br.clone(), a, br)
     } else {
         let c_tv = csoe_coeffs(&base.poles, h, &v_tv);
         let c_tv_r = vec![Complex::ZERO; base.poles.len()];
-        (c_tv, c_tv_r)
+        // the two-mate split on the SAME columns (a = c_tv, b = 0 on
+        // single-exponential fixture data)
+        let vals0: Vec<Complex> = (0..=nt as i64)
+            .map(|t| g.lmix.raw_block_at(t, 0)[0])
+            .collect();
+        let valsb: Vec<Complex> = (0..=nt as i64)
+            .map(|t| g.lmix.raw_block_at(t, ntau as i64)[0])
+            .collect();
+        let col0 = csoe_coeffs(&base.poles, h, &vals0);
+        let colb = csoe_coeffs(&base.poles, h, &valsb);
+        let mut a = Vec::with_capacity(base.poles.len());
+        let mut br = Vec::with_capacity(base.poles.len());
+        for (l, &w) in base.poles.iter().enumerate() {
+            let st = (-w * beta).exp();
+            let den = 1.0 - st * st;
+            if den.abs() < 1e-14 {
+                a.push(col0[l]);
+                br.push(Complex::ZERO);
+            } else {
+                let b_ = (colb[l] - col0[l] * st) / den;
+                let a_ = col0[l] - b_ * st;
+                a.push(a_);
+                br.push(b_ * st);
+            }
+        }
+        (c_tv, c_tv_r, a, br)
     };
     // Matsubara: real kernel basis on the data's OWN statistics -
     // the FERMI kernel K for fermion deltas, the BOSON kernel B for
@@ -310,6 +348,8 @@ pub(crate) fn csoe_project_all(
         gtr_row0,
         c_tv,
         c_tv_r,
+        c_tv_a,
+        c_tv_b,
         tau_ref,
         c_mat,
     }

@@ -10,13 +10,55 @@ use crate::nca::{self, GfVertex, Hybridization, adjoint_raw};
 use crate::oca;
 use crate::xca;
 use crate::xca_rt;
-use kadanoffbaym::basics::set_t0_from_mat_pseudo;
 use kadanoffbaym::complex::Complex;
 use kadanoffbaym::dyson::{pseudo_dyson_mat, pseudo_dyson_start, pseudo_dyson_timestep};
 use kadanoffbaym::linalg::{DenseMat, eigh};
-use kadanoffbaym::math;
 use kadanoffbaym::types::{Contour, GreenTimeStep, MATSUBARA, PseudoGreen, Sign, TimeFunction};
 use kadanoffbaym::weights::Integrator;
+
+/// Initialize the `t = 0` row (ret/les/lmix) of a pseudo-particle
+/// green from its Matsubara component: `lmix(0,m) = i*sig*mat(ntau-m)`,
+/// `less(0,0) = lmix(0,0)`, and `ret(0,0) = i*mat(0)`. Local copy of
+/// the KB `variants::pseudo::set_t0_from_mat_pseudo` kernel, which the
+/// KB module-surface narrowing made crate-private (identical body).
+fn set_t0_from_mat_pseudo(g: &mut PseudoGreen) {
+    let ntau = g.ntau;
+    let s = Complex::new(0.0, g.sign.as_i64() as f64);
+    for m in 0..=ntau {
+        let src = g.mat.block(ntau - m).to_vec();
+        for (d, x) in g.lmix.raw_block_at_mut(0, m as i64).iter_mut().zip(src) {
+            *d = s * x;
+        }
+    }
+    let l00 = g.lmix.raw_block_at(0, 0).to_vec();
+    g.less.raw_block_at_mut(0, 0).copy_from_slice(&l00);
+    let m0 = g.mat.block(0).to_vec();
+    for (d, x) in g.ret.raw_block_at_mut(0, 0).iter_mut().zip(m0) {
+        *d = Complex::I * x;
+    }
+}
+
+/// Extrapolation weights `p_l` (`l = 0..k`) of the k-th order
+/// polynomial row extrapolation. Local copy of the KB
+/// `math::extrapolation_weights` kernel, which the KB module-surface
+/// narrowing made crate-private (identical algorithm).
+fn extrapolation_weights(integ: &Integrator) -> Vec<f64> {
+    let k = integ.k;
+    assert!(
+        (0..=5).contains(&k),
+        "extrapolation order 0 <= k <= 5, got {k}"
+    );
+    let piw = kadanoffbaym::weights::PolynomialInterpolationWeights::new(k);
+    let n = (k + 1) as usize;
+    let mut p = vec![0.0f64; n];
+    for l in 0..n {
+        let sign = 1.0 - 2.0 * (l % 2) as f64;
+        for (m, pm) in p.iter_mut().enumerate() {
+            *pm += sign * piw.at(l, m);
+        }
+    }
+    p
+}
 
 /// PPSC impurity solver: per-sector pseudo-particle Green's functions
 /// and self-energies, the density matrix, and the atomic-limit
@@ -731,15 +773,19 @@ impl ImpuritySolver {
                                 let (mut tv, mut vt) = (Complex::ZERO, Complex::ZERO);
                                 for (&w, &coefficient) in p.poles.iter().zip(&p.c_tv) {
                                     let thermal = if mirrored { -w } else { w };
-                                    let phase = (Complex::I * w * h * left as f64).exp();
+                                    // the projection basis convention (fit.rs doc):
+                                    // Delta^tv = c_tv e^{-i w t} e^{-w tau}; the legacy
+                                    // e^{+iwt} here was the CONJUGATED phase (the
+                                    // reconstruction-error red herring)
+                                    let phase = (-Complex::I * w * h * left as f64).exp();
                                     tv += coefficient * phase * (-thermal * dtau * mu as f64).exp();
-                                    vt += coefficient.conj() * phase * (-thermal * dtau * (ntau - mu) as f64).exp();
+                                    vt += coefficient.conj() * phase.conj() * (-thermal * dtau * (ntau - mu) as f64).exp();
                                 }
                                 errors[2] = errors[2].max((tv - xca_rt::tv_c(delta, left, mu)).abs());
                                 errors[3] = errors[3].max((vt - xca_rt::vt_c(delta, mu, left)).abs());
                             }
                         }
-                        eprintln!("bath reconstruction channel={c} poles={:?} mirrored={mirrored} errors [less, greater-as-less, tv, vt]={errors:?}", p.poles);
+                        eprintln!("bath reconstruction channel={c} poles={:?} mirrored={mirrored} errors [less, greater-as-less, tv, vt]={errors:?} c_tv={:?} c_les={:?}", p.poles, p.c_tv, p.c_les);
                     }
                 }
                 let matrix = self.pp_g.iter().any(|g| g.size1 > 1);
@@ -931,7 +977,7 @@ impl ImpuritySolver {
             n >= k && n + 1 <= self.nt as i64,
             "extrapolate_timestep: range"
         );
-        let p = math::extrapolation_weights(&Integrator::new(k));
+        let p = extrapolation_weights(&Integrator::new(k));
         for s in 0..self.hs.ns() {
             extrapolate_ppgf_row(n, k, &p, &mut self.pp_g[s]);
         }

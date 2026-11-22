@@ -133,6 +133,17 @@ pub(crate) fn chord_setup_m(
         && cut.nl == 0
         && cut.nr == 0
         && (cut.ni == 2 || (cut.ni == 4 && std::env::var("XCA_M3_REV").is_ok()));
+    // The REFLECTED I-walk is the DEFAULT for the m=3 ALL-I cuts
+    // since the 2026-11-22 contact adjudication (NQIST_TTI_CONTACT):
+    // the m=3 increment's t=0 contact with the Matsubara equilibrium
+    // is machine-level only with the reflected I-seed/close indices
+    // (les 2.4e-8 / mix 1.4e-6 reflected vs 4.3e-2 / 1.4e-3
+    // unreflected). E1/E2 isolation showed the contact needs ONLY
+    // the ni == 4 scope; the mixed (0,3,1)/(0,2,2) reflection stays
+    // OPT-IN (its specialized branches deviate from the raw-data
+    // semantics at a ~1/beta scale - the m=3 direct-transcription
+    // discriminant) and forward_130 remains opt-in (never
+    // contact-validated).
     let mixed_031 = m == 3 && match (cut.nl, cut.ni, cut.nr) {
         (0, 3, 1) => std::env::var_os("XCA_M3_FORWARD_031").is_some(),
         (0, 2, 2) => std::env::var_os("XCA_M3_FORWARD_022").is_some(),
@@ -141,11 +152,9 @@ pub(crate) fn chord_setup_m(
     let forward_130 = m == 3 && (cut.nl, cut.ni, cut.nr) == (1, 3, 0)
         && std::env::var_os("XCA_M3_FORWARD_130").is_some();
     let forward_less = m == 3 && matches!(anchor, Anchor::JLower(_))
-        && (cut.ni == 4 || mixed_031 || forward_130) && !rev_i && bath.is_none()
-        && std::env::var_os("XCA_M3_LESS_FORWARD").is_some();
+        && (cut.ni == 4 || mixed_031 || forward_130) && !rev_i && bath.is_none();
     let forward_contact = m == 3 && matches!(anchor, Anchor::Tau(_))
-        && (cut.ni == 4 || mixed_031) && !rev_i && bath.is_none()
-        && std::env::var_os("XCA_M3_TAU_FORWARD").is_some();
+        && (cut.ni == 4 || mixed_031) && !rev_i && bath.is_none();
     let native_mixed = m == 3 && matches!(anchor, Anchor::JLower(_))
         && (cut.nl, cut.ni, cut.nr) == (1, 2, 1)
         && std::env::var_os("XCA_M3_NATIVE_MIXED").is_some();
@@ -188,6 +197,17 @@ pub(crate) fn chord_setup_m(
                     wsum[e] += -w;
                 } else {
                     cprod *= p.c_gtr[combo[li]];
+                    // the les-class form is the ABSOLUTE-time greater
+                    // gtr(t_e, t_l); the R seed and R->R steps apply
+                    // time RELATIVE to j - compensate per endpoint
+                    // (both-relative cancels: the all-R cut stays
+                    // exact; m=3 direct-transcription verdict)
+                    if block_of(l.wrapping_sub(1)) == 2 || l == 1 {
+                        cprod *= (Complex::I * w * h * jj as f64).exp();
+                    }
+                    if block_of(e.wrapping_sub(1)) == 2 || e == 1 {
+                        cprod *= (-Complex::I * w * h * jj as f64).exp();
+                    }
                     wsum[l] += -w;
                     wsum[e] += w;
                 }
@@ -237,15 +257,30 @@ pub(crate) fn chord_setup_m(
                     rowmult[rv] = Some((0..=n).map(|t| cgr[t as usize][l0]).collect());
                     cprod *= (-Complex::I * w * h * n as f64).exp();
                 } else {
-                    cprod *= p.c_gtr[combo[li]] * (Complex::I * w * h * (n - jjl) as f64).exp();
+                    // the n-side constant must match the R endpoint's
+                    // phase reference: R->R steps and the R seed apply
+                    // time RELATIVE to j ((n - j) + relative = the raw
+                    // gtr(t_R, n) form e^{+iw(n - t_R)}); the I->R
+                    // crossing applies ABSOLUTE time (constant n)
+                    let nref = if rv == 1 || block_of(rv.wrapping_sub(1)) == 2 {
+                        (n - jjl) as f64
+                    } else {
+                        n as f64
+                    };
+                    cprod *= p.c_gtr[combo[li]] * (Complex::I * w * h * nref).exp();
                     wsum[rv] += w;
                 }
             }
             (0, 0) => {
-                // Delta^>(t_e, t_l): e = earlier contour = BIGGER time
+                // Delta^>(t_e, t_l): e = walk-earlier = the anchor-side
+                // (HIGHER-time) L vertex hosts the d-side operator and
+                // is contour-LATER on the upper branch - the raw read
+                // is gtr_c(d, t_e, t_l) with t_e FIRST (the legacy
+                // signs encoded the swapped form; m=3
+                // direct-transcription verdict on the (3,1,0) cut)
                 cprod *= p.c_gtr[combo[li]];
-                wsum[e] += -w;
-                wsum[l] += w;
+                wsum[e] += w;
+                wsum[l] += -w;
             }
             (3, 0) | (0, 3) => {
                 // Delta^>(j, t_L) = c e^{-i w j} e^{+i w t}: the
@@ -425,18 +460,24 @@ pub(crate) fn chord_setup_m(
                 wsum[rv] += wl;
             }
             (0, 2) | (2, 0) => {
-                // Delta^<(t_L, t_R) = c e^{-i w t_L} e^{+i w t_R};
-                // BACKWARD: partner c_gtr/pole (see (3,2) above)
-                let use_lesser = m == 3 && std::env::var_os("XCA_M3_CROSS_LESS").is_some();
-                let cl = if bwd_line && ferm_line && !use_lesser {
-                    p.c_gtr[combo[li]]
-                } else {
-                    p.c_les[combo[li]]
-                };
+                // Delta^<(t_L, t_R) = c e^{-i w t_L} e^{+i w t_R}; the
+                // coefficient is ALWAYS the channel's own lesser
+                // projection (the reference les families project
+                // LineSeg::les regardless of direction - the same
+                // lesson as the (3,2) anchor; the legacy bwd->c_gtr
+                // swap broke every cut whose line-1 chain was
+                // backward; m=3 direct-transcription verdict)
+                let cl = p.c_les[combo[li]];
                 let wl = w;
                 cprod *= cl;
                 let lv = if be == 0 { e } else { l };
                 let rv = if be == 2 { e } else { l };
+                // the R endpoint's phase rides ABSOLUTE time at the
+                // crossings but RELATIVE time at R->R steps -
+                // compensate the relative case to the absolute form
+                if block_of(rv.wrapping_sub(1)) == 2 {
+                    cprod *= (-Complex::I * w * h * jj as f64).exp();
+                }
                 wsum[lv] += -wl;
                 wsum[rv] += wl;
             }
@@ -500,22 +541,43 @@ pub(crate) fn chord_setup_m(
                     let coeff = super::fit::vt_col_fit(pp_ints[cs[li]].delta, &p.poles, beta, dtau, pp_ints[cs[li]].delta.ntau as i64, jj);
                     isum[tv].push((w, 1, coeff[combo[li]].conj()));
                 } else if ferm_line {
-                    cprod *= p.c_tv[combo[li]];
-                    if be == 3 || bl == 3 {
-                        // real endpoint is the lower anchor: constant
-                        cprod *= (-Complex::I * w * h * jj as f64).exp();
-                    } else {
-                        wsum[rv] += -w;
-                    }
-                    isum[tv].push((
-                        w,
-                        if bwd && mirrored_line(li, proj, cs) {
-                            6
+                    // TWO-MATE fermion tv (2026-11-22 root-cause fix):
+                    // the TRUE Delta^tv of a production bath is the
+                    // KMS-complete form (machine-verified 1e-13 on
+                    // the dimer deltas); per-entry coefficients as
+                    // modes 0 (c_tv) and 7 (c_tv_r). m == 2 keeps
+                    // the legacy single-mate form bit-exact (the
+                    // np=10 fixture fits make the split deviate on
+                    // spurious poles; the m=2 families are
+                    // stock-anchored on that path)
+                    if m == 2 {
+                        cprod *= p.c_tv[combo[li]];
+                        if be == 3 || bl == 3 {
+                            cprod *= (-Complex::I * w * h * jj as f64).exp();
                         } else {
-                            0
-                        },
-                        Complex::ONE,
-                    ));
+                            wsum[rv] += w;
+                        }
+                        isum[tv].push((
+                            w,
+                            if bwd && mirrored_line(li, proj, cs) {
+                                6
+                            } else {
+                                0
+                            },
+                            Complex::ONE,
+                        ));
+                    } else {
+                        if be == 3 || bl == 3 {
+                            // real endpoint is the lower anchor: constant
+                            cprod *= (-Complex::I * w * h * jj as f64).exp();
+                        } else {
+                            // the tv data form is c_tv e^{-i w t} - the
+                            // vertex phase must be e^{-iwt} (wsum +w)
+                            wsum[rv] += w;
+                        }
+                        isum[tv].push((w, 0, p.c_tv_a[combo[li]]));
+                        isum[tv].push((w, 7, p.c_tv_b[combo[li]]));
+                    }
                 } else {
                     // TWO-MATE boson tv (2026-11-29, XCA_TVPROBE
                     // instrument): the free-boson D^tv carries two
@@ -536,8 +598,8 @@ pub(crate) fn chord_setup_m(
                     } else {
                         wsum[rv] += w;
                     }
-                    isum[tv].push((w, 0, p.c_tv[combo[li]]));
-                    isum[tv].push((w, 7, p.c_tv_r[combo[li]]));
+                    isum[tv].push((w, 0, p.c_tv_a[combo[li]]));
+                    isum[tv].push((w, 7, p.c_tv_b[combo[li]]));
                 }
             }
             // ---- vt chords (tau endpoint first) ----
@@ -555,6 +617,7 @@ pub(crate) fn chord_setup_m(
                 let bwd = bwd_line;
                 let rv = if be != 1 && be != 4 { e } else { l };
                 let tv = if be == 1 || be == 4 { e } else { l };
+                let mut ferm_two_mate = false;
                 if native_mixed && ferm_line {
                     // The reflected, conjugated tv profile gives vt.
                     cprod *= p.c_tv[combo[li]].conj();
@@ -616,19 +679,64 @@ pub(crate) fn chord_setup_m(
                             cprod *= (Complex::I * w * h * n as f64).exp();
                         }
                     } else {
-                        cprod *= p.c_tv[combo[li]].conj();
-                        if be == 5 || bl == 5 {
-                            cprod *= (Complex::I * w * h * n as f64).exp();
+                        // TWO-MATE fermion vt (2026-11-22 root-cause
+                        // fix): the conjugated mirror of the tv
+                        // two-mate,
+                        //   vt(tau, t) = sum_l e^{+i w_l t h}
+                        //     (conj(a_l) e^{-w_l beta} e^{+w_l tau}
+                        //      + conj(b_l) e^{-w_l tau}),
+                        // per-entry coefficients as modes 7/0 (the
+                        // boson two-mate pattern with the Fermi sign;
+                        // on the fixture b = 0 the value reduces to
+                        // the legacy conj(c_tv) mode-1 form exactly).
+                        // The m=2 all-I TAU V2 vertex-attachment swap
+                        // keeps the legacy shared push.
+                        let v2_all_i = matches!(anchor, Anchor::Tau(_))
+                            && cut.nl == 0
+                            && cut.ni == 2
+                            && cut.nr == 0
+                            && (be == 1 && bl == 5 || be == 5 && bl == 1);
+                        if v2_all_i {
+                            cprod *= p.c_tv[combo[li]].conj();
+                            if be == 5 || bl == 5 {
+                                cprod *= (Complex::I * w * h * n as f64).exp();
+                            } else {
+                                wsum[rv] += -w;
+                            }
                         } else {
-                            // INTERNAL real endpoint (R vertex, (1,2)/
-                            // (2,1) - m >= 3 only): the vt data's
-                            // t-phase is e^{+iwt} (FTVPROBE: the s=+1
-                            // variant reproduces vt_c at 1.4e-6 over the
-                            // full grid; the legacy +w gave e^{-iwt},
-                            // 1.1e-1). The flip also makes the internal
-                            // phase CONSISTENT with the (1,5) anchor
-                            // constant e^{+iwnh} (they ran opposite)
-                            wsum[rv] += -w;
+                            let st = Complex::new((-w * beta).exp(), 0.0);
+                            let c_ref = p.c_tv_a[combo[li]].conj() * st;
+                            let c_norm = p.c_tv_b[combo[li]].conj() / st;
+                            if m == 2 {
+                                // m == 2 keeps the legacy single-mate
+                                // form bit-exact (see the tv arm)
+                                cprod *= p.c_tv[combo[li]].conj();
+                                if be == 5 || bl == 5 {
+                                    cprod *= (Complex::I * w * h * n as f64).exp();
+                                } else {
+                                    if block_of(rv.wrapping_sub(1)) == 2 {
+                                        cprod *= (Complex::I * w * h * jj as f64).exp();
+                                    }
+                                    wsum[rv] += -w;
+                                }
+                            } else {
+                                if be == 5 || bl == 5 {
+                                    cprod *= (Complex::I * w * h * n as f64).exp();
+                                } else {
+                                    // INTERNAL real endpoint (R vertex,
+                                    // (1,2)/(2,1) - m >= 3 only): the vt
+                                    // data's t-phase is e^{+iwt} ABSOLUTE;
+                                    // the R->R steps apply relative time -
+                                    // compensate
+                                    if block_of(rv.wrapping_sub(1)) == 2 {
+                                        cprod *= (Complex::I * w * h * jj as f64).exp();
+                                    }
+                                    wsum[rv] += -w;
+                                }
+                                isum[tv].push((w, 0, c_norm));
+                                isum[tv].push((w, 7, c_ref));
+                                ferm_two_mate = true;
+                            }
                         }
                     }
                     // XCA_TAU_V2 (the all-I vertex-attachment swap,
@@ -643,17 +751,19 @@ pub(crate) fn chord_setup_m(
                         && cut.nr == 0
                         && (be == 1 && bl == 5 || be == 5 && bl == 1);
                     let push15 = if v2_all_i { 2 } else { tv };
-                    isum[push15].push((
-                        w,
-                        if forward_contact {
-                            8
-                        } else if bwd && mirrored_line(li, proj, cs) {
-                            5
-                        } else {
-                            1
-                        },
-                        Complex::ONE,
-                    ));
+                    if !ferm_two_mate {
+                        isum[push15].push((
+                            w,
+                            if forward_contact {
+                                8
+                            } else if bwd && mirrored_line(li, proj, cs) {
+                                5
+                            } else {
+                                1
+                            },
+                            Complex::ONE,
+                        ));
+                    }
                 } else {
                     // TWO-MATE boson vt (2026-11-29): the Bosonic vt
                     // read is vt_c = -conj(lmix(t, beta-tau)) (Sign::
@@ -703,16 +813,16 @@ pub(crate) fn chord_setup_m(
                 // (forward/backward ratio groups differed 3.09x)
                 let bwd = bwd_line;
                 let reverse_tau = tau_rev_on && rev_i && m == 3;
-                let wm = if !forward_less && !forward_contact && !reverse_tau && bwd
-                    && (if ferm_line {
-                        mirrored_line(li, proj, cs)
-                    } else {
-                        true
-                    }) {
-                    -w
-                } else {
-                    w
-                };
+                // the fermion mat chord pole: NO negation - c_mat is
+                // projected on the channel's OWN data in the K basis
+                // (the time reflection is already carried by the
+                // coefficients); the legacy bwd negation double-flipped
+                // the kernel (m=3 direct-transcription verdict: the
+                // e^{eps beta}-class scale error on the all-I cuts;
+                // (1,1) is m>=3-only and was never stock-anchored).
+                // The BOSON negation stays (its c_mat projection is
+                // gated on the Holstein anchors).
+                let wm = if !ferm_line && bwd { -w } else { w };
                 if ferm_line {
                     cprod *= p.c_mat[combo[li]] / Complex::new(k_tau(beta, wm, beta), 0.0);
                     let (later_time, earlier_time) = if reverse_tau { (e, l) } else { (l, e) };
@@ -812,7 +922,17 @@ pub(crate) fn chord_setup_m(
                     let push41 = if v2_41 { 1 } else { l };
                     isum[push41].push((w, mode, k41_c));
                 } else {
-                    cprod *= -p.c_mat[combo[li]];
+                    // m >= 3 default: the TAU-DEPENDENT kernel form (the
+                    // m == 2 stock-anchored branch's semantics) - the
+                    // raw line data mat(mm - tau) carries the tau
+                    // profile; the old constant-only form cannot
+                    // represent it. The SIGN is the canonical
+                    // arrangement's (the m == 2 V2 swap differs); the
+                    // m=3 direct-transcription verdict: magnitude
+                    // exact, sep = -dir with +c_mat
+                    let coef = -p.c_mat[combo[li]] * (-w * dtau * mm as f64).exp()
+                        / (1.0 + (-beta * w).exp());
+                    isum[l].push((w, 7, coef));
                 }
             }
             _ => {
@@ -882,6 +1002,17 @@ pub(crate) fn eval_cut_m(
         rowmult,
         rev_i,
     } = cs0;
+    // The REFLECTED I-walk is the DEFAULT for the m=3 ALL-I cuts
+    // since the 2026-11-22 contact adjudication (NQIST_TTI_CONTACT):
+    // the m=3 increment's t=0 contact with the Matsubara equilibrium
+    // is machine-level only with the reflected I-seed/close indices
+    // (les 2.4e-8 / mix 1.4e-6 reflected vs 4.3e-2 / 1.4e-3
+    // unreflected). E1/E2 isolation showed the contact needs ONLY
+    // the ni == 4 scope; the mixed (0,3,1)/(0,2,2) reflection stays
+    // OPT-IN (its specialized branches deviate from the raw-data
+    // semantics at a ~1/beta scale - the m=3 direct-transcription
+    // discriminant) and forward_130 remains opt-in (never
+    // contact-validated).
     let mixed_031 = m == 3 && match (cut.nl, cut.ni, cut.nr) {
         (0, 3, 1) => std::env::var_os("XCA_M3_FORWARD_031").is_some(),
         (0, 2, 2) => std::env::var_os("XCA_M3_FORWARD_022").is_some(),
@@ -890,11 +1021,9 @@ pub(crate) fn eval_cut_m(
     let forward_130 = m == 3 && (cut.nl, cut.ni, cut.nr) == (1, 3, 0)
         && std::env::var_os("XCA_M3_FORWARD_130").is_some();
     let forward_less = m == 3 && matches!(anchor, Anchor::JLower(_))
-        && (cut.ni == 4 || mixed_031 || forward_130) && !rev_i && bath.is_none()
-        && std::env::var_os("XCA_M3_LESS_FORWARD").is_some();
+        && (cut.ni == 4 || mixed_031 || forward_130) && !rev_i && bath.is_none();
     let forward_contact = m == 3 && matches!(anchor, Anchor::Tau(_))
-        && (cut.ni == 4 || mixed_031) && !rev_i && bath.is_none()
-        && std::env::var_os("XCA_M3_TAU_FORWARD").is_some();
+        && (cut.ni == 4 || mixed_031) && !rev_i && bath.is_none();
     let v2p = m == 2
         && cut.nl == 0
         && cut.ni == 2

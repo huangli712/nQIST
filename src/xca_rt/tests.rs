@@ -4306,6 +4306,8 @@ fn xca2_cutsum_constant_structure() {
             les_row0: vec![Complex::new(2.0, 0.0)],
             c_tv: vec![Complex::new(3.0, 0.0)],
             c_tv_r: vec![Complex::ZERO; 1],
+            c_tv_a: vec![Complex::new(3.0, 0.0)],
+            c_tv_b: vec![Complex::ZERO; 1],
             tau_ref: 0,
             c_mat: vec![Complex::new(5.0, 0.0)],
         };
@@ -4419,6 +4421,8 @@ fn xca2_cutsum_allreal_isolation() {
             les_row0: vec![Complex::new(0.0, 2.0)],
             c_tv: vec![Complex::new(0.0, 3.0)],
             c_tv_r: vec![Complex::ZERO; 1],
+            c_tv_a: vec![Complex::new(0.0, 3.0)],
+            c_tv_b: vec![Complex::ZERO; 1],
             tau_ref: 0,
             c_mat: vec![Complex::new(0.0, 5.0)],
         };
@@ -4561,6 +4565,8 @@ fn xca2_cutsum_fullcomp_isolation() {
             les_row0: vec![Complex::new(0.0, 2.0)],
             c_tv: vec![Complex::new(0.0, 3.0)],
             c_tv_r: vec![Complex::ZERO; 1],
+            c_tv_a: vec![Complex::new(0.0, 3.0)],
+            c_tv_b: vec![Complex::ZERO; 1],
             tau_ref: 0,
             c_mat: vec![Complex::new(0.0, 5.0)],
         };
@@ -4774,6 +4780,8 @@ fn xca2_mix_sector_sign_debug() {
             les_row0: vec![Complex::new(0.0, 2.0)],
             c_tv: vec![Complex::new(0.0, 3.0)],
             c_tv_r: vec![Complex::ZERO; 1],
+            c_tv_a: vec![Complex::new(0.0, 3.0)],
+            c_tv_b: vec![Complex::ZERO; 1],
             tau_ref: 0,
             c_mat: vec![Complex::new(0.0, 5.0)],
         };
@@ -4906,6 +4914,8 @@ fn xca3_cuts_structure_gate() {
             les_row0: vec![Complex::new(0.0, 2.0)],
             c_tv: vec![Complex::new(0.0, 3.0)],
             c_tv_r: vec![Complex::ZERO; 1],
+            c_tv_a: vec![Complex::new(0.0, 3.0)],
+            c_tv_b: vec![Complex::ZERO; 1],
             tau_ref: 0,
             c_mat: vec![Complex::new(0.0, 5.0)],
         };
@@ -4980,6 +4990,12 @@ fn xca3_cuts_structure_gate() {
             *c *= Complex::new(0.5, 0.0);
         }
         for c in pr.c_tv.iter_mut() {
+            *c *= Complex::new(0.5, 0.0);
+        }
+        for c in pr.c_tv_a.iter_mut() {
+            *c *= Complex::new(0.5, 0.0);
+        }
+        for c in pr.c_tv_b.iter_mut() {
             *c *= Complex::new(0.5, 0.0);
         }
         for c in pr.c_mat.iter_mut() {
@@ -5115,6 +5131,8 @@ fn xca3_parity_cancellation_diagnostic() {
             les_row0: vec![Complex::new(0.0, 2.0)],
             c_tv: vec![Complex::new(0.0, 3.0)],
             c_tv_r: vec![Complex::ZERO; 1],
+            c_tv_a: vec![Complex::new(0.0, 3.0)],
+            c_tv_b: vec![Complex::ZERO; 1],
             tau_ref: 0,
             c_mat: vec![Complex::new(0.0, 5.0)],
         };
@@ -11668,4 +11686,2028 @@ fn rt_m1_holstein_end_to_end_dual_path() {
         eprintln!("  m1 per-t dev t={}: {:?}", t + 1, devs);
     }
     assert!(worst < 0.01, "m1+Holstein dual path dev {worst}");
+}
+
+// ---------------------------------------------------------------------------
+// Independent RAW-DATA direct transcription of the les/mix block-cut
+// families (the m=3 adjudication reference)
+//
+// Mirrors evalfam2m::eval_cut_m's seed/step/close nesting and its
+// segment-propagator reads EXACTLY (that structure is machine-anchored
+// at m=2 against the stock OCA); every hybridization line instead
+// reads the channel's own raw delta data at the placed vertex times
+// through the plain component accessors - no pole separation, no
+// chord phases, no per-row projections. Calibration at m=2 (every
+// chord class the les/mix families reach there is stock-anchored);
+// the m=3 sweep then adjudicates the classes only m>=3 reaches.
+// ---------------------------------------------------------------------------
+
+/// Block code of vertex `v` (mirrors evalfam2m::eval_cut_m's block_of).
+fn rt_block_of(
+    m: usize,
+    cut: &super::evalfam2::FamCut,
+    anchor: &super::evalfam2::Anchor,
+    v: usize,
+) -> u8 {
+    if v == 0 {
+        match anchor {
+            super::evalfam2::Anchor::JUpper(_) => 2,
+            super::evalfam2::Anchor::JLower(_) => 3,
+            super::evalfam2::Anchor::Tau(_) => 4,
+        }
+    } else if v == 2 * m - 1 {
+        5
+    } else if v <= cut.nl {
+        0
+    } else if v <= cut.nl + cut.ni {
+        1
+    } else {
+        2
+    }
+}
+
+fn rt_gtr_blk(g: &PseudoGreen, a: i64, b: i64) -> kadanoffbaym::linalg::DenseMat {
+    let dim = g.size1 as usize;
+    let mut buf = vec![Complex::ZERO; dim * dim];
+    crate::oca::psc_blk_into(g, a, b, dim, &mut buf);
+    kadanoffbaym::linalg::DenseMat::from_vec(dim, dim, buf)
+}
+
+fn rt_les_blk(g: &PseudoGreen, a: i64, b: i64) -> kadanoffbaym::linalg::DenseMat {
+    let dim = g.size1 as usize;
+    let mut buf = vec![Complex::ZERO; dim * dim];
+    crate::oca::pls_blk_into(g, a, b, dim, &mut buf);
+    kadanoffbaym::linalg::DenseMat::from_vec(dim, dim, buf)
+}
+
+fn rt_tv_blk(g: &PseudoGreen, t: i64, tau: i64) -> kadanoffbaym::linalg::DenseMat {
+    let dim = g.size1 as usize;
+    let mut buf = vec![Complex::ZERO; dim * dim];
+    crate::oca::ptv_dir_blk(g, t, tau, dim, &mut buf);
+    kadanoffbaym::linalg::DenseMat::from_vec(dim, dim, buf)
+}
+
+fn rt_vt_blk(g: &PseudoGreen, tau: i64, t: i64) -> kadanoffbaym::linalg::DenseMat {
+    let dim = g.size1 as usize;
+    let mut buf = vec![Complex::ZERO; dim * dim];
+    crate::oca::ptv_blk_into(g, tau, t, dim, &mut buf);
+    kadanoffbaym::linalg::DenseMat::from_vec(dim, dim, buf)
+}
+
+fn rt_mat_blk(g: &PseudoGreen, d: i64) -> kadanoffbaym::linalg::DenseMat {
+    use kadanoffbaym::linalg::DenseMat;
+    let dim = g.size1 as usize;
+    let nel = dim * dim;
+    let raw = g.mat.raw();
+    if d >= 0 {
+        DenseMat::from_slice(dim, dim, &raw[d as usize * nel..(d as usize + 1) * nel])
+    } else {
+        let s = g.sign.as_i64() as f64;
+        kadanoffbaym::linalg::scale_c(
+            &DenseMat::from_slice(
+                dim,
+                dim,
+                &raw[(-d) as usize * nel..((-d) as usize + 1) * nel],
+            )
+            .adjoint(),
+            -Complex::new(s, 0.0),
+        )
+    }
+}
+
+/// Evaluation context shared by the recursion levels.
+struct RtDirect<'a> {
+    m: usize,
+    anchor: &'a super::evalfam2::Anchor,
+    cut: &'a super::evalfam2::FamCut,
+    chain: &'a super::evalm::RtChainM,
+    pairs: &'a [(usize, usize)],
+    cs: &'a [usize],
+    pp_ints: &'a [Hybridization<'a>],
+    pp_g: &'a [PseudoGreen],
+    n: i64,
+    j: i64,
+    mm: i64,
+    i_max: i64,
+    integ: &'a Integrator,
+    rev: bool,
+    /// the contact-validated reflected I-walk (the m=3 default since
+    /// the 2026-11-22 NQIST_TTI_CONTACT adjudication): the seed/close
+    /// indices and every I-endpoint line read flip about i_max
+    reflected: bool,
+}
+
+impl<'a> RtDirect<'a> {
+    fn block_of(&self, v: usize) -> u8 {
+        rt_block_of(self.m, self.cut, self.anchor, v)
+    }
+
+    /// Raw bath-data line factor of hybridization line `li` at the
+    /// placed vertex times: the contour component between the two
+    /// endpoints, read from the channel's own delta through the plain
+    /// accessors. The (3,x)/(x,5)/(4,x) forms are the pole-limits of
+    /// the stock-anchored m=2 chord classes; the internal-internal
+    /// forms follow from the same contour geometry (the walk-earlier
+    /// endpoint e hosts the channel's annihilation operator, the
+    /// contour ordering fixes the component).
+    fn line_factor(&self, li: usize, times: &[i64]) -> Complex {
+        let m = self.m;
+        let (e, l) = self.pairs[li];
+        let d = self.pp_ints[self.cs[li]].delta;
+        let (be, bl) = (self.block_of(e), self.block_of(l));
+        let t_of = |v: usize| -> i64 {
+            if v == 0 {
+                match self.anchor {
+                    super::evalfam2::Anchor::JUpper(_) | super::evalfam2::Anchor::JLower(_) => {
+                        self.j
+                    }
+                    super::evalfam2::Anchor::Tau(_) => self.mm,
+                }
+            } else if v == 2 * m - 1 {
+                self.n
+            } else {
+                times[v]
+            }
+        };
+        match (be, bl) {
+            (3, 0) | (0, 3) => super::gtr_c(d, self.j, if be == 0 { t_of(e) } else { t_of(l) }),
+            (3, 1) | (1, 3) => {
+                let t = if be == 1 { t_of(e) } else { t_of(l) };
+                let ti = if self.reflected { self.i_max - t } else { t };
+                super::tv_c(d, self.j, ti)
+            }
+            (3, 2) | (2, 3) => super::les_c(d, self.j, if be == 2 { t_of(e) } else { t_of(l) }),
+            (4, 1) | (1, 4) => {
+                let t = if be == 1 { t_of(e) } else { t_of(l) };
+                if self.reflected {
+                    // the forward_contact branch: -c_mat * K(tau) -
+                    // the NEGATIVE of the raw mat(tau) data (the
+                    // m=3 discriminant: exact -1 ratio)
+                    -d.mat.block(t as usize)[0]
+                } else {
+                    d.mat.block((self.mm - t) as usize)[0]
+                }
+            }
+            (4, 2) | (2, 4) => super::vt_c(d, self.mm, if be == 2 { t_of(e) } else { t_of(l) }),
+            (0, 0) => super::gtr_c(d, t_of(e), t_of(l)),
+            (0, 1) | (1, 0) => {
+                let t_real = if be == 0 { t_of(e) } else { t_of(l) };
+                let tau = if be == 1 { t_of(e) } else { t_of(l) };
+                super::tv_c(d, t_real, tau)
+            }
+            (0, 2) | (2, 0) => {
+                let tl = if be == 0 { t_of(e) } else { t_of(l) };
+                let tr = if be == 2 { t_of(e) } else { t_of(l) };
+                super::les_c(d, tl, tr)
+            }
+            (1, 1) => {
+                // ascending code-tau walk keeps the difference
+                // non-negative; the reversed walk flips the sign
+                let diff = if self.rev {
+                    t_of(e) - t_of(l)
+                } else {
+                    t_of(l) - t_of(e)
+                };
+                d.mat.block(diff as usize)[0]
+            }
+            (1, 2) | (2, 1) => {
+                let tau = if be == 1 { t_of(e) } else { t_of(l) };
+                let tr = if be == 2 { t_of(e) } else { t_of(l) };
+                let ti = if self.reflected { self.i_max - tau } else { tau };
+                super::vt_c(d, ti, tr)
+            }
+            (2, 2) => super::gtr_c(d, t_of(e), t_of(l)),
+            (0, 5) | (5, 0) => super::les_c(d, if be == 0 { t_of(e) } else { t_of(l) }, self.n),
+            (1, 5) | (5, 1) => {
+                let t = if be == 1 { t_of(e) } else { t_of(l) };
+                let ti = if self.reflected { self.i_max - t } else { t };
+                super::vt_c(d, ti, self.n)
+            }
+            (2, 5) | (5, 2) => super::gtr_c(d, if be == 2 { t_of(e) } else { t_of(l) }, self.n),
+            _ => panic!("rt_line_factor: unexpected chord class ({be},{bl})"),
+        }
+    }
+
+    /// Forward-structure recursion: the state at internal vertex `v`,
+    /// time `t_v` (a real time or a tau index by block). The bottom
+    /// level multiplies the anchor-side seed segment and ALL raw line
+    /// reads. Nesting bounds and weights mirror evalfam2m exactly.
+    fn rec(&self, v: usize, t_v: i64, times: &mut [i64]) -> kadanoffbaym::linalg::DenseMat {
+        times[v] = t_v;
+        if v == 1 {
+            let g1 = &self.pp_g[self.chain.sectors[1]];
+            let seg = match (self.anchor, self.block_of(1)) {
+                (super::evalfam2::Anchor::JLower(_), 0) => rt_gtr_blk(g1, self.j, t_v),
+                (super::evalfam2::Anchor::JLower(_), 1) => {
+                    let ti = if self.reflected { self.i_max - t_v } else { t_v };
+                    rt_tv_blk(g1, self.j, ti)
+                }
+                (super::evalfam2::Anchor::JLower(_), 2) => rt_les_blk(g1, self.j, t_v),
+                (super::evalfam2::Anchor::Tau(_), 1) => {
+                    let idx = if self.reflected { t_v } else { self.mm - t_v };
+                    rt_mat_blk(g1, idx)
+                }
+                (super::evalfam2::Anchor::Tau(_), 2) => rt_vt_blk(g1, self.mm, t_v),
+                _ => unreachable!("unexpected seed block for anchor {:?}", self.anchor),
+            };
+            let acc = self.chain.ops[1].mat_mul(&seg);
+            let mut ds = Complex::ONE;
+            for li in 0..self.m {
+                ds *= self.line_factor(li, times);
+            }
+            return kadanoffbaym::linalg::scale_c(&acc, ds);
+        }
+        let bprev = self.block_of(v - 1);
+        let bv = self.block_of(v);
+        let (lo, hi, len) = match (bprev, bv) {
+            (0, 0) => (t_v, self.j, (self.j - t_v) as usize),
+            (0, 1) | (0, 2) => (0, self.j, self.j as usize),
+            (1, 1) => (0, t_v, t_v as usize),
+            (1, 2) => (0, self.i_max, self.i_max as usize),
+            (2, 2) => (0, t_v, t_v as usize),
+            _ => unreachable!("invalid block transition ({bprev},{bv})"),
+        };
+        let mut total = kadanoffbaym::linalg::DenseMat::zeros_shape(
+            self.chain.ops[v - 1].nrows(),
+            self.chain.ops[1].ncols(),
+        );
+        let g = &self.pp_g[self.chain.sectors[v]];
+        for t in lo..=hi {
+            let w = super::quad::chain_weight(len, (t - lo) as usize, self.integ);
+            if w == 0.0 {
+                continue;
+            }
+            let sub = self.rec(v - 1, t, times);
+            let ker = match (bprev, bv) {
+                (0, 1) => rt_tv_blk(g, t, t_v),
+                (0, 2) => rt_les_blk(g, t, t_v),
+                (1, 1) => rt_mat_blk(g, t_v - t),
+                (1, 2) => {
+                    let ti = if self.reflected { self.i_max - t } else { t };
+                    rt_vt_blk(g, ti, t_v)
+                }
+                // (0,0) descending greater, (2,2) absolute greater
+                _ => rt_gtr_blk(g, t, t_v),
+            }
+            .mat_mul(&sub);
+            let wc = Complex::new(w, 0.0);
+            for q in 0..total.len() {
+                total.raw_mut()[q] += wc * ker.raw()[q];
+            }
+        }
+        self.chain.ops[v].mat_mul(&total)
+    }
+
+    /// Closing integral of the last internal vertex into the n
+    /// endpoint (default vt/gtr/les close reads).
+    fn close(&self, times: &mut [i64]) -> kadanoffbaym::linalg::DenseMat {
+        let vlast = 2 * self.m - 2;
+        let b4 = self.block_of(vlast);
+        let hi = match b4 {
+            0 => self.j,
+            1 => self.i_max,
+            _ => self.n,
+        };
+        let gfin = &self.pp_g[self.chain.sectors[2 * self.m - 1]];
+        let mut total = kadanoffbaym::linalg::DenseMat::zeros_shape(
+            self.chain.ops[2 * self.m - 1].ncols(),
+            self.chain.ops[1].ncols(),
+        );
+        for t in 0..=hi {
+            let w = super::quad::chain_weight(hi as usize, t as usize, self.integ);
+            if w == 0.0 {
+                continue;
+            }
+            let sub = self.rec(vlast, t, times);
+            let ker = match b4 {
+                0 => rt_les_blk(gfin, t, self.n),
+                1 => {
+                    let ti = if self.reflected { self.i_max - t } else { t };
+                    rt_vt_blk(gfin, ti, self.n)
+                }
+                _ => rt_gtr_blk(gfin, t, self.n),
+            }
+            .mat_mul(&sub);
+            let wc = Complex::new(w, 0.0);
+            for q in 0..total.len() {
+                total.raw_mut()[q] += wc * ker.raw()[q];
+            }
+        }
+        self.chain.ops[2 * self.m - 1]
+            .mat_mul(&total)
+            .mat_mul(&self.chain.ops[0])
+    }
+
+    /// REVERSED all-I recursion (mirrors evalfam2m's rev_i machinery):
+    /// the n-side vertex vlast seeds with the vt read, the walk runs
+    /// rightward to the anchor-side vertex 1, whose tv read closes.
+    /// Owner k's tau bounds owner k+1's from above.
+    fn rec_rev(&self, k: usize, t_k: i64, times: &mut [i64]) -> kadanoffbaym::linalg::DenseMat {
+        use kadanoffbaym::linalg::DenseMat;
+        times[k] = t_k;
+        let vlast = 2 * self.m - 2;
+        if k == vlast {
+            let gc = &self.pp_g[self.chain.sectors[2 * self.m - 1]];
+            let prod = rt_vt_blk(gc, t_k, self.n).mat_mul(&self.chain.ops[k]);
+            let mut ds = Complex::ONE;
+            for li in 0..self.m {
+                ds *= self.line_factor(li, times);
+            }
+            return kadanoffbaym::linalg::scale_c(&prod, ds);
+        }
+        let g = &self.pp_g[self.chain.sectors[k + 1]];
+        let mut total = DenseMat::zeros_shape(
+            self.chain.ops[2 * self.m - 1].ncols(),
+            self.chain.ops[k + 1].ncols(),
+        );
+        for t in 0..=t_k {
+            let w = super::quad::chain_weight(t_k as usize, t as usize, self.integ);
+            if w == 0.0 {
+                continue;
+            }
+            let sub = self.rec_rev(k + 1, t, times);
+            let ker = sub.mat_mul(&rt_mat_blk(g, t_k - t));
+            let wc = Complex::new(w, 0.0);
+            for q in 0..total.len() {
+                total.raw_mut()[q] += wc * ker.raw()[q];
+            }
+        }
+        total.mat_mul(&self.chain.ops[k])
+    }
+
+    /// REVERSED all-I close: the anchor-side tv read at vertex 1.
+    fn close_rev(&self, times: &mut [i64]) -> kadanoffbaym::linalg::DenseMat {
+        let ga = &self.pp_g[self.chain.sectors[1]];
+        let hi = self.i_max;
+        let mut total = kadanoffbaym::linalg::DenseMat::zeros_shape(
+            self.chain.ops[2 * self.m - 1].ncols(),
+            self.chain.ops[1].ncols(),
+        );
+        for t in 0..=hi {
+            let w = super::quad::chain_weight(hi as usize, t as usize, self.integ);
+            if w == 0.0 {
+                continue;
+            }
+            let sub = self.rec_rev(1, t, times);
+            let ker = sub.mat_mul(&rt_tv_blk(ga, self.j, t));
+            let wc = Complex::new(w, 0.0);
+            for q in 0..total.len() {
+                total.raw_mut()[q] += wc * ker.raw()[q];
+            }
+        }
+        self.chain.ops[2 * self.m - 1]
+            .mat_mul(&total)
+            .mat_mul(&self.chain.ops[0])
+    }
+}
+
+/// The evalfam2m tail decorations (orientation factor, measure, the
+/// JLower transpose, the Tau -conj scatter). The chord factors
+/// (cprod/phi/ikern/rowmult) are EXCLUDED - the raw line reads
+/// replace them.
+fn rt_decorate(
+    cut: &super::evalfam2::FamCut,
+    anchor: &super::evalfam2::Anchor,
+    val: kadanoffbaym::linalg::DenseMat,
+    h: f64,
+    dtau: f64,
+    reflected: bool,
+) -> kadanoffbaym::linalg::DenseMat {
+    use kadanoffbaym::linalg::scale_c;
+    let mut oric = Complex::new(if (1 + cut.nl) % 2 == 0 { 1.0 } else { -1.0 }, 0.0);
+    for _ in 0..cut.ni {
+        oric *= Complex::I;
+    }
+    for _ in 0..cut.ni.saturating_sub(1) {
+        oric *= Complex::I;
+    }
+    if matches!(anchor, super::evalfam2::Anchor::Tau(_)) && cut.ni % 2 == 1 {
+        oric *= Complex::I;
+    }
+    let meas = Complex::new(
+        h.powi((cut.nl + cut.nr) as i32) * dtau.powi(cut.ni as i32),
+        0.0,
+    );
+    let val = if matches!(anchor, super::evalfam2::Anchor::JLower(_)) && !reflected {
+        let mut tr = val.adjoint();
+        for q in tr.raw_mut().iter_mut() {
+            *q = q.conj();
+        }
+        tr
+    } else {
+        val
+    };
+    let mut out = scale_c(&val, oric * meas);
+    if matches!(anchor, super::evalfam2::Anchor::Tau(_)) {
+        for q in out.raw_mut().iter_mut() {
+            *q = -q.conj();
+        }
+    }
+    out
+}
+
+/// Direct raw-data transcription of ONE (topology, channels, s0, cut)
+/// family value, forward nesting.
+#[allow(clippy::too_many_arguments)]
+fn direct_cut_m(
+    m: usize,
+    cut: &super::evalfam2::FamCut,
+    anchor: &super::evalfam2::Anchor,
+    chain: &super::evalm::RtChainM,
+    pairs: &[(usize, usize)],
+    cs: &[usize],
+    pp_ints: &[Hybridization<'_>],
+    pp_g: &[PseudoGreen],
+    n: i64,
+    h: f64,
+    dtau: f64,
+    integ: &Integrator,
+) -> kadanoffbaym::linalg::DenseMat {
+    let ntau = pp_g[0].ntau as i64;
+    let (j, mm) = match anchor {
+        super::evalfam2::Anchor::JUpper(jj) | super::evalfam2::Anchor::JLower(jj) => (*jj, 0),
+        super::evalfam2::Anchor::Tau(mma) => (0, *mma),
+    };
+    let i_max = match anchor {
+        super::evalfam2::Anchor::Tau(_) => mm,
+        _ => ntau,
+    };
+    // the machinery's reflected-I-walk scope: ONLY the m=3 all-I cut
+    // (the contact adjudication showed the ni == 4 scope suffices;
+    // the mixed (0,3,1)/(0,2,2) reflection is opt-in and deviates
+    // from raw-data semantics)
+    let reflected = m == 3 && cut.nl == 0 && cut.ni == 4
+        && matches!(
+            anchor,
+            super::evalfam2::Anchor::JLower(_) | super::evalfam2::Anchor::Tau(_)
+        );
+    let ctx = RtDirect {
+        m,
+        anchor,
+        cut,
+        chain,
+        pairs,
+        cs,
+        pp_ints,
+        pp_g,
+        n,
+        j,
+        mm,
+        i_max,
+        integ,
+        rev: false,
+        reflected,
+    };
+    let mut times = vec![0i64; 2 * m];
+    let val = ctx.close(&mut times);
+    rt_decorate(cut, anchor, val, h, dtau, reflected)
+}
+
+/// Direct raw-data transcription with the REVERSED all-I nesting
+/// (mirrors evalfam2m's default rev_i machinery for the les all-I
+/// family).
+#[allow(clippy::too_many_arguments)]
+fn direct_cut_m_all_i_rev(
+    m: usize,
+    cut: &super::evalfam2::FamCut,
+    anchor: &super::evalfam2::Anchor,
+    chain: &super::evalm::RtChainM,
+    pairs: &[(usize, usize)],
+    cs: &[usize],
+    pp_ints: &[Hybridization<'_>],
+    pp_g: &[PseudoGreen],
+    n: i64,
+    h: f64,
+    dtau: f64,
+    integ: &Integrator,
+) -> kadanoffbaym::linalg::DenseMat {
+    let ntau = pp_g[0].ntau as i64;
+    let (j, mm) = match anchor {
+        super::evalfam2::Anchor::JUpper(jj) | super::evalfam2::Anchor::JLower(jj) => (*jj, 0),
+        super::evalfam2::Anchor::Tau(mma) => (0, *mma),
+    };
+    let i_max = match anchor {
+        super::evalfam2::Anchor::Tau(_) => mm,
+        _ => ntau,
+    };
+    let ctx = RtDirect {
+        m,
+        anchor,
+        cut,
+        chain,
+        pairs,
+        cs,
+        pp_ints,
+        pp_g,
+        n,
+        j,
+        mm,
+        i_max,
+        integ,
+        rev: true,
+        reflected: false,
+    };
+    let mut times = vec![0i64; 2 * m];
+    let val = ctx.close_rev(&mut times);
+    rt_decorate(cut, anchor, val, h, dtau, false)
+}
+
+#[test]
+fn xca_m2_les_mix_cuts_match_direct_rawdata() {
+    // CALIBRATION + three-way adjudication: per cut the machinery vs
+    // the raw-data transcription (shared segments + quadrature - the
+    // delta lines are the only difference), and per COMPONENT both
+    // sums against the stock OCA kernel. The stock adjudicates which
+    // side carries a defect when the two disagree; the ratio at the
+    // worst element separates structural errors (|ratio| = 1 with a
+    // nonzero phase) from fit-level noise. The hard gate is installed
+    // after the defects this run exposes are fixed.
+    let fx = setup_2b();
+    let pp_ints = fx.pp_ints();
+    let fits = fx.fits_npoles(2);
+    let integ = Integrator::new(KT2);
+    let dtau2 = BETA2 / fx.ntau as f64;
+    let (n, j) = (20i64, 10i64);
+    let proj: Vec<_> = (0..pp_ints.len())
+        .map(|c| {
+            super::fit::csoe_project_all(
+                pp_ints[c].delta,
+                &fits[c],
+                BETA2,
+                dtau2,
+                fx.h,
+                fx.nt,
+                fx.ntau,
+            )
+        })
+        .collect();
+    let chans = super::boson_rt::chans_with_bath(&pp_ints, None);
+    let topos = crate::xca::topology::connected_pairings(2);
+    // stock OCA reference (all m=2 diagrams, ret/less/lmix components)
+    let channels = crate::oca::channels_with_bath(&pp_ints, None);
+    let diagrams = crate::oca::build_sigma_diagrams_oca_channels(&fx.hs, &channels);
+    let mut sig_ref = fx.sigma_buffers();
+    for d in &diagrams {
+        crate::oca::add_sigma_tstp_oca(n, d, &fx.pp_g, BETA2, fx.h, KT2, &integ, &mut sig_ref);
+    }
+    use super::evalfam2::Anchor;
+    let ns = fx.hs.ns();
+    for anchor in [Anchor::JLower(j), Anchor::Tau(24)] {
+        let mut mach_sum: Vec<Vec<Complex>> = (0..ns)
+            .map(|s| vec![Complex::ZERO; fx.hs.sectors[s].dim * fx.hs.sectors[s].dim])
+            .collect();
+        let mut dir_sum: Vec<Vec<Complex>> = (0..ns)
+            .map(|s| vec![Complex::ZERO; fx.hs.sectors[s].dim * fx.hs.sectors[s].dim])
+            .collect();
+        for cut in super::evalfam2::families(2, &anchor) {
+            let rev = matches!(anchor, Anchor::JLower(_))
+                && cut.nl == 0
+                && cut.ni == 2
+                && cut.nr == 0;
+            let mut worst = 0.0f64;
+            let mut desc = String::new();
+            for topo in &topos {
+                for cs in super::evalm::ChannelIter::new(chans.len(), 2) {
+                    for s0 in 0..ns {
+                        let Some(chain) = super::boson_rt::build_rt_chain_mixed_m(
+                            &fx.hs,
+                            &topo.pairs,
+                            &cs,
+                            &chans,
+                            s0,
+                        ) else {
+                            continue;
+                        };
+                        let mut stat = 1.0f64;
+                        for &c in &cs {
+                            if pp_ints[c].backward {
+                                stat *= -1.0;
+                            }
+                        }
+                        let fac = Complex::new(stat * topo.parity, 0.0);
+                        let mut sep = kadanoffbaym::linalg::DenseMat::zeros_shape(
+                            fx.hs.sectors[s0].dim,
+                            fx.hs.sectors[s0].dim,
+                        );
+                        let mut combo = vec![0usize; 2];
+                        loop {
+                            let v = super::evalfam2m::eval_cut_m(
+                                2,
+                                &cut,
+                                &anchor,
+                                &chain,
+                                &topo.pairs,
+                                &cs,
+                                &combo,
+                                &proj,
+                                &pp_ints,
+                                None,
+                                &fx.pp_g,
+                                n,
+                                fx.h,
+                                BETA2,
+                                dtau2,
+                                KT2,
+                                &integ,
+                            );
+                            for q in 0..sep.len() {
+                                sep.raw_mut()[q] += v.raw()[q];
+                            }
+                            let mut idx = 0;
+                            let mut wrapped = false;
+                            loop {
+                                if idx == 2 {
+                                    wrapped = true;
+                                    break;
+                                }
+                                combo[idx] += 1;
+                                if combo[idx] < proj[cs[idx]].poles.len() {
+                                    break;
+                                }
+                                combo[idx] = 0;
+                                idx += 1;
+                            }
+                            if wrapped {
+                                break;
+                            }
+                        }
+                        let dir = if rev {
+                            direct_cut_m_all_i_rev(
+                                2,
+                                &cut,
+                                &anchor,
+                                &chain,
+                                &topo.pairs,
+                                &cs,
+                                &pp_ints,
+                                &fx.pp_g,
+                                n,
+                                fx.h,
+                                dtau2,
+                                &integ,
+                            )
+                        } else {
+                            direct_cut_m(
+                                2,
+                                &cut,
+                                &anchor,
+                                &chain,
+                                &topo.pairs,
+                                &cs,
+                                &pp_ints,
+                                &fx.pp_g,
+                                n,
+                                fx.h,
+                                dtau2,
+                                &integ,
+                            )
+                        };
+                        for q in 0..sep.len() {
+                            let want = fac * sep.raw()[q];
+                            let got = fac * dir.raw()[q];
+                            mach_sum[s0][q] += want;
+                            dir_sum[s0][q] += got;
+                            let denom = want.abs().max(got.abs());
+                            if denom < 1.0e-9 {
+                                continue;
+                            }
+                            let dev = (want - got).abs() / denom;
+                            if dev > worst {
+                                worst = dev;
+                                let ratio = got / want;
+                                desc = format!(
+                                    "topo {:?} cs {:?} s0 {s0} elem {q}: sep ({:+.6e},{:+.6e}) dir ({:+.6e},{:+.6e}) ratio {ratio:+.6}",
+                                    topo.pairs, cs, want.re, want.im, got.re, got.im
+                                );
+                            }
+                        }
+                    }
+                }
+            }
+            eprintln!(
+                "m2 direct {anchor:?} cut ({},{},{}): worst {worst:.3e} {}",
+                cut.nl,
+                cut.ni,
+                cut.nr,
+                if rev { "[rev]" } else { "" }
+            );
+            if worst > 1.0e-5 {
+                eprintln!("    ARGMAX {desc}");
+            }
+        }
+        // three-way: the cut sums vs the stock component (the Tau
+        // write carries the output sector's pseudo-particle sign - part
+        // of the sigma_cuts_m_mat write convention, applied to BOTH
+        // sums here)
+        let (mach_worst, dir_worst) = (0..ns)
+            .map(|s| {
+                let sg = if matches!(anchor, Anchor::Tau(_)) {
+                    Complex::new(fx.pp_g[s].sign.as_i64() as f64, 0.0)
+                } else {
+                    Complex::ONE
+                };
+                let dim = fx.hs.sectors[s].dim;
+                (0..dim * dim)
+                    .map(|q| {
+                        let stock = match &anchor {
+                            Anchor::JLower(_) => sig_ref[s].less.raw_block_at(j, n)[q],
+                            Anchor::Tau(_) => {
+                                sig_ref[s].lmix.raw_block_at(n, fx.ntau as i64 - 24)[q]
+                            }
+                            _ => unreachable!(),
+                        };
+                        (
+                            (mach_sum[s][q] * sg - stock).abs() / stock.abs().max(1e-9),
+                            (dir_sum[s][q] * sg - stock).abs() / stock.abs().max(1e-9),
+                        )
+                    })
+                    .fold((0.0f64, 0.0f64), |a, b| (a.0.max(b.0), a.1.max(b.1)))
+            })
+            .fold((0.0f64, 0.0f64), |a, b| (a.0.max(b.0), a.1.max(b.1)));
+        eprintln!(
+            "m2 THREE-WAY {anchor:?}: machinery-vs-stock {mach_worst:.3e} | direct-vs-stock {dir_worst:.3e}"
+        );
+    }
+}
+
+
+#[test]
+#[ignore]
+fn xca_m3_les_mix_cuts_direct_verdict() {
+    // VERDICT: per-cut comparison of the m=3 block-cut machinery vs
+    // the raw-data direct transcription. The m=2 calibration pins the
+    // transcription; every chord class only m>=3 reaches ((0,0),(1,1),
+    // (2,2),(0,1),(0,2),(1,2) and their mixed phase-reference
+    // combinations) is adjudicated here. Diagnostic only for now -
+    // after the machinery is corrected this becomes the hard gate.
+    // Run in release:
+    //   cargo test --release --lib xca_m3_les_mix_cuts_direct_verdict \
+    //     -- --ignored --nocapture
+    let fx = setup_2b();
+    let pp_ints = fx.pp_ints();
+    let fits = fx.fits_npoles(2);
+    let integ = Integrator::new(KT2);
+    let dtau2 = BETA2 / fx.ntau as f64;
+    let (n, j) = (20i64, 10i64);
+    let proj: Vec<_> = (0..pp_ints.len())
+        .map(|c| {
+            super::fit::csoe_project_all(
+                pp_ints[c].delta,
+                &fits[c],
+                BETA2,
+                dtau2,
+                fx.h,
+                fx.nt,
+                fx.ntau,
+            )
+        })
+        .collect();
+    let chans = super::boson_rt::chans_with_bath(&pp_ints, None);
+    let topos = crate::xca::topology::connected_pairings(3);
+    // representative channel subset (the full 8^3 odometer is too
+    // slow for the raw-data recursion; these cover all-forward,
+    // all-backward and mixed assignments across line positions)
+    let cs_sets: Vec<Vec<usize>> = vec![
+        vec![0, 2, 0],
+        vec![1, 3, 1],
+        vec![2, 0, 2],
+        vec![3, 1, 3],
+        vec![0, 2, 1],
+        vec![1, 3, 0],
+        vec![0, 1, 2],
+        vec![4, 5, 6],
+    ];
+    use super::evalfam2::Anchor;
+    let msign = -1.0f64;
+    // HARD GATE after the chord fixes: every cut agrees with the
+    // raw-data transcription at the fit-reconstruction level (the
+    // same deviation class the m=2 stock-anchored cuts show; the
+    // pre-fix state sat at O(1) on 14 of 20 cuts)
+    let mut failures: Vec<String> = Vec::new();
+    for anchor in [Anchor::JLower(j), Anchor::Tau(24)] {
+        for cut in super::evalfam2::families(3, &anchor) {
+            let all_i = cut.nl == 0 && cut.ni == 4 && cut.nr == 0;
+            let mut worst = 0.0f64;
+            let mut desc = String::new();
+            let mut worst_rev = 0.0f64;
+            for topo in &topos {
+                for cs in &cs_sets {
+                    for s0 in 0..fx.hs.ns() {
+                        let Some(chain) = super::boson_rt::build_rt_chain_mixed_m(
+                            &fx.hs,
+                            &topo.pairs,
+                            &cs,
+                            &chans,
+                            s0,
+                        ) else {
+                            continue;
+                        };
+                        let mut stat = 1.0f64;
+                        for &c in cs {
+                            if pp_ints[c].backward {
+                                stat *= -1.0;
+                            }
+                        }
+                        let fac = Complex::new(msign * stat * topo.parity, 0.0);
+                        let mut sep = kadanoffbaym::linalg::DenseMat::zeros_shape(
+                            fx.hs.sectors[s0].dim,
+                            fx.hs.sectors[s0].dim,
+                        );
+                        let mut combo = vec![0usize; 3];
+                        loop {
+                            let v = super::evalfam2m::eval_cut_m(
+                                3,
+                                &cut,
+                                &anchor,
+                                &chain,
+                                &topo.pairs,
+                                &cs,
+                                &combo,
+                                &proj,
+                                &pp_ints,
+                                None,
+                                &fx.pp_g,
+                                n,
+                                fx.h,
+                                BETA2,
+                                dtau2,
+                                KT2,
+                                &integ,
+                            );
+                            for q in 0..sep.len() {
+                                sep.raw_mut()[q] += v.raw()[q];
+                            }
+                            let mut idx = 0;
+                            let mut wrapped = false;
+                            loop {
+                                if idx == 3 {
+                                    wrapped = true;
+                                    break;
+                                }
+                                combo[idx] += 1;
+                                if combo[idx] < proj[cs[idx]].poles.len() {
+                                    break;
+                                }
+                                combo[idx] = 0;
+                                idx += 1;
+                            }
+                            if wrapped {
+                                break;
+                            }
+                        }
+                        let dir = direct_cut_m(
+                            3,
+                            &cut,
+                            &anchor,
+                            &chain,
+                            &topo.pairs,
+                            &cs,
+                            &pp_ints,
+                            &fx.pp_g,
+                            n,
+                            fx.h,
+                            dtau2,
+                            &integ,
+                        );
+                        let dir_rev = if all_i && matches!(anchor, Anchor::JLower(_)) {
+                            Some(direct_cut_m_all_i_rev(
+                                3,
+                                &cut,
+                                &anchor,
+                                &chain,
+                                &topo.pairs,
+                                &cs,
+                                &pp_ints,
+                                &fx.pp_g,
+                                n,
+                                fx.h,
+                                dtau2,
+                                &integ,
+                            ))
+                        } else {
+                            None
+                        };
+                        for q in 0..sep.len() {
+                            let want = fac * sep.raw()[q];
+                            let got = fac * dir.raw()[q];
+                            let denom = want.abs().max(got.abs());
+                            if denom > 1.0e-9 {
+                                let dev = (want - got).abs() / denom;
+                                if dev > worst {
+                                    worst = dev;
+                                    desc = format!(
+                                        "topo {:?} cs {:?} s0 {s0} elem {q}: sep ({:+.6e},{:+.6e}) dir ({:+.6e},{:+.6e})",
+                                        topo.pairs, cs, want.re, want.im, got.re, got.im
+                                    );
+                                }
+                            }
+                            if let Some(drv) = &dir_rev {
+                                let got_r = fac * drv.raw()[q];
+                                let denom = want.abs().max(got_r.abs());
+                                if denom > 1.0e-9 {
+                                    worst_rev = worst_rev.max((want - got_r).abs() / denom);
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            eprintln!(
+                "m3 {anchor:?} cut ({},{},{}): worst {worst:.3e}{revpart} @ {desc}",
+                cut.nl,
+                cut.ni,
+                cut.nr,
+                revpart = if all_i && matches!(anchor, Anchor::JLower(_)) {
+                    format!(" | rev-form {worst_rev:.3e}")
+                } else {
+                    String::new()
+                }
+            );
+            if worst > 2.0e-2 {
+                failures.push(format!(
+                    "{anchor:?} ({},{},{}): {worst:.3e} @ {desc}",
+                    cut.nl, cut.ni, cut.nr
+                ));
+            }
+        }
+    }
+    assert!(
+        failures.is_empty(),
+        "m=3 les/mix cuts vs raw-data direct transcription: {failures:?}"
+    );
+}
+
+#[test]
+#[ignore]
+fn xca_m3_phase_discriminant() {
+    // SURGICAL probe: per-POLE-COMBO ratio machinery/direct for one
+    // (cut, topology, cs, s0) case each. The direct value is
+    // combo-independent (raw data); the per-combo machinery ratio
+    // isolates the single-pole functional form of every discrepancy
+    // (a mixed phase reference shows as e^{-i w j h}, a kernel
+    // normalization as a w-only scale, an orientation error as +-i).
+    let fx = setup_2b();
+    let pp_ints = fx.pp_ints();
+    let fits = fx.fits_npoles(2);
+    let integ = Integrator::new(KT2);
+    let dtau2 = BETA2 / fx.ntau as f64;
+    let (n, j) = (20i64, 10i64);
+    let proj: Vec<_> = (0..pp_ints.len())
+        .map(|c| {
+            super::fit::csoe_project_all(
+                pp_ints[c].delta,
+                &fits[c],
+                BETA2,
+                dtau2,
+                fx.h,
+                fx.nt,
+                fx.ntau,
+            )
+        })
+        .collect();
+    let chans = super::boson_rt::chans_with_bath(&pp_ints, None);
+    let topos = crate::xca::topology::connected_pairings(3);
+    use super::evalfam2::Anchor;
+    // (anchor, cut, topology pairs, cs, s0) diagnostic cases
+    struct Case {
+        anchor: Anchor,
+        cut: (usize, usize, usize),
+        topo: usize,
+        cs: [usize; 3],
+        s0: usize,
+        note: &'static str,
+    }
+    let cases = [
+        Case {
+            anchor: Anchor::JLower(j),
+            cut: (0, 3, 1),
+            topo: 2,
+            cs: [2, 0, 2],
+            s0: 5,
+            note: "reflected mixed_031, (3,1)/(1,5)/(1,2)",
+        },
+        Case {
+            anchor: Anchor::JLower(j),
+            cut: (0, 2, 2),
+            topo: 2,
+            cs: [2, 0, 2],
+            s0: 5,
+            note: "reflected mixed_022",
+        },
+        Case {
+            anchor: Anchor::JLower(j),
+            cut: (0, 4, 0),
+            topo: 3,
+            cs: [4, 5, 6],
+            s0: 7,
+            note: "all-I sanity (should stay ~1)",
+        },
+        Case {
+            anchor: Anchor::JLower(j),
+            cut: (3, 1, 0),
+            topo: 1,
+            cs: [4, 5, 6],
+            s0: 5,
+            note: "unreflected sanity (should stay ~1)",
+        },
+        Case {
+            anchor: Anchor::Tau(24),
+            cut: (0, 4, 0),
+            topo: 2,
+            cs: [0, 2, 1],
+            s0: 5,
+            note: "tau reflected all-I, (4,1)/(1,1)",
+        },
+        Case {
+            anchor: Anchor::Tau(24),
+            cut: (0, 2, 2),
+            topo: 0,
+            cs: [3, 1, 3],
+            s0: 1,
+            note: "tau reflected 022, (4,1)/(1,2)/(2,5)",
+        },
+    ];
+    for case in &cases {
+        let anchor = case.anchor;
+        let cut = super::evalfam2::FamCut {
+            nl: case.cut.0,
+            ni: case.cut.1,
+            nr: case.cut.2,
+        };
+        let topo = &topos[case.topo];
+        let Some(chain) = super::boson_rt::build_rt_chain_mixed_m(
+            &fx.hs,
+            &topo.pairs,
+            &case.cs,
+            &chans,
+            case.s0,
+        ) else {
+            eprintln!("case {} : chain does not close", case.note);
+            continue;
+        };
+        let dir = direct_cut_m(
+            3,
+            &cut,
+            &anchor,
+            &chain,
+            &topo.pairs,
+            &case.cs,
+            &pp_ints,
+            &fx.pp_g,
+            n,
+            fx.h,
+            dtau2,
+            &integ,
+        );
+        eprintln!(
+            "=== {note} | anchor {anchor:?} cut {:?} topo {:?} cs {:?} s0 {} poles {:?}",
+            case.cut,
+            topo.pairs,
+            case.cs,
+            case.s0,
+            (0..3)
+                .map(|li| proj[case.cs[li]].poles.clone())
+                .collect::<Vec<_>>(),
+            note = case.note,
+        );
+        let mut combo = [0usize; 3];
+        loop {
+            let sep = super::evalfam2m::eval_cut_m(
+                3,
+                &cut,
+                &anchor,
+                &chain,
+                &topo.pairs,
+                &case.cs,
+                &combo,
+                &proj,
+                &pp_ints,
+                None,
+                &fx.pp_g,
+                n,
+                fx.h,
+                BETA2,
+                dtau2,
+                KT2,
+                &integ,
+            );
+            // per-element ratio on the largest direct element
+            let mut bq = 0usize;
+            let mut bmag = 0.0f64;
+            for q in 0..dir.len() {
+                let m = dir.raw()[q].abs();
+                if m > bmag {
+                    bmag = m;
+                    bq = q;
+                }
+            }
+            let ratio = sep.raw()[bq] / dir.raw()[bq];
+            eprintln!(
+                "  combo {combo:?}: sep ({:+.6e},{:+.6e}) dir ({:+.6e},{:+.6e}) ratio {ratio:+.6}  |ratio| {:.6}",
+                sep.raw()[bq].re,
+                sep.raw()[bq].im,
+                dir.raw()[bq].re,
+                dir.raw()[bq].im,
+                ratio.abs()
+            );
+            let mut idx = 0;
+            let mut wrapped = false;
+            loop {
+                if idx == 3 {
+                    wrapped = true;
+                    break;
+                }
+                combo[idx] += 1;
+                if combo[idx] < proj[case.cs[idx]].poles.len() {
+                    break;
+                }
+                combo[idx] = 0;
+                idx += 1;
+            }
+            if wrapped {
+                break;
+            }
+        }
+    }
+}
+
+#[test]
+#[ignore]
+fn xca_m3_tti_crossrow() {
+    // CROSS-ROW TTI probe: a static system satisfies
+    // Sigma^<(j, n) = Sigma^<(j - 1, n - 1) (les) and
+    // Sigma^mix(n, mu) is n-independent (mix). The direct
+    // transcription reads TTI-exact raw data, so its cross-row
+    // residual is quadrature-level; any machinery excess
+    // localizes the TTI-breaking convention per (anchor, cut).
+    let fx = setup_2b();
+    let pp_ints = fx.pp_ints();
+    let fits = fx.fits_npoles(2);
+    let integ = Integrator::new(KT2);
+    let dtau2 = BETA2 / fx.ntau as f64;
+    let (n, j) = (20i64, 10i64);
+    let proj: Vec<_> = (0..pp_ints.len())
+        .map(|c| {
+            super::fit::csoe_project_all(
+                pp_ints[c].delta,
+                &fits[c],
+                BETA2,
+                dtau2,
+                fx.h,
+                fx.nt,
+                fx.ntau,
+            )
+        })
+        .collect();
+    let chans = super::boson_rt::chans_with_bath(&pp_ints, None);
+    let topos = crate::xca::topology::connected_pairings(3);
+    use super::evalfam2::Anchor;
+    let cs_sets: Vec<Vec<usize>> = vec![
+        vec![0, 2, 1],
+        vec![0, 2, 2],
+        vec![2, 0, 2],
+        vec![4, 5, 6],
+        vec![4, 2, 5],
+        vec![3, 1, 3],
+        vec![1, 4, 2],
+        vec![5, 0, 6],
+    ];
+    // (anchor at the two evaluation points, n at the two points) -
+    // the FIRST_ROW measure: the m=3 increment at fixed separation
+    // must be row-consistent (lag: (0,1) vs (1,2); diagonal:
+    // (1,1) vs (2,2)); the dimer diagnostics show 4-6e-5 residuals
+    // here matching the drift scale
+    let configs: [(Anchor, Anchor, i64, i64); 2] = [
+        (Anchor::JLower(0), Anchor::JLower(1), 1, 2),
+        (Anchor::JLower(1), Anchor::JLower(2), 1, 2),
+    ];
+    for (anchor, anchor_sh, nn, nn_sh) in configs {
+        // TTI holds for the CUT-SUMMED self-energy row, not per
+        // family (the branch decomposition is absolute-window)
+        let mut eval_sum = |anchor: &Anchor, nn: i64| -> Vec<Vec<Complex>> {
+            let mut per_s0: Vec<Vec<Complex>> = vec![Vec::new(); fx.hs.ns()];
+            for s0 in 0..fx.hs.ns() {
+                per_s0[s0] = vec![Complex::ZERO; fx.hs.sectors[s0].dim * fx.hs.sectors[s0].dim];
+            }
+            for cut in super::evalfam2::families(3, anchor) {
+                for topo in &topos {
+                    for cs in &cs_sets {
+                        for s0 in 0..fx.hs.ns() {
+                            let Some(chain) = super::boson_rt::build_rt_chain_mixed_m(
+                                &fx.hs,
+                                &topo.pairs,
+                                cs,
+                                &chans,
+                                s0,
+                            ) else {
+                                continue;
+                            };
+                            let mut stat = 1.0f64;
+                            for &c in cs {
+                                if pp_ints[c].backward {
+                                    stat *= -1.0;
+                                }
+                            }
+                            let fac = Complex::new(-stat * topo.parity, 0.0);
+                            let mut sep = kadanoffbaym::linalg::DenseMat::zeros_shape(
+                                fx.hs.sectors[s0].dim,
+                                fx.hs.sectors[s0].dim,
+                            );
+                            let mut combo = vec![0usize; 3];
+                            loop {
+                                let v = super::evalfam2m::eval_cut_m(
+                                    3,
+                                    &cut,
+                                    anchor,
+                                    &chain,
+                                    &topo.pairs,
+                                    cs,
+                                    &combo,
+                                    &proj,
+                                    &pp_ints,
+                                    None,
+                                    &fx.pp_g,
+                                    nn,
+                                    fx.h,
+                                    BETA2,
+                                    dtau2,
+                                    KT2,
+                                    &integ,
+                                );
+                                for q in 0..sep.len() {
+                                    sep.raw_mut()[q] += v.raw()[q];
+                                }
+                                let mut idx = 0;
+                                let mut wrapped = false;
+                                loop {
+                                    if idx == 3 {
+                                        wrapped = true;
+                                        break;
+                                    }
+                                    combo[idx] += 1;
+                                    if combo[idx] < proj[cs[idx]].poles.len() {
+                                        break;
+                                    }
+                                    combo[idx] = 0;
+                                    idx += 1;
+                                }
+                                if wrapped {
+                                    break;
+                                }
+                            }
+                            for q in 0..per_s0[s0].len() {
+                                per_s0[s0][q] += fac * sep.raw()[q];
+                            }
+                        }
+                    }
+                }
+            }
+            per_s0
+        };
+        let mach_a = eval_sum(&anchor, nn);
+        let mach_b = eval_sum(&anchor_sh, nn_sh);
+        let mut dir_a: Vec<Vec<Complex>> = vec![vec![]; fx.hs.ns()];
+        let mut dir_b: Vec<Vec<Complex>> = vec![vec![]; fx.hs.ns()];
+        for cut in super::evalfam2::families(3, &anchor) {
+            for topo in &topos {
+                for cs in &cs_sets {
+                    for s0 in 0..fx.hs.ns() {
+                        let Some(chain) = super::boson_rt::build_rt_chain_mixed_m(
+                            &fx.hs,
+                            &topo.pairs,
+                            cs,
+                            &chans,
+                            s0,
+                        ) else {
+                            continue;
+                        };
+                        let mut stat = 1.0f64;
+                        for &c in cs {
+                            if pp_ints[c].backward {
+                                stat *= -1.0;
+                            }
+                        }
+                        let fac = Complex::new(-stat * topo.parity, 0.0);
+                        let va = direct_cut_m(
+                            3,
+                            &cut,
+                            &anchor,
+                            &chain,
+                            &topo.pairs,
+                            cs,
+                            &pp_ints,
+                            &fx.pp_g,
+                            nn,
+                            fx.h,
+                            dtau2,
+                            &integ,
+                        );
+                        let vb = direct_cut_m(
+                            3,
+                            &cut,
+                            &anchor_sh,
+                            &chain,
+                            &topo.pairs,
+                            cs,
+                            &pp_ints,
+                            &fx.pp_g,
+                            nn_sh,
+                            fx.h,
+                            dtau2,
+                            &integ,
+                        );
+                        if dir_a[s0].is_empty() {
+                            dir_a[s0] = vec![Complex::ZERO; va.len()];
+                            dir_b[s0] = vec![Complex::ZERO; vb.len()];
+                        }
+                        for q in 0..va.len() {
+                            dir_a[s0][q] += fac * va.raw()[q];
+                            dir_b[s0][q] += fac * vb.raw()[q];
+                        }
+                    }
+                }
+            }
+        }
+        let mut worst_mach = 0.0f64;
+        let mut worst_dir = 0.0f64;
+        let mut scale = 0.0f64;
+        let mut worst_desc = String::new();
+        for s0 in 0..fx.hs.ns() {
+            for q in 0..mach_a[s0].len() {
+                let ma = mach_a[s0][q];
+                let mb = mach_b[s0][q];
+                let da = dir_a[s0].get(q).copied().unwrap_or(Complex::ZERO);
+                let db = dir_b[s0].get(q).copied().unwrap_or(Complex::ZERO);
+                scale = scale.max(ma.abs()).max(da.abs());
+                let dm = (ma - mb).abs();
+                let dd = (da - db).abs();
+                if ma.abs() > 1e-10 || da.abs() > 1e-10 {
+                    if dm > worst_mach {
+                        worst_mach = dm;
+                        worst_desc = format!(
+                            "s{s0} q{q}: row {nn} ({:+.6e},{:+.6e}) vs row {nn_sh} ({:+.6e},{:+.6e})",
+                            ma.re,
+                            ma.im,
+                            mb.re,
+                            mb.im
+                        );
+                    }
+                    worst_dir = worst_dir.max(dd);
+                }
+            }
+        }
+        eprintln!(
+            "tti-sum {anchor:?}: mach {worst_mach:.3e} dir {worst_dir:.3e} (scale {scale:.3e}) worst @ {worst_desc}",
+        );
+    }
+}
+
+#[test]
+fn xca_fixture_data_tti_audit() {
+    // DATA-LEVEL TTI audit of the two-band fixture: every component
+    // the families read must be time-translation covariant (real
+    // arguments shift together; imaginary arguments stay). A failure
+    // here invalidates cross-row family probes on this fixture.
+    let fx = setup_2b();
+    let pp_ints = fx.pp_ints();
+    let (n, j) = (20i64, 10i64);
+    let mut worst_les = 0.0f64;
+    let mut worst_gtr = 0.0f64;
+    let mut worst_tv = 0.0f64;
+    let mut worst_vt = 0.0f64;
+    // hybridization deltas (raw bath data)
+    for (c, hyb) in pp_ints.iter().enumerate() {
+        let d = hyb.delta;
+        for t in 1..=n {
+            let a = super::les_c(d, j, t);
+            let b = super::les_c(d, j - 1, t - 1);
+            worst_les = worst_les.max((a - b).abs() / a.abs().max(b.abs()).max(1e-30));
+            let a = super::gtr_c(d, j, t);
+            let b = super::gtr_c(d, j - 1, t - 1);
+            worst_gtr = worst_gtr.max((a - b).abs() / a.abs().max(b.abs()).max(1e-30));
+            let a = super::tv_c(d, j, t);
+            let b = super::tv_c(d, j - 1, t);
+            worst_tv = worst_tv.max((a - b).abs() / a.abs().max(b.abs()).max(1e-30));
+            let a = super::vt_c(d, t, n);
+            let b = super::vt_c(d, t - 1, n - 1);
+            worst_vt = worst_vt.max((a - b).abs() / a.abs().max(b.abs()).max(1e-30));
+        }
+        eprintln!("delta ch {c}: les {worst_les:.3e} gtr {worst_gtr:.3e} tv {worst_tv:.3e} vt {worst_vt:.3e}");
+        worst_les = 0.0;
+        worst_gtr = 0.0;
+        worst_tv = 0.0;
+        worst_vt = 0.0;
+    }
+    // propagator blocks (sector 0 and 5)
+    for s in [0usize, 5usize] {
+        let g = &fx.pp_g[s];
+        let mut wl = 0.0f64;
+        let mut wg = 0.0f64;
+        for t in 1..=n {
+            let a = rt_les_blk(g, j, t).raw()[0];
+            let b = rt_les_blk(g, j - 1, t - 1).raw()[0];
+            wl = wl.max((a - b).abs() / a.abs().max(b.abs()).max(1e-30));
+            let a = rt_gtr_blk(g, j, t).raw()[0];
+            let b = rt_gtr_blk(g, j - 1, t - 1).raw()[0];
+            wg = wg.max((a - b).abs() / a.abs().max(b.abs()).max(1e-30));
+        }
+        eprintln!("pp_g s{s}: les {wl:.3e} gtr {wg:.3e}");
+    }
+}
+
+#[test]
+fn xca_stock_tti_covariance() {
+    // STOCK row-covariance reference: the C++-gated OCA kernels drift
+    // at 1.9e-8, so their les rows must be translation covariant to
+    // ~1e-8. Comparing this against the family evaluations (which
+    // share chain_weight) isolates the discretization-scheme gap as
+    // the row-non-covariance source.
+    let fx = setup_2b();
+    let pp_ints = fx.pp_ints();
+    let integ = Integrator::new(KT2);
+    let dtau2 = BETA2 / fx.ntau as f64;
+    let channels = crate::oca::channels_with_bath(&pp_ints, None);
+    let diagrams = crate::oca::build_sigma_diagrams_oca_channels(&fx.hs, &channels);
+    let build = |nmax: i64| -> Vec<kadanoffbaym::types::PseudoGreen> {
+        let mut sig = fx.sigma_buffers();
+        // production usage: accumulate ALL rows up to nmax (a single
+        // tstp call may leave entries the row fills later unwritten)
+        for tstp in 0..=nmax {
+            for d in &diagrams {
+                crate::oca::add_sigma_tstp_oca(tstp, d, &fx.pp_g, BETA2, fx.h, KT2, &integ, &mut sig);
+            }
+        }
+        sig
+    };
+    let sig20 = build(20);
+    let sig19 = build(19);
+    let mut worst = 0.0f64;
+    let mut scale = 0.0f64;
+    let mut desc = String::new();
+    for s in 0..sig20.len() {
+        let dim = fx.hs.sectors[s].dim;
+        for jj in 1..=10i64 {
+            let a = sig20[s].less.raw_block_at(jj, 20).to_vec();
+            let b = sig19[s].less.raw_block_at(jj - 1, 19).to_vec();
+            for q in 0..dim * dim {
+                scale = scale.max(a[q].abs());
+                let dev = (a[q] - b[q]).abs();
+                if dev > worst {
+                    worst = dev;
+                    desc = format!("s{s} j{jj} q{q}");
+                }
+            }
+        }
+    }
+    eprintln!(
+        "stock les row covariance: worst {worst:.3e} (scale {scale:.3e}, rel {:.3e}) @ {desc}",
+        worst / scale.max(1e-30)
+    );
+    let _ = dtau2;
+}
+
+// ---------------------------------------------------------------------------
+// PER-CUT cross-row probe at the FIRST_ROW measure points. The dimer
+// decomposition (XCA_MCUT + NQIST_TTI_FIRST_ROW) localizes the m=3
+// increment's row inconsistency to the (0,3,1)/(1,2,1)/(1,3,0) trio
+// at ~4.5e-5 each (all other 12 cuts <= 1.4e-6). This reproduces the
+// measurement on the analytic fixture with the direct transcription
+// as the row-consistency reference: if the machinery's per-cut row
+// residual reproduces while the direct's stays quadrature-level, the
+// defect is structural (data-independent).
+// ---------------------------------------------------------------------------
+#[test]
+#[ignore]
+fn xca_m3_tti_percut() {
+    let fx = setup_2b();
+    let pp_ints = fx.pp_ints();
+    let fits = fx.fits_npoles(2);
+    let integ = Integrator::new(KT2);
+    let dtau2 = BETA2 / fx.ntau as f64;
+    let proj: Vec<_> = (0..pp_ints.len())
+        .map(|c| {
+            super::fit::csoe_project_all(
+                pp_ints[c].delta,
+                &fits[c],
+                BETA2,
+                dtau2,
+                fx.h,
+                fx.nt,
+                fx.ntau,
+            )
+        })
+        .collect();
+    let chans = super::boson_rt::chans_with_bath(&pp_ints, None);
+    let topos = crate::xca::topology::connected_pairings(3);
+    use super::evalfam2::Anchor;
+    let cs_sets: Vec<Vec<usize>> = vec![
+        vec![0, 2, 1],
+        vec![0, 2, 2],
+        vec![2, 0, 2],
+        vec![4, 5, 6],
+        vec![4, 2, 5],
+        vec![3, 1, 3],
+        vec![1, 4, 2],
+        vec![5, 0, 6],
+    ];
+    let configs: [(Anchor, Anchor, i64, i64); 2] = [
+        (Anchor::JLower(0), Anchor::JLower(1), 1, 2),
+        (Anchor::JLower(1), Anchor::JLower(2), 1, 2),
+    ];
+    for (anchor, anchor_sh, nn, nn_sh) in configs {
+        for cut in super::evalfam2::families(3, &anchor) {
+            let mut worst_mach = 0.0f64;
+            let mut worst_dir = 0.0f64;
+            let mut scale = 0.0f64;
+            for topo in &topos {
+                for cs in &cs_sets {
+                    for s0 in 0..fx.hs.ns() {
+                        let Some(chain) = super::boson_rt::build_rt_chain_mixed_m(
+                            &fx.hs,
+                            &topo.pairs,
+                            cs,
+                            &chans,
+                            s0,
+                        ) else {
+                            continue;
+                        };
+                        let mut stat = 1.0f64;
+                        for &c in cs {
+                            if pp_ints[c].backward {
+                                stat *= -1.0;
+                            }
+                        }
+                        let fac = Complex::new(-stat * topo.parity, 0.0);
+                        let nel = fx.hs.sectors[s0].dim * fx.hs.sectors[s0].dim;
+                        let mut ma = vec![Complex::ZERO; nel];
+                        let mut mb = vec![Complex::ZERO; nel];
+                        let mut combo = vec![0usize; 3];
+                        loop {
+                            let va = super::evalfam2m::eval_cut_m(
+                                3, &cut, &anchor, &chain, &topo.pairs, cs, &combo, &proj,
+                                &pp_ints, None, &fx.pp_g, nn, fx.h, BETA2, dtau2, KT2, &integ,
+                            );
+                            let vb = super::evalfam2m::eval_cut_m(
+                                3, &cut, &anchor_sh, &chain, &topo.pairs, cs, &combo, &proj,
+                                &pp_ints, None, &fx.pp_g, nn_sh, fx.h, BETA2, dtau2, KT2, &integ,
+                            );
+                            for q in 0..nel {
+                                ma[q] += va.raw()[q];
+                                mb[q] += vb.raw()[q];
+                            }
+                            let mut idx = 0;
+                            let mut wrapped = false;
+                            loop {
+                                if idx == 3 {
+                                    wrapped = true;
+                                    break;
+                                }
+                                combo[idx] += 1;
+                                if combo[idx] < proj[cs[idx]].poles.len() {
+                                    break;
+                                }
+                                combo[idx] = 0;
+                                idx += 1;
+                            }
+                            if wrapped {
+                                break;
+                            }
+                        }
+                        let da = direct_cut_m(
+                            3, &cut, &anchor, &chain, &topo.pairs, cs, &pp_ints, &fx.pp_g,
+                            nn, fx.h, dtau2, &integ,
+                        );
+                        let db = direct_cut_m(
+                            3, &cut, &anchor_sh, &chain, &topo.pairs, cs, &pp_ints, &fx.pp_g,
+                            nn_sh, fx.h, dtau2, &integ,
+                        );
+                        for q in 0..nel {
+                            let a = fac * ma[q];
+                            let b = fac * mb[q];
+                            let dda = fac * da.raw()[q];
+                            let ddb = fac * db.raw()[q];
+                            if a.abs() > 1e-10 || dda.abs() > 1e-10 {
+                                scale = scale.max(a.abs()).max(dda.abs());
+                                worst_mach = worst_mach.max((a - b).abs());
+                                worst_dir = worst_dir.max((dda - ddb).abs());
+                            }
+                        }
+                    }
+                }
+            }
+            eprintln!(
+                "percut {anchor:?} ({},{},{}): mach {worst_mach:.3e} dir {worst_dir:.3e} (scale {scale:.3e})",
+                cut.nl, cut.ni, cut.nr
+            );
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Mini-dimer replication: the drift-driver adjudication on the REAL
+// solved propagators. Replicates the stationarity setup (two-band
+// Kanamori U=2 J=0.4 delta=0.8, up-only two-level bath V=0.3@+0.5 /
+// V=0.35@-0.8, equilibrium + set_t0 + order-2 startup rows 0-1) and
+// compares the machinery vs the direct transcription PER CUT at the
+// FIRST_ROW measure points. The dimer decomposition (XCA_MCUT)
+// localizes the row inconsistency to the (0,3,1)/(1,2,1)/(1,3,0)
+// trio at ~4.5e-5: if the machinery is dirty while the direct stays
+// clean on the same propagators the defect is in the chord machinery
+// (fixable); if both are dirty the shared walk discretization is the
+// limit; if they disagree at a single row the dimer-data chord
+// conventions (the 2-pole production fits) are the suspect.
+// ---------------------------------------------------------------------------
+#[test]
+#[ignore]
+fn xca_m3_dimer_percut_adjudication() {
+    use kadanoffbaym::types::TimeFunction;
+
+    let (nt_rt, ntau, beta, h_rt) = (6usize, 24usize, 5.0f64, 0.05f64);
+    let hs = crate::hilbert::build(2, crate::hilbert::SectorClass::SpinResolved);
+    let ham = crate::hamilton::LocalHamiltonian::TwoBandKanamori {
+        mu: 0.0,
+        u: vec![2.0; nt_rt + 2],
+        j: vec![0.4; nt_rt + 2],
+        delta: vec![0.8; nt_rt + 2],
+        bz: vec![0.0; nt_rt + 2],
+    };
+    let contour = Contour::new(
+        nt_rt as i64,
+        ntau as i64,
+        1,
+        1,
+        h_rt * nt_rt as f64,
+        beta,
+    );
+    let mk_level = |eps: f64| -> kadanoffbaym::types::ContourGreen {
+        let mut g = kadanoffbaym::types::ContourGreen::new(&contour, Sign::Fermi, Complex::ZERO);
+        let sig = kadanoffbaym::types::ContourGreen::new(&contour, Sign::Fermi, Complex::ZERO);
+        let mut hf = TimeFunction::zeros(nt_rt, 1, 1);
+        for tstp in -1..=(nt_rt as i64) {
+            hf.block_mut(tstp)[0] = Complex::new(eps, 0.0);
+        }
+        let kt = 5i64;
+        kadanoffbaym::dyson::dyson_mat(
+            &mut g,
+            &sig,
+            0.0,
+            &hf,
+            beta,
+            kt,
+            kadanoffbaym::base::MatsubaraMethod::Fixpoint,
+            true,
+            None,
+            1e-12,
+        );
+        kadanoffbaym::dyson::dyson_start(&mut g, 0.0, &hf, &sig, beta, h_rt, kt);
+        for tstp in (kt + 1)..=(nt_rt as i64) {
+            kadanoffbaym::dyson::dyson_timestep(tstp, &mut g, 0.0, &hf, &sig, beta, h_rt, kt);
+        }
+        g
+    };
+    let scale_green = |g: &kadanoffbaym::types::ContourGreen,
+                       w: f64|
+     -> kadanoffbaym::types::ContourGreen {
+        let wc = Complex::new(w, 0.0);
+        let mut out =
+            kadanoffbaym::types::ContourGreen::new(&contour, Sign::Fermi, Complex::ZERO);
+        for n in 0..=(nt_rt as i64) {
+            for jj in 0..=n {
+                out.ret.block_mut(out.ret.idx(n, jj))[0] =
+                    g.ret.block(g.ret.idx(n, jj))[0] * wc;
+                out.less.block_mut(out.less.idx(jj, n))[0] =
+                    g.less.block(g.less.idx(jj, n))[0] * wc;
+            }
+            for m in 0..=(ntau as i64) {
+                out.lmix.raw_block_at_mut(n, m)[0] = g.lmix.raw_block_at(n, m)[0] * wc;
+            }
+        }
+        for m in 0..=(ntau as i64) {
+            out.mat.block_mut(m as usize)[0] = g.mat.block(m as usize)[0] * wc;
+        }
+        out
+    };
+    let mk_pair = |lvl: &kadanoffbaym::types::ContourGreen,
+                   v: f64|
+     -> (
+        kadanoffbaym::types::ContourGreen,
+        kadanoffbaym::types::ContourGreen,
+    ) {
+        let fwd = scale_green(lvl, v * v);
+        let mut cc =
+            kadanoffbaym::types::ContourGreen::new(&contour, Sign::Fermi, Complex::ZERO);
+        crate::dmft::set_bwd_from_fwd_mat(&mut cc, &fwd);
+        for t in 0..=(nt_rt as i64) {
+            crate::dmft::set_bwd_from_fwd_tstp(t, &mut cc, &fwd);
+        }
+        (fwd, cc)
+    };
+    let lvl1 = mk_level(0.5);
+    let lvl2 = mk_level(-0.8);
+    let (d1, d1c) = mk_pair(&lvl1, 0.3);
+    let (d2, d2c) = mk_pair(&lvl2, 0.35);
+    let c0a = hs.flavor(0, 0, false);
+    let c0c = hs.flavor(0, 0, true);
+    let c1a = hs.flavor(1, 0, false);
+    let c1c = hs.flavor(1, 0, true);
+    let pp_ints = [
+        Hybridization {
+            delta: &d1,
+            op_cre_fl: c0c,
+            op_ann_fl: c0a,
+            fermion: true,
+            backward: false,
+        },
+        Hybridization {
+            delta: &d1c,
+            op_cre_fl: c0a,
+            op_ann_fl: c0c,
+            fermion: true,
+            backward: true,
+        },
+        Hybridization {
+            delta: &d2,
+            op_cre_fl: c1c,
+            op_ann_fl: c1a,
+            fermion: true,
+            backward: false,
+        },
+        Hybridization {
+            delta: &d2c,
+            op_cre_fl: c1a,
+            op_ann_fl: c1c,
+            fermion: true,
+            backward: true,
+        },
+    ];
+    // DATA-LEVEL audit: the dimer deltas (dyson-generated forward +
+    // set_bwd_from_fwd backward) vs the analytic fixture conventions
+    // (fwd: ret=gq, less=lq, lmix=tv, mat=mt; bwd: ret=lq, less=gq,
+    // lmix=conj(tv), mat=-mt). Any deviation breaks the projection
+    // consumers (m>=3 chords) while the raw readers stay exact.
+    {
+        let dtau = beta / ntau as f64;
+        let f_b = |eps: f64| 1.0 / (1.0 + (beta * eps).exp());
+        let analytic = |d: &kadanoffbaym::types::ContourGreen,
+                        eps: f64,
+                        v2: f64,
+                        back: bool|
+         -> Vec<f64> {
+            // [ret_diff, less_diff, lmix_diff, mat_diff] maxima
+            let mut out = [0.0f64; 4];
+            for nn in 0..=(nt_rt as i64) {
+                for jj in 0..=nn {
+                    let dt = h_rt * (nn - jj) as f64;
+                    let e = (-Complex::I * eps * dt).exp();
+                    let gq = Complex::new(0.0, -1.0) * v2 * (1.0 - f_b(eps)) * e;
+                    let lq = Complex::new(0.0, 1.0) * v2 * f_b(eps) * e;
+                    let want_ret = if back { lq } else { gq };
+                    let want_less = if back { gq } else { lq };
+                    out[0] = out[0].max((d.ret.block(d.ret.idx(nn, jj))[0] - want_ret).abs());
+                    out[1] = out[1].max((d.less.block(d.less.idx(jj, nn))[0] - want_less).abs());
+                }
+                for m in 0..=(ntau as i64) {
+                    let tau = dtau * m as f64;
+                    let e = (-Complex::I * eps * h_rt * nn as f64).exp();
+                    let tv =
+                        Complex::new(0.0, 1.0) * v2 * (1.0 - f_b(eps)) * e
+                            * Complex::new((-eps * tau).exp(), 0.0);
+                    let want_lmix = if back { tv.conj() } else { tv };
+                    out[2] = out[2].max((d.lmix.raw_block_at(nn, m)[0] - want_lmix).abs());
+                    let mt = -v2 * (-eps * (beta - tau)).exp() / (1.0 + (-beta * eps).exp());
+                    let want_mat = if back { -mt } else { mt };
+                    out[3] = out[3]
+                        .max((d.mat.block(m as usize)[0] - Complex::new(want_mat, 0.0)).abs());
+                }
+            }
+            out.to_vec()
+        };
+        eprintln!(
+            "dimer-delta audit bath1 fwd [ret,less,lmix,mat] {:?}",
+            analytic(&d1, 0.5, 0.09, false)
+        );
+        eprintln!(
+            "dimer-delta audit bath1 bwd [ret,less,lmix,mat] {:?}",
+            analytic(&d1c, 0.5, 0.09, true)
+        );
+        eprintln!(
+            "dimer-delta audit bath2 fwd [ret,less,lmix,mat] {:?}",
+            analytic(&d2, -0.8, 0.1225, false)
+        );
+        eprintln!(
+            "dimer-delta audit bath2 bwd [ret,less,lmix,mat] {:?}",
+            analytic(&d2c, -0.8, 0.1225, true)
+        );
+        // TWO-MATE hypothesis check: the TRUE lmix column should be
+        // the KMS-complete form A.e^{-eps*tau} + B.e^{eps*(tau-beta)}
+        // (the fixture's single-exponential fill is the simplification
+        // the fermion chord factorization was validated on). Solve the
+        // 2x2 per column and report the residual.
+        for (name, d, eps) in [("bath1", &d1, 0.5f64), ("bath2", &d2, -0.8f64)] {
+            let mut worst = 0.0f64;
+            let mut worst_scale = 0.0f64;
+            for nn in 1..=(nt_rt as i64) {
+                let mut m11 = 0.0;
+                let mut m12 = 0.0;
+                let mut m22 = 0.0;
+                let mut r1r = 0.0;
+                let mut r1i = 0.0;
+                let mut r2r = 0.0;
+                let mut r2i = 0.0;
+                let f1 = |tau: f64| (-eps * tau).exp();
+                let f2 = |tau: f64| (eps * (tau - beta)).exp();
+                for mm in 0..=(ntau as i64) {
+                    let tau = dtau * mm as f64;
+                    let z = d.lmix.raw_block_at(nn, mm)[0];
+                    let a = f1(tau);
+                    let b = f2(tau);
+                    m11 += a * a;
+                    m12 += a * b;
+                    m22 += b * b;
+                    r1r += a * z.re;
+                    r1i += a * z.im;
+                    r2r += b * z.re;
+                    r2i += b * z.im;
+                }
+                let det = m11 * m22 - m12 * m12;
+                let ar = (r1r * m22 - r2r * m12) / det;
+                let ai = (r1i * m22 - r2i * m12) / det;
+                let br = (r2r * m11 - r1r * m12) / det;
+                let bi = (r2i * m11 - r1i * m12) / det;
+                for mm in 0..=(ntau as i64) {
+                    let tau = dtau * mm as f64;
+                    let z = d.lmix.raw_block_at(nn, mm)[0];
+                    let rec =
+                        Complex::new(ar, ai) * f1(tau) + Complex::new(br, bi) * f2(tau);
+                    worst = worst.max((z - rec).abs());
+                                       worst_scale = worst_scale.max(z.abs());
+                }
+            }
+            eprintln!(
+                "dimer-delta two-mate {name}: lmix residual {worst:.3e} (scale {worst_scale:.3e})"
+            );
+        }
+    }
+    // solver: equilibrium + order-2 startup rows 0-1 (the FIRST_ROW
+    // propagator state the dimer diagnostic measures on)
+    let mut solver =
+        crate::solver::ImpuritySolver::new(nt_rt, ntau, beta, h_rt, 5, 3, hs.clone(), ham);
+    solver.rt_xca_m3 = true;
+    solver.rt_xca_poles = 2;
+    solver.solve_atomic();
+    for _ in 0..12 {
+        solver.pp_step(-1, &pp_ints);
+    }
+    solver.set_t0();
+    solver.order = 2;
+    solver.pp_step(0, &pp_ints);
+    solver.pp_step(1, &pp_ints);
+    // the production fits/projections (2-pole, as the dimer runs)
+    let integ = Integrator::new(5);
+    let dtau = beta / ntau as f64;
+    let fits = super::fit_channels_rt_ext(&pp_ints, h_rt, nt_rt, 2, crate::xca::W_MAX_DEFAULT);
+    let proj: Vec<_> = (0..pp_ints.len())
+        .map(|c| {
+            super::fit::csoe_project_all(
+                pp_ints[c].delta,
+                &fits[c],
+                beta,
+                dtau,
+                h_rt,
+                nt_rt,
+                ntau,
+            )
+        })
+        .collect();
+    let chans = super::boson_rt::chans_with_bath(&pp_ints, None);
+    let topos = crate::xca::topology::connected_pairings(3);
+    use super::evalfam2::Anchor;
+    let configs: [(Anchor, Anchor, i64, i64); 2] = [
+        (Anchor::JLower(0), Anchor::JLower(1), 1, 2),
+        (Anchor::JLower(1), Anchor::JLower(2), 1, 2),
+    ];
+    for (anchor, anchor_sh, nn, nn_sh) in configs {
+        for cut in super::evalfam2::families(3, &anchor) {
+            let mut worst_mach = 0.0f64;
+            let mut worst_dir = 0.0f64;
+            let mut worst_agree = 0.0f64;
+            let mut scale = 0.0f64;
+            for topo in &topos {
+                for cs in super::evalm::ChannelIter::new(chans.len(), 3) {
+                    for s0 in 0..hs.ns() {
+                        let Some(chain) = super::boson_rt::build_rt_chain_mixed_m(
+                            &hs,
+                            &topo.pairs,
+                            &cs,
+                            &chans,
+                            s0,
+                        ) else {
+                            continue;
+                        };
+                        let mut stat = 1.0f64;
+                        for &c in &cs {
+                            if pp_ints[c].backward {
+                                stat *= -1.0;
+                            }
+                        }
+                        let fac = Complex::new(-stat * topo.parity, 0.0);
+                        let nel = hs.sectors[s0].dim * hs.sectors[s0].dim;
+                        let mut ma = vec![Complex::ZERO; nel];
+                        let mut mb = vec![Complex::ZERO; nel];
+                        let mut combo = vec![0usize; 3];
+                        loop {
+                            let va = super::evalfam2m::eval_cut_m(
+                                3, &cut, &anchor, &chain, &topo.pairs, &cs, &combo, &proj,
+                                &pp_ints, None, &solver.pp_g, nn, h_rt, beta, dtau, 5, &integ,
+                            );
+                            let vb = super::evalfam2m::eval_cut_m(
+                                3, &cut, &anchor_sh, &chain, &topo.pairs, &cs, &combo, &proj,
+                                &pp_ints, None, &solver.pp_g, nn_sh, h_rt, beta, dtau, 5,
+                                &integ,
+                            );
+                            for q in 0..nel {
+                                ma[q] += va.raw()[q];
+                                mb[q] += vb.raw()[q];
+                            }
+                            let mut idx = 0;
+                            let mut wrapped = false;
+                            loop {
+                                if idx == 3 {
+                                    wrapped = true;
+                                    break;
+                                }
+                                combo[idx] += 1;
+                                if combo[idx] < proj[cs[idx]].poles.len() {
+                                    break;
+                                }
+                                combo[idx] = 0;
+                                idx += 1;
+                            }
+                            if wrapped {
+                                break;
+                            }
+                        }
+                        let da = direct_cut_m(
+                            3, &cut, &anchor, &chain, &topo.pairs, &cs, &pp_ints,
+                            &solver.pp_g, nn, h_rt, dtau, &integ,
+                        );
+                        let db = direct_cut_m(
+                            3, &cut, &anchor_sh, &chain, &topo.pairs, &cs, &pp_ints,
+                            &solver.pp_g, nn_sh, h_rt, dtau, &integ,
+                        );
+                        for q in 0..nel {
+                            let a = fac * ma[q];
+                            let b = fac * mb[q];
+                            let dda = fac * da.raw()[q];
+                            let ddb = fac * db.raw()[q];
+                            if a.abs() > 1e-10 || dda.abs() > 1e-10 {
+                                scale = scale.max(a.abs()).max(dda.abs());
+                                worst_mach = worst_mach.max((a - b).abs());
+                                worst_dir = worst_dir.max((dda - ddb).abs());
+                                worst_agree = worst_agree.max((a - dda).abs());
+                            }
+                        }
+                    }
+                }
+            }
+            eprintln!(
+                "dimer-percut {anchor:?} ({},{},{}): rowresid mach {worst_mach:.3e} dir {worst_dir:.3e} | agree {worst_agree:.3e} (scale {scale:.3e})",
+                cut.nl, cut.ni, cut.nr
+            );
+        }
+    }
+}
+
+#[test]
+#[ignore]
+fn xca_split_diag() {
+    let fx = setup_2b();
+    let fits = fx.fits_npoles(10);
+    let dtau = BETA2 / fx.ntau as f64;
+    for ix in 0..4 {
+        let f = &fits[2 * ix];
+        let g = &fx.deltas[ix];
+        let vals0: Vec<Complex> = (0..=fx.nt as i64)
+            .map(|t| g.lmix.raw_block_at(t, 0)[0])
+            .collect();
+        let valsb: Vec<Complex> = (0..=fx.nt as i64)
+            .map(|t| g.lmix.raw_block_at(t, fx.ntau as i64)[0])
+            .collect();
+        let col0 = super::fit::csoe_coeffs(&f.poles, fx.h, &vals0);
+        let colb = super::fit::csoe_coeffs(&f.poles, fx.h, &valsb);
+        for (l, &w) in f.poles.iter().enumerate() {
+            let st = (-w * BETA2).exp();
+            let den = 1.0 - st * st;
+            let b_ = (colb[l] - col0[l] * st) / den;
+            eprintln!(
+                "split ch{ix} p{l} w={w:+.4} st={st:.3e} den={den:.3e} col0={:+.3e}{:+.3e}i colb={:+.3e}{:+.3e}i b={:+.3e}{:+.3e}i",
+                col0[l].re,
+                col0[l].im,
+                colb[l].re,
+                colb[l].im,
+                b_.re,
+                b_.im
+            );
+        }
+    }
 }
