@@ -70,10 +70,10 @@ pub enum LocalHamiltonian {
     /// [`kanamori_offdiag_terms`] (same parameter meaning and
     /// `tstp + 1` time convention; requires `norb = 2` and
     /// `SpinResolved` sectors, which the off-diagonal strings
-    /// preserve). Validated for NCA/OCA and the ED reference; the
-    /// XCA backbone paths are untested with this variant. Pass to
-    /// the ED module without extra `terms` (the off-diagonal part
-    /// is already inside `sector_block`).
+    /// preserve). Validated for NCA/OCA, the ED reference, and the
+    /// two-band real-time XCA(3) dimer gate (`tests/xca_twoband_dimer`).
+    /// Pass to the ED module without extra `terms` (the off-diagonal
+    /// part is already inside `sector_block`).
     TwoBandKanamori {
         /// Chemical potential.
         mu: f64,

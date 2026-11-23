@@ -22,7 +22,8 @@
 // quadrature error (the calibration tests pin these conventions).
 
 use crate::hilbert::HilbertSpace;
-use crate::nca::{GfVertex, Hybridization};
+use crate::nca::GfVertex;
+use crate::oca::OcaChannel;
 use crate::xca::soe::SoeFit;
 use crate::xca::topology::connected_pairings;
 use kadanoffbaym::complex::Complex;
@@ -64,13 +65,14 @@ struct Chain<'a> {
 /// external creation operator of the measurement vertex, the `tau`
 /// vertex (partner of vertex 0) the external annihilation operator,
 /// and every interior vertex the operator of its line (earlier
-/// endpoint `op_ann_fl`, later endpoint `op_cre_fl`).
+/// endpoint `ann`, later endpoint `cre`; a fermion flavor or a
+/// sector-diagonal boson vertex, identical to the self-energy chains).
 #[allow(clippy::too_many_arguments)]
 fn build_chain<'a>(
     m: usize,
     pairs: &[(usize, usize)],
     channels: &[usize],
-    pp_ints: &[Hybridization],
+    pp_ints: &'a [OcaChannel<'a>],
     hs: &'a HilbertSpace,
     verts: &[GfVertex],
     vx: usize,
@@ -91,18 +93,20 @@ fn build_chain<'a>(
     let op_cre = &b1;
     // interior vertices 1..2m-1
     for v in 1..2 * m {
-        let flavor = if v == btau {
-            verts[vx].op_ann_fl
+        let (t, b) = if v == btau {
+            hs.ops[verts[vx].op_ann_fl]
+                .block(sectors[v])
+                .map(|(t, b)| (*t, b))?
         } else {
             let (li, later) = owner[v];
+            let ch = &pp_ints[channels[li]];
             if later {
-                pp_ints[channels[li]].op_cre_fl
+                ch.cre.block(hs, sectors[v])?
             } else {
-                pp_ints[channels[li]].op_ann_fl
+                ch.ann.block(hs, sectors[v])?
             }
         };
-        let (t, b) = hs.ops[flavor].block(sectors[v])?;
-        sectors[v + 1] = *t;
+        sectors[v + 1] = t;
         ops[v] = if v == btau { None } else { Some(b) };
     }
     if sectors[2 * m] != s0 {
@@ -325,10 +329,10 @@ struct Workspace {
 /// topologies, channel assignments and pole combinations into
 /// `out[vertex][i]`, `i = 0..=ntau`.
 #[allow(clippy::too_many_arguments)]
-pub(crate) fn add_gf_mat_xca(
+pub(crate) fn add_gf_mat_xca<'a>(
     m: usize,
-    hs: &HilbertSpace,
-    pp_ints: &[Hybridization],
+    hs: &'a HilbertSpace,
+    pp_ints: &'a [OcaChannel<'a>],
     fits: &[SoeFit],
     verts: &[GfVertex],
     grids: &Grids,

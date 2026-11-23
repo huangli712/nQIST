@@ -1,5 +1,9 @@
 # XCA 实时推广可行性——原型验证报告
 
+> 状态说明（2026-11-24）：本文是逐次开发日志，记录的是**当时**的结论。
+> 代码与测试才是当前能力的唯一事实来源；引用本文结论前请先核对
+> `src/solver.rs` 的调度与 `cargo test --release --lib` 的实际状态。
+
 日期：2026-11-18 · 地点：/tmp/nqist-rt（隔离副本，KB 固定于 git 快照 d996d61）· 对应 SYNTHESIS.md §5 三步路线
 
 ## 结论（一句话）
@@ -2020,3 +2024,30 @@ m=2 production + m=3 greater/les gates all green and untouched.
 - solver rt_xca_m3 matrix output routing (needs all three anchors)
 - the two-band 64-state ED dimer external anchor (evolution-level
   gate; the fixture already exists as tests/xca_twoband_dimer)
+
+## Session 2026-11-24 (ninth): XCA GF plumbing + real-time closure
+
+- `xca::gf` now resolves `OcaChannel` vertices (fermion flavor or
+  sector-diagonal boson block) instead of `Hybridization`, so
+  equilibrium XCA(order >= 3) + Holstein computes the
+  single-particle G with the boson channels instead of panicking on
+  `add_gf_mat_xca: one SOE fit per channel` (4 fermion channels vs
+  6 fits). The fermion-only G is bit-identical (external probe,
+  order 3, ntau = 16, 17 values).
+- `set_boson_bath` no longer requires `rt_xca_m3` at order >= 3; the
+  real-time-only gate remains in `update_sigma`
+  (`order <= 2 || rt_xca_m3`).
+- real-time `get_spgf` takes the NCA + OCA closure for every
+  `order >= 2` (it was `order == 2`, so order 3 silently dropped the
+  OCA vertex diagrams). Real-time m >= 3 single-particle diagrams
+  remain unimplemented: order >= 3 G = NCA + OCA with the XCA
+  self-energy entering through `pp_g`.
+- new gates: `xca_gf_holstein_m2_anchor_matches_oca_boson`
+  (7.2e-11, OCA-part scale 1.6e2; active, not ignored),
+  `equilibrium_xca_m3_holstein_gf_smoke`,
+  `realtime_gf_closure_same_for_order2_and_order3`.
+- P1 narrowing: the m = 2 boson GF matches at 7.2e-11 while the
+  m = 2 boson SIGMA anchor still deviates 0.518172988, so the open
+  XCA boson item is confined to the sigma-side diagram assembly,
+  not to the shared channel/chain resolution.
+- suite: 133 passed / 0 failed / 13 ignored (release).

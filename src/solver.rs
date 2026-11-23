@@ -83,8 +83,9 @@ pub struct ImpuritySolver {
     /// nca::set_sigma_tstp / add_boson_sigma_tstp.
     pub rt_xca_m1: bool,
     /// Enable real-time XCA orders >= 3 through the validated
-    /// block-cut component families (xca_rt::evalfam2). Fermionic
-    /// channels only.
+    /// block-cut component families (xca_rt::evalfam2). Fermion and
+    /// mixed boson channels are routed through evalfam2/evalfam2m;
+    /// the mixed boson R-cut calibration is still open.
     ///
     /// KNOWN BOUNDARIES (see xca_rt::evalfam2 for details):
     /// - Fit-resolvable grids: the fit window nt*h must resolve the
@@ -107,8 +108,12 @@ pub struct ImpuritySolver {
     pub ntau: usize,
     pub beta: f64,
     pub h: f64,
-    /// Order of the strong-coupling expansion: 1 = NCA, 2 = OCA.
+    /// Gregory quadrature order / start-up window length (blueprint
+    /// `kt`).
     pub kt: usize,
+    /// Order of the strong-coupling expansion: 1 = NCA, 2 = OCA,
+    /// >= 3 = XCA (the real-time path additionally needs
+    /// [`Self::rt_xca_m3`]).
     pub order: usize,
     pub hs: HilbertSpace,
     pub ham: LocalHamiltonian,
@@ -121,7 +126,8 @@ pub struct ImpuritySolver {
     /// Hamiltonian blocks `H_s(tstp)` per sector (blueprint
     /// `H` = list of `cntr::function`).
     pub h_func: Vec<TimeFunction>,
-    /// Optional static boson bath (Holstein/Hirsch vertex); NCA only
+    /// Optional static boson bath (Holstein/Hirsch vertex); it feeds
+    /// the NCA, OCA, and XCA channels at every order.
     pub boson: Option<crate::nca::BosonBath>,
     /// Density matrix per time step (`rho[tstp + 1][sector]`).
     pub rho: Vec<Vec<DenseMat>>,
@@ -190,19 +196,13 @@ impl ImpuritySolver {
     /// Attach (or detach) a static boson bath for Holstein/Hirsch
     /// calculations. The bath carries the coupling-scaled free phonon
     /// propagators and the diagonal vertex blocks; it contributes
-    /// additional NCA diagrams to the pseudo-particle self-energies
-    /// in [`Self::update_sigma`].
+    /// additional NCA/OCA/XCA diagrams to the pseudo-particle
+    /// self-energies in [`Self::update_sigma`] and to the
+    /// equilibrium single-particle Green's function.
     pub fn set_boson_bath(&mut self, bath: Option<crate::nca::BosonBath>) {
-        if bath.is_some() {
-            // order >= 3 rides the mixed rt-XCA path (anchored vs
-            // the stock at m=2; the m=3 anchors: separated==direct
-            // 5.4e-6, mixed greater 0.26%, les coupling classes
-            // 8/16/64 machine - memory #2575)
-            assert!(
-                self.order <= 2 || self.rt_xca_m3,
-                "set_boson_bath: order >= 3 requires rt_xca_m3"
-            );
-        }
+        // The real-time order >= 3 gate lives in `update_sigma`
+        // (`assert!(order <= 2 || rt_xca_m3)`); the equilibrium
+        // Matsubara path carries boson channels at every order.
         self.boson = bath;
     }
 
@@ -948,7 +948,7 @@ impl ImpuritySolver {
                 xca::gf::add_gf_mat_xca(
                     m,
                     &self.hs,
-                    pp_ints,
+                    &xca_channels,
                     &fits,
                     verts,
                     &grids,
@@ -982,7 +982,11 @@ impl ImpuritySolver {
             self.beta,
         );
         let mut out = nca::gf_tstp(&contour, tstp, &self.hs, &self.pp_g, verts);
-        if self.order == 2 {
+        // OCA vertex diagrams for every order >= 2. The m >= 3
+        // single-particle diagrams are not implemented in real time,
+        // so order >= 3 uses the same NCA + OCA closure (the XCA
+        // self-energy still enters through `pp_g`).
+        if self.order >= 2 {
             let channels = oca::channels_with_bath(pp_ints, self.boson.as_ref());
             let diagrams = oca::build_gf_diagrams_oca_channels(&self.hs, verts, &channels);
             let integ = Integrator::new(self.kt as i64);
@@ -1374,5 +1378,224 @@ mod tests {
         let line2 = solver.pp_step(-1, &[]).expect("matsubara line");
         assert_eq!(line2, "dens, pp_mu = 1, -1.63874");
         assert!((solver.pp_mu - pp_mu0).abs() < 1e-9);
+    }
+
+    /// Equilibrium XCA(3) + Holstein smoke: the Matsubara G path must
+    /// accept the boson channels. The old plumbing fitted all channels
+    /// (4 fermion + 2 boson) but passed the fermion-only slice into
+    /// `add_gf_mat_xca`, whose `one SOE fit per channel` assertion
+    /// panicked. Structural only - the XCA boson-pair calibration is
+    /// still open (see `xca_holstein_m2_anchor_matches_oca_boson` and
+    /// `xca_gf_holstein_m2_anchor_matches_oca_boson`).
+    #[test]
+    fn equilibrium_xca_m3_holstein_gf_smoke() {
+        use crate::nca::BosonBath;
+        use kadanoffbaym::types::ContourGreen;
+
+        let (nt, ntau, beta, h) = (2usize, 8usize, 5.0f64, 0.05f64);
+        let mut solver = ImpuritySolver::new(
+            nt,
+            ntau,
+            beta,
+            h,
+            3,
+            3,
+            build(1, SectorClass::SpinResolved),
+            SingleBand {
+                mu: 0.0,
+                u: vec![3.0; nt + 2],
+                eps_up: vec![0.0; nt + 2],
+                eps_do: vec![0.0; nt + 2],
+            },
+        );
+        let mut d0 = crate::boson::green_from_eps_phonon(nt, ntau, beta, h, 1.0);
+        crate::boson::scale_phonon(&mut d0, &vec![0.3; nt + 2]);
+        let contour = Contour::new(nt as i64, ntau as i64, 1, 1, nt as f64 * h, beta);
+        let mut d0_cc = ContourGreen::new(&contour, Sign::Bose, Complex::ZERO);
+        crate::boson::set_bwd_from_fwd_boson_mat(&mut d0_cc, &d0);
+        let blocks = crate::boson::docc_blocks(&solver.hs);
+        solver.set_boson_bath(Some(BosonBath { d0, d0_cc, blocks }));
+
+        solver.solve_atomic();
+        let dtau = beta / ntau as f64;
+        let mut delta = ContourGreen::new(&contour, Sign::Fermi, Complex::ZERO);
+        for m in 0..=ntau {
+            delta.mat.block_mut(m)[0] =
+                Complex::new(-0.4 * (-0.5 * dtau * m as f64).exp(), 0.0);
+        }
+        let mut delta_cc = ContourGreen::new(&contour, Sign::Fermi, Complex::ZERO);
+        crate::dmft::set_bwd_from_fwd_mat(&mut delta_cc, &delta);
+
+        let pp_ints = crate::dmft::get_pp_ints(&delta, &delta_cc, &solver);
+        let verts = crate::dmft::get_gf_verts(&solver);
+        let _ = solver.pp_step(MATSUBARA, &pp_ints);
+        let g = solver.get_spgf_mat(&verts, &pp_ints);
+        assert!(
+            g.iter()
+                .flatten()
+                .all(|z| z.re.is_finite() && z.im.is_finite()),
+            "non-finite G"
+        );
+        let max = g
+            .iter()
+            .flatten()
+            .map(|z| z.abs())
+            .fold(0.0f64, f64::max);
+        assert!(max > 1e-6, "empty G");
+    }
+
+    /// Real-time single-particle G closure: at order >= 3 the OCA
+    /// vertex diagrams must still be included. Previously only
+    /// `order == 2` took the branch, so order 3 silently dropped the
+    /// OCA GF that order 2 had.
+    #[test]
+    fn realtime_gf_closure_same_for_order2_and_order3() {
+        use kadanoffbaym::types::ContourGreen;
+
+        let (nt, ntau, beta, h, kt) = (6usize, 12usize, 5.0f64, 0.05f64, 3usize);
+        let make = |order: usize| {
+            ImpuritySolver::new(
+                nt,
+                ntau,
+                beta,
+                h,
+                kt,
+                order,
+                build(1, SectorClass::SpinResolved),
+                SingleBand {
+                    mu: 0.0,
+                    u: vec![0.0; nt + 2],
+                    eps_up: vec![-1.0; nt + 2],
+                    eps_do: vec![0.0; nt + 2],
+                },
+            )
+        };
+
+        let contour = Contour::new(nt as i64, ntau as i64, 1, 1, nt as f64 * h, beta);
+        let dtau = beta / ntau as f64;
+        let fb = |eps: f64| 1.0 / (1.0 + (beta * eps).exp());
+        let bath: [(f64, f64); 2] = [(0.25, 0.5), (0.16, -0.8)];
+        let mut d1 = ContourGreen::new(&contour, Sign::Fermi, Complex::ZERO);
+        let mut d1c = ContourGreen::new(&contour, Sign::Fermi, Complex::ZERO);
+        for n in 0..=nt as i64 {
+            for j in 0..=n {
+                let dt = h * (n - j) as f64;
+                let (mut g, mut l) = (Complex::ZERO, Complex::ZERO);
+                for &(v2, eps) in &bath {
+                    let e = (-Complex::I * eps * dt).exp();
+                    g += Complex::new(0.0, -1.0) * v2 * (1.0 - fb(eps)) * e;
+                    l += Complex::new(0.0, 1.0) * v2 * fb(eps) * e;
+                }
+                d1.ret.block_mut(d1.ret.idx(n, j))[0] = g;
+                d1.less.block_mut(d1.less.idx(j, n))[0] = l;
+                d1c.ret.block_mut(d1c.ret.idx(n, j))[0] = l;
+                d1c.less.block_mut(d1c.less.idx(j, n))[0] = g;
+            }
+            for m in 0..=(ntau as i64) {
+                let tau = dtau * m as f64;
+                let mut tv = Complex::ZERO;
+                for &(v2, eps) in &bath {
+                    let e = (-Complex::I * eps * h * n as f64).exp();
+                    tv += Complex::new(0.0, 1.0)
+                        * v2
+                        * (1.0 - fb(eps))
+                        * e
+                        * Complex::new((-eps * tau).exp(), 0.0);
+                }
+                d1.lmix.raw_block_at_mut(n, m)[0] = tv;
+                d1c.lmix.raw_block_at_mut(n, m)[0] = tv.conj();
+            }
+        }
+        for i in 0..=ntau {
+            let t = dtau * i as f64;
+            let mut val = Complex::ZERO;
+            for &(v2, eps) in &bath {
+                val += Complex::new(
+                    -v2 * ((-(beta - t) * eps).exp() / (1.0 + (-beta * eps).exp())),
+                    0.0,
+                );
+            }
+            d1.mat.block_mut(i)[0] = val;
+        }
+        for i in 0..=ntau {
+            let fwd = d1.mat.block(ntau - i)[0];
+            d1c.mat.block_mut(i)[0] = -fwd;
+        }
+
+        let hs = build(1, SectorClass::SpinResolved);
+        let cua = hs.flavor(0, 0, false);
+        let cuc = hs.flavor(0, 0, true);
+        let cda = hs.flavor(0, 1, false);
+        let cdc = hs.flavor(0, 1, true);
+        let pp_ints = [
+            Hybridization {
+                delta: &d1,
+                op_cre_fl: cuc,
+                op_ann_fl: cua,
+                fermion: true,
+                backward: false,
+            },
+            Hybridization {
+                delta: &d1c,
+                op_cre_fl: cua,
+                op_ann_fl: cuc,
+                fermion: true,
+                backward: true,
+            },
+            Hybridization {
+                delta: &d1,
+                op_cre_fl: cdc,
+                op_ann_fl: cda,
+                fermion: true,
+                backward: false,
+            },
+            Hybridization {
+                delta: &d1c,
+                op_cre_fl: cda,
+                op_ann_fl: cdc,
+                fermion: true,
+                backward: true,
+            },
+        ];
+
+        let mut s2 = make(2);
+        s2.solve_atomic();
+        for _ in 0..4 {
+            s2.pp_step(MATSUBARA, &pp_ints);
+        }
+        s2.set_t0();
+        for tstp in 0..=2i64 {
+            s2.pp_step(tstp, &pp_ints);
+        }
+
+        let mut s1 = make(1);
+        s1.pp_g = s2.pp_g.clone();
+        let mut s3 = make(3);
+        s3.pp_g = s2.pp_g.clone();
+
+        let verts = crate::dmft::get_gf_verts(&s2);
+        let g1 = s1.get_spgf(&verts, 2, &pp_ints);
+        let g2 = s2.get_spgf(&verts, 2, &pp_ints);
+        let g3 = s3.get_spgf(&verts, 2, &pp_ints);
+
+        let max_ret_les = |a: &GreenTimeStep, b: &GreenTimeStep| {
+            let n = a.tstp as i64;
+            let mut d = 0.0f64;
+            for j in 0..=n {
+                for (x, y) in a.ret.raw_block_at(n, j).iter().zip(b.ret.raw_block_at(n, j)) {
+                    d = d.max((*x - *y).abs());
+                }
+                for (x, y) in a.less.raw_block_at(j, n).iter().zip(b.less.raw_block_at(j, n)) {
+                    d = d.max((*x - *y).abs());
+                }
+            }
+            d
+        };
+        let oca = max_ret_les(&g1[0], &g2[0]);
+        assert!(oca > 1e-8, "order-2 OCA GF closure is inert: {oca:.3e}");
+        assert_eq!(
+            g2, g3,
+            "order >= 3 must take the same closure as order = 2 (all components)"
+        );
     }
 }

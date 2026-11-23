@@ -8,9 +8,8 @@
 // `i * sig_b` for the GF), and the diagram `prefactor` (`i*stat_sign`
 // resp. `i*sig_b`) is applied on top. Do not fold the layers.
 //
-// Only the Matsubara components are implemented (P3, equilibrium);
-// the real-time kernels (ret/les/tv, equal-time specials) land with
-// the real-time phase.
+// Both the Matsubara and the real-time kernels are implemented here
+// (the real-time ones follow below the component accessors).
 
 use crate::hilbert::HilbertSpace;
 use kadanoffbaym::complex::Complex;
