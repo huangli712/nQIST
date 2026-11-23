@@ -466,10 +466,10 @@ pub fn run_equilibrium_ipt(
 /// IPT start window (`tstp = 0..=kt`): seeded with the Matsubara
 /// `t0` rows, iterate the window to self-consistency.
 pub fn run_start_ipt(solver: &mut IptSolver, errmax: f64, itermax: usize) -> Vec<String> {
-    kadanoffbaym::algebra::set_t0_from_mat(&mut solver.g_up);
-    kadanoffbaym::algebra::set_t0_from_mat(&mut solver.g_dn);
-    kadanoffbaym::algebra::set_t0_from_mat(&mut solver.g0_up);
-    kadanoffbaym::algebra::set_t0_from_mat(&mut solver.g0_dn);
+    kadanoffbaym::equilibrium::from_mat(&mut solver.g_up);
+    kadanoffbaym::equilibrium::from_mat(&mut solver.g_dn);
+    kadanoffbaym::equilibrium::from_mat(&mut solver.g0_up);
+    kadanoffbaym::equilibrium::from_mat(&mut solver.g0_dn);
     let kt = solver.kt as i64;
     let mut log = Vec::new();
     for iter in 1..=itermax {

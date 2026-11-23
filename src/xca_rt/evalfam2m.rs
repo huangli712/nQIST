@@ -151,10 +151,17 @@ pub(crate) fn chord_setup_m(
     };
     let forward_130 = m == 3 && (cut.nl, cut.ni, cut.nr) == (1, 3, 0)
         && std::env::var_os("XCA_M3_FORWARD_130").is_some();
-    let forward_less = m == 3 && matches!(anchor, Anchor::JLower(_))
-        && (cut.ni == 4 || mixed_031 || forward_130) && !rev_i && bath.is_none();
-    let forward_contact = m == 3 && matches!(anchor, Anchor::Tau(_))
-        && (cut.ni == 4 || mixed_031) && !rev_i && bath.is_none();
+    let ni4_unreflect = std::env::var_os("XCA_M3_NI4_UNREFLECT").is_some();
+    // XCA_M2_MODERN: diagnostic - the m=2 families take the m>=3 chord
+    // forms (two-mate tv/vt, reflected all-I) instead of the legacy
+    // single-mate stock-anchored branches
+    let m2_modern = m == 2 && std::env::var_os("XCA_M2_MODERN").is_some();
+    let forward_less = (m == 3 || m2_modern) && matches!(anchor, Anchor::JLower(_))
+        && ((cut.ni == 4 && !ni4_unreflect) || (m2_modern && cut.ni == 2) || mixed_031 || forward_130)
+        && !rev_i && bath.is_none();
+    let forward_contact = (m == 3 || m2_modern) && matches!(anchor, Anchor::Tau(_))
+        && ((cut.ni == 4 && !ni4_unreflect) || (m2_modern && cut.ni == 2) || mixed_031)
+        && !rev_i && bath.is_none();
     let native_mixed = m == 3 && matches!(anchor, Anchor::JLower(_))
         && (cut.nl, cut.ni, cut.nr) == (1, 2, 1)
         && std::env::var_os("XCA_M3_NATIVE_MIXED").is_some();
@@ -550,7 +557,7 @@ pub(crate) fn chord_setup_m(
                     // np=10 fixture fits make the split deviate on
                     // spurious poles; the m=2 families are
                     // stock-anchored on that path)
-                    if m == 2 {
+                    if m == 2 && !m2_modern {
                         cprod *= p.c_tv[combo[li]];
                         if be == 3 || bl == 3 {
                             cprod *= (-Complex::I * w * h * jj as f64).exp();
@@ -627,9 +634,36 @@ pub(crate) fn chord_setup_m(
                         wsum[rv] -= w;
                     }
                     isum[tv].push((w, 5, Complex::ONE));
-                } else if forward_less && (be == 5 || bl == 5) {
-                    let coeff = super::fit::vt_col_fit(pp_ints[cs[li]].delta, &p.poles, beta, dtau, pp_ints[cs[li]].delta.ntau as i64, n);
-                    isum[tv].push((w, 0, coeff[combo[li]]));
+                } else if (forward_less
+                    || (forward_contact && std::env::var_os("XCA_15COL_LES").is_some()))
+                    && (be == 5 || bl == 5)
+                {
+                    // XCA_15COL_LES (diagnostic): give the mixed (Tau) form of
+                    // the (1,5) chord the SAME tau-dependent mode-0 kernel the
+                    // les form uses, instead of the constant cprod factor of
+                    // the forward_contact branch below - the two forms of the
+                    // all-imaginary cut otherwise diverge linearly in n
+                    // (junction identity).
+                    let coeff = super::fit::vt_col_fit(pp_ints[cs[li]].delta, &p.poles, beta, dtau, if forward_contact { mm } else { pp_ints[cs[li]].delta.ntau as i64 }, n);
+                    // mixed walk: the I-vertex sits at physical tau_v =
+                    // (mma - tau) dtau, so the (1,5) profile cf e^{-w(beta - tau_v)}
+                    // is the mode-8 kernel (the les walk has tau_v =
+                    // (ntau - tau) dtau, i.e. the mode-0 kernel)
+                    if std::env::var("XCA_15COL_LES").as_deref() == Ok("unit") {
+                        // diagnostic: the SAME constant (unit) chord in both the
+                        // les and the mixed form, to tell whether their
+                        // time-dependent divergence lives on this chord
+                        isum[tv].push((w, 99, Complex::ONE));
+                    } else {
+                        let mode15 = if forward_contact
+                            && std::env::var("XCA_15COL_LES").as_deref() == Ok("mode8")
+                        {
+                            8
+                        } else {
+                            0
+                        };
+                        isum[tv].push((w, mode15, coeff[combo[li]]));
+                    }
                 } else if mixed_031 && ferm_line && (be, bl) == (1, 2) {
                     cprod *= p.c_tv[combo[li]].conj();
                     wsum[rv] -= w;
@@ -707,7 +741,7 @@ pub(crate) fn chord_setup_m(
                             let st = Complex::new((-w * beta).exp(), 0.0);
                             let c_ref = p.c_tv_a[combo[li]].conj() * st;
                             let c_norm = p.c_tv_b[combo[li]].conj() / st;
-                            if m == 2 {
+                            if m == 2 && !m2_modern {
                                 // m == 2 keeps the legacy single-mate
                                 // form bit-exact (see the tv arm)
                                 cprod *= p.c_tv[combo[li]].conj();
@@ -850,7 +884,7 @@ pub(crate) fn chord_setup_m(
                     if forward_contact {
                         cprod *= -p.c_mat[combo[li]];
                         isum[l].push((w, 3, Complex::ONE));
-                    } else if m == 2 && cut.ni == 2 && cut.nl == 0 && cut.nr == 0 && !rev_i {
+                    } else if m == 2 && !m2_modern && cut.ni == 2 && cut.nl == 0 && cut.nr == 0 && !rev_i {
                         let coef = p.c_mat[combo[li]] * (-w * dtau * mm as f64).exp()
                             / (1.0 + (-beta * w).exp());
                         isum[1].push((w, 7, coef));
@@ -1020,11 +1054,19 @@ pub(crate) fn eval_cut_m(
     };
     let forward_130 = m == 3 && (cut.nl, cut.ni, cut.nr) == (1, 3, 0)
         && std::env::var_os("XCA_M3_FORWARD_130").is_some();
-    let forward_less = m == 3 && matches!(anchor, Anchor::JLower(_))
-        && (cut.ni == 4 || mixed_031 || forward_130) && !rev_i && bath.is_none();
-    let forward_contact = m == 3 && matches!(anchor, Anchor::Tau(_))
-        && (cut.ni == 4 || mixed_031) && !rev_i && bath.is_none();
+    let ni4_unreflect = std::env::var_os("XCA_M3_NI4_UNREFLECT").is_some();
+    // XCA_M2_MODERN: diagnostic - the m=2 families take the m>=3 chord
+    // forms (two-mate tv/vt, reflected all-I) instead of the legacy
+    // single-mate stock-anchored branches
+    let m2_modern = m == 2 && std::env::var_os("XCA_M2_MODERN").is_some();
+    let forward_less = (m == 3 || m2_modern) && matches!(anchor, Anchor::JLower(_))
+        && ((cut.ni == 4 && !ni4_unreflect) || (m2_modern && cut.ni == 2) || mixed_031 || forward_130)
+        && !rev_i && bath.is_none();
+    let forward_contact = (m == 3 || m2_modern) && matches!(anchor, Anchor::Tau(_))
+        && ((cut.ni == 4 && !ni4_unreflect) || (m2_modern && cut.ni == 2) || mixed_031)
+        && !rev_i && bath.is_none();
     let v2p = m == 2
+        && !m2_modern
         && cut.nl == 0
         && cut.ni == 2
         && cut.nr == 0
@@ -1140,6 +1182,14 @@ pub(crate) fn eval_cut_m(
         Anchor::JUpper(jx) | Anchor::JLower(jx) => *jx,
         Anchor::Tau(_) => 0, // no L block for the tau anchor
     };
+    // XCA_EQT_SKIP_LEND / XCA_EQT_SKIP_REND (diagnostic): drop the
+    // equal-time CONTACT point of the L seed (t = j) and/or the R
+    // close (u = n). When the external time equals the anchor both
+    // the anchor and the internal vertex sit on the same contour
+    // point; the continuous integral gives that point zero measure,
+    // while the discrete sum carries it with an O(1) weight.
+    let skip_l_end = std::env::var_os("XCA_EQT_SKIP_LEND").is_some();
+    let skip_r_end = std::env::var_os("XCA_EQT_SKIP_REND").is_some();
     let mut state_l: Vec<DenseMat> = Vec::new();
     let mut state_i: Vec<DenseMat> = Vec::new();
     let mut state_r: Vec<DenseMat> = Vec::new();
@@ -1157,7 +1207,11 @@ pub(crate) fn eval_cut_m(
                 let mut t = Vec::with_capacity(j as usize + 1);
                 for tt in 0..=j {
                     let prod = chain.ops[v].mat_mul(&gtr_blk(g1, j, tt));
-                    t.push(scale_c(&prod, phi(v, tt) * ikern(v, 0)));
+                    if skip_l_end && tt == j {
+                        t.push(DenseMat::zeros_shape(prod.nrows(), prod.ncols()));
+                    } else {
+                        t.push(scale_c(&prod, phi(v, tt) * ikern(v, 0)));
+                    }
                 }
                 state_l = t;
                 have_l = true;
@@ -1503,7 +1557,11 @@ pub(crate) fn eval_cut_m(
                         let prod = vt_blk(g, index, tt).mat_mul(&state_i[tau as usize]);
                         f[tau as usize] = prod.raw().to_vec();
                     }
-                    let integral = quad(&f, r0, c0, i_max as usize);
+                    // Causal slice: the startup rule must see only the
+                    // nodes actually present; a zero-padded ntau+1
+                    // buffer makes poly_integral_chain take the xiw
+                    // branch and read the zeros as data.
+                    let integral = quad(&f[..=i_max as usize], r0, c0, i_max as usize);
                     let prod = chain.ops[v].mat_mul(&integral);
                     tr[tt as usize] =
                         scale_c(&prod, phi(v, tt) * rm(&rowmult, v, tt) * ikern(v, 0));
@@ -1656,7 +1714,7 @@ pub(crate) fn eval_cut_m(
                     f[tau as usize] = prod.raw().to_vec();
                 }
             }
-            total = quad(&f, r0, c0, i_max as usize);
+            total = quad(&f[..=i_max as usize], r0, c0, i_max as usize);
         }
         _ => {
             // R -> n: greater slot (n, t); JUpper closes over the
@@ -1672,7 +1730,11 @@ pub(crate) fn eval_cut_m(
                     _ => gtr_blk(gfin, u as i64, n),
                 };
                 let prod = gv_close.mat_mul(&state_r[u]);
-                f[u - lb] = prod.raw().to_vec();
+                if skip_r_end && u as i64 == n && !matches!(anchor, Anchor::JUpper(_)) {
+                    f[u - lb] = vec![Complex::ZERO; prod.raw().len()];
+                } else {
+                    f[u - lb] = prod.raw().to_vec();
+                }
             }
             total = quad(&f, r0, c0, n as usize - lb);
         }
@@ -1711,6 +1773,37 @@ pub(crate) fn eval_cut_m(
         && std::env::var_os("XCA_M3_CONTOUR_PHASE").is_some()
     {
         oric *= -Complex::I;
+    }
+    // The m=3 MM phase correction is DEFAULT ON since 2026-11-23 (user
+    // approved), for the LES family only. At m=3 every JLower (cut,
+    // topology) WITHOUT a Matsubara (imaginary-imaginary) chord comes out
+    // a quarter-turn off. The L<->R mirror relation of the les family,
+    // Sigma_(nl,ni,nr) = -conj(Sigma_(nr,ni,nl))^T (exact in the
+    // native-OCA-validated m=2 architecture), holds only for topologies
+    // carrying exactly one (1,1) mat chord (the contact-validated
+    // all-imaginary cut and the large topology of (0,3,1)/(1,3,0)); all
+    // MM = 0 topologies flip its sign. The +i rotation restores the
+    // relation: the equal-time anti-Hermiticity defect drops 566x
+    // (3.77e-5 -> 6.67e-8) and the sign is fixed physically by that
+    // criterion. The greater/ret (JUpper) family and the mixed (Tau)
+    // anchor keep the legacy phase: the JUpper cross-architecture gate
+    // (xca_m3_cuts_match_chain_twoband) is machine-exact without the
+    // rotation and breaks by |1-i| with it, and the les-vs-mixed
+    // junction residual is marginally worse with it.
+    // XCA_M3_MM_PHASE=off restores the legacy uncorrected les form;
+    // XCA_M3_MM_PHASE=-i selects the other quarter-turn (A/B studies).
+    if m == 3 && matches!(anchor, Anchor::JLower(_)) {
+        let has_mat = pairs
+            .iter()
+            .any(|&(a, b)| block_of(a) == 1 && block_of(b) == 1);
+        if !has_mat {
+            let v = std::env::var("XCA_M3_MM_PHASE").unwrap_or_else(|_| "i".to_string());
+            match v.as_str() {
+                "off" | "none" | "0" => {}
+                "-i" => oric *= -Complex::I,
+                _ => oric *= Complex::I,
+            }
+        }
     }
     let meas = Complex::new(
         h.powi((cut.nl + cut.nr) as i32) * dtau.powi(cut.ni as i32),
@@ -1825,6 +1918,28 @@ pub(crate) fn sigma_cuts_m_mat(
     // diagnostic knob: "nl,ni,nr" keeps only that family; a
     // leading '!' excludes it
     let cuts: Vec<_> = match std::env::var("XCA_MCUT") {
+        // fam:<code>+<code>... : EXCLUDE whole cut families (diagnostic)
+        // L = any lower-branch vertex, R = any upper-branch vertex,
+        // L0/R0 = the same without the all-imaginary cut, all = everything
+        Ok(f) if f.starts_with("fam:") => {
+            let codes: Vec<&str> = f[4..].split('+').collect();
+            let full = 2 * m - 2;
+            let hit = |c: &FamCut| -> bool {
+                codes.iter().any(|code| match *code {
+                    "L" => c.nl >= 1,
+                    "R" => c.nr >= 1,
+                    "L0" => c.nl == 0 && c.ni < full,
+                    "R0" => c.nr == 0 && c.ni < full,
+                    // two or more imaginary vertices but not all-imaginary:
+                    // the only cuts whose I->I kernels exist outside the
+                    // reflected all-I walk
+                    "MI" => c.ni >= 2 && c.ni < full,
+                    "all" => true,
+                    _ => false,
+                })
+            };
+            cuts.into_iter().filter(|c| !hit(c)).collect()
+        }
         Ok(f) => {
             let (excl, f) = match f.strip_prefix('!') {
                 Some(r) => (true, r.to_string()),

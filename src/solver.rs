@@ -391,6 +391,7 @@ impl ImpuritySolver {
                     &integ,
                     self.beta,
                     self.h,
+                    None,
                 );
             }
         }
@@ -804,6 +805,34 @@ impl ImpuritySolver {
                         .into_iter().map(|value| vec![value]).collect()
                     }
                 };
+                // XCA_M3_COMPONENTS (diagnostic): restrict the m>=3
+                // increment write-back to a comma-separated subset of
+                // ret,less,lmix (default: all three) - drift decomposition
+                let comps = std::env::var("XCA_M3_COMPONENTS").unwrap_or_default();
+                let want = |c: &str| comps.is_empty() || comps.split(',').any(|x| x == c);
+                // XCA_M3_SCALE (diagnostic): multiply the whole m>=3
+                // increment by a real factor - linear vs superlinear drift
+                // scaling separates a fixed forcing from feedback
+                let xscale = Complex::new(
+                    std::env::var("XCA_M3_SCALE")
+                        .ok()
+                        .and_then(|v| v.parse::<f64>().ok())
+                        .unwrap_or(1.0),
+                    0.0,
+                );
+                // XCA_M3_SCALE_LMIX (diagnostic): extra real factor on the
+                // m>=3 MIXED increment only. If the les increment is right
+                // and the mixed one merely too weak in the equation of
+                // motion, the drift crosses zero at some factor; a wrong
+                // mixed structure never does.
+                let xlmix = xscale
+                    * Complex::new(
+                        std::env::var("XCA_M3_SCALE_LMIX")
+                            .ok()
+                            .and_then(|v| v.parse::<f64>().ok())
+                            .unwrap_or(1.0),
+                        0.0,
+                    );
                 for m in 3..=self.order {
                     let use_tau_boundary = matrix && m == 3 && self.boson.is_none()
                         && std::env::var_os("XCA_M3_LESS_BOUNDARY").is_some();
@@ -825,19 +854,25 @@ impl ImpuritySolver {
                             evaluate(m, &Anchor::JLower(j))
                         };
                         for si in 0..ns {
-                            for (dest, src) in self.pp_sigma[si].ret.raw_block_at_mut(tstp, j).iter_mut().zip(&g[si]) {
-                                *dest += *src;
+                            if want("ret") {
+                                for (dest, src) in self.pp_sigma[si].ret.raw_block_at_mut(tstp, j).iter_mut().zip(&g[si]) {
+                                    *dest += xscale * *src;
+                                }
                             }
-                            for (dest, src) in self.pp_sigma[si].less.raw_block_at_mut(j, tstp).iter_mut().zip(&l[si]) {
-                                *dest += *src;
+                            if want("less") {
+                                for (dest, src) in self.pp_sigma[si].less.raw_block_at_mut(j, tstp).iter_mut().zip(&l[si]) {
+                                    *dest += xscale * *src;
+                                }
                             }
                         }
                     }
                     for mu in 0..=ntau {
                         let mx = evaluate(m, &Anchor::Tau(mu));
                         for si in 0..ns {
-                            for (dest, src) in self.pp_sigma[si].lmix.raw_block_at_mut(tstp, ntau - mu).iter_mut().zip(&mx[si]) {
-                                *dest += *src;
+                            if want("lmix") {
+                                for (dest, src) in self.pp_sigma[si].lmix.raw_block_at_mut(tstp, ntau - mu).iter_mut().zip(&mx[si]) {
+                                    *dest += xlmix * *src;
+                                }
                             }
                         }
                     }

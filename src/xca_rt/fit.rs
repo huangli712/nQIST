@@ -107,6 +107,9 @@ pub(crate) fn vt_col_fit(
     ntau: i64,
     n: i64,
 ) -> Vec<Complex> {
+    // XCA_FIT_FREEZE (diagnostic): keep the column fit at its n = 0
+    // coefficients to separate the fit's time dependence from the rest
+    let n = if std::env::var_os("XCA_FIT_FREEZE").is_some() { 0 } else { n };
     let key = (
         delta as *const _ as usize,
         poles

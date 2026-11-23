@@ -5496,7 +5496,7 @@ fn solver_rt_xca_m3_smoke() {
             }
             eprintln!("lmix(0,{m}) inc {worst:?}");
         }
-        let integ = Integrator::new(5);
+        let integ = Integrator::new(test_kt() as _);
         let dtau = beta / ntau as f64;
         let fits = super::fit_channels_rt(&pp_ints, h, nt, 2, crate::xca::W_MAX_DEFAULT);
         let proj: Vec<_> = (0..4)
@@ -5611,7 +5611,7 @@ fn solver_rt_xca_m3_smoke() {
         );
         {
             let diagrams = crate::oca::build_sigma_diagrams_oca(&s2.hs, &pp_ints);
-            let integ = Integrator::new(5);
+            let integ = Integrator::new(test_kt() as _);
             let mut acc = vec![Complex::ZERO; 4];
             for d in &diagrams {
                 let contour = Contour::new(nt as i64, ntau as i64, 1, 1, h * nt as f64, beta);
@@ -6520,7 +6520,7 @@ fn xca_rt_i_cut_bisection() {
         s2.pp_step(t, &pp_ints);
     }
 
-    let integ = Integrator::new(5);
+    let integ = Integrator::new(test_kt() as _);
     let dtau = beta / ntau as f64;
     let maxp = std::env::var("XCA_POLES")
         .ok()
@@ -7081,7 +7081,7 @@ fn rt_m1_m2_cuts_equal_stock() {
     for t in 0..11i64 {
         s.pp_step(t, &pp_ints);
     }
-    let integ = Integrator::new(5);
+    let integ = Integrator::new(test_kt() as _);
     let hs = &s.hs;
     let pp_g = &s.pp_g;
     let cmp_at = |ints: &[Hybridization; 4], jj: i64, nn: i64| -> (f64, f64) {
@@ -7670,7 +7670,7 @@ fn rt_v_scaling_orders_123() {
     for t in 0..11i64 {
         s.pp_step(t, &pp_ints);
     }
-    let integ = Integrator::new(5);
+    let integ = Integrator::new(test_kt() as _);
 
     let les_at = |ints: &[Hybridization; 4], m_ord: usize| -> Complex {
         match m_ord {
@@ -7909,7 +7909,7 @@ fn rt_grid_convergence_orders_123() {
                 backward: true,
             },
         ];
-        let integ = Integrator::new(5);
+        let integ = Integrator::new(test_kt() as _);
         let fits = super::fit_channels_rt(&ints, hh, nt, 2, crate::xca::W_MAX_DEFAULT);
         let proj: Vec<_> = (0..4)
             .map(|c| {
@@ -8386,7 +8386,7 @@ fn rt_kms_bridge_diagnostic() {
     }
     s.set_t0();
 
-    let integ = Integrator::new(5);
+    let integ = Integrator::new(test_kt() as _);
     let rt_fits = super::fit_channels_rt(&ints, h, nt, 2, crate::xca::W_MAX_DEFAULT);
     let proj: Vec<_> = (0..4)
         .map(|c| super::fit::csoe_project_all(ints[c].delta, &rt_fits[c], beta, dtau, h, nt, ntau))
@@ -8629,7 +8629,7 @@ fn rt_m3_les_all_i_direct_crosscheck() {
         }
     }
 
-    let integ = Integrator::new(5);
+    let integ = Integrator::new(test_kt() as _);
     let jj = 5i64;
     let nn = 10i64;
     // raw read helpers (INDEPENDENT of the pole decomposition)
@@ -13210,9 +13210,11 @@ fn xca_m3_tti_percut() {
         vec![1, 4, 2],
         vec![5, 0, 6],
     ];
-    let configs: [(Anchor, Anchor, i64, i64); 2] = [
+    let configs: [(Anchor, Anchor, i64, i64); 4] = [
         (Anchor::JLower(0), Anchor::JLower(1), 1, 2),
         (Anchor::JLower(1), Anchor::JLower(2), 1, 2),
+        (Anchor::JLower(3), Anchor::JLower(4), 4, 5),
+        (Anchor::JLower(5), Anchor::JLower(6), 6, 7),
     ];
     for (anchor, anchor_sh, nn, nn_sh) in configs {
         for cut in super::evalfam2::families(3, &anchor) {
@@ -13563,9 +13565,14 @@ fn xca_m3_dimer_percut_adjudication() {
     solver.pp_step(0, &pp_ints);
     solver.pp_step(1, &pp_ints);
     // the production fits/projections (2-pole, as the dimer runs)
-    let integ = Integrator::new(5);
+    let integ = Integrator::new(test_kt() as _);
     let dtau = beta / ntau as f64;
-    let fits = super::fit_channels_rt_ext(&pp_ints, h_rt, nt_rt, 2, crate::xca::W_MAX_DEFAULT);
+    let poles: usize = std::env::var("NQIST_EQT_POLES")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(2);
+    let fits =
+        super::fit_channels_rt_ext(&pp_ints, h_rt, nt_rt, poles, crate::xca::W_MAX_DEFAULT);
     let proj: Vec<_> = (0..pp_ints.len())
         .map(|c| {
             super::fit::csoe_project_all(
@@ -13618,7 +13625,7 @@ fn xca_m3_dimer_percut_adjudication() {
                         loop {
                             let va = super::evalfam2m::eval_cut_m(
                                 3, &cut, &anchor, &chain, &topo.pairs, &cs, &combo, &proj,
-                                &pp_ints, None, &solver.pp_g, nn, h_rt, beta, dtau, 5, &integ,
+                                &pp_ints, None, &solver.pp_g, nn, h_rt, beta, dtau, test_kt() as _, &integ,
                             );
                             let vb = super::evalfam2m::eval_cut_m(
                                 3, &cut, &anchor_sh, &chain, &topo.pairs, &cs, &combo, &proj,
@@ -13678,6 +13685,826 @@ fn xca_m3_dimer_percut_adjudication() {
     }
 }
 
+// ---------------------------------------------------------------------------
+// m=2 block-cut machinery vs the NATIVE OCA on real dimer Dyson data (the
+// exact, PPSC-gated reference - independent of the direct transcription,
+// which shares the walk orientation). If the shared walk reproduces OCA
+// here the m=3 defect is m>=3-only; if not, the shared walk has a
+// real-data bug with an exact reference to debug against.
+// ---------------------------------------------------------------------------
+/// NQIST_TEST_KT: Gregory order for the dimer instruments (default 5,
+/// the production value). Unset behaviour is unchanged.
+fn test_kt() -> i64 {
+    let kt = std::env::var("NQIST_TEST_KT")
+        .ok()
+        .and_then(|v| v.parse::<i64>().ok())
+        .unwrap_or(5);
+    assert!(
+        (1..=5).contains(&kt),
+        "NQIST_TEST_KT must be in 1..=5 (KadanoffBaym Integrator limit), got {kt}"
+    );
+    kt
+}
+
+#[test]
+#[ignore]
+fn xca_m2_dimer_cuts_vs_native_oca() {
+    use kadanoffbaym::types::TimeFunction;
+    use super::evalfam2::Anchor;
+
+    let (nt_rt, ntau, beta, h_rt) = (6usize, 24usize, 5.0f64, 0.05f64);
+    let hs = crate::hilbert::build(2, crate::hilbert::SectorClass::SpinResolved);
+    let ham = crate::hamilton::LocalHamiltonian::TwoBandKanamori {
+        mu: 0.0,
+        u: vec![2.0; nt_rt + 2],
+        j: vec![0.4; nt_rt + 2],
+        delta: vec![0.8; nt_rt + 2],
+        bz: vec![0.0; nt_rt + 2],
+    };
+    let contour = Contour::new(
+        nt_rt as i64,
+        ntau as i64,
+        1,
+        1,
+        h_rt * nt_rt as f64,
+        beta,
+    );
+    let mk_level = |eps: f64| -> kadanoffbaym::types::ContourGreen {
+        let mut g = kadanoffbaym::types::ContourGreen::new(&contour, Sign::Fermi, Complex::ZERO);
+        let sig = kadanoffbaym::types::ContourGreen::new(&contour, Sign::Fermi, Complex::ZERO);
+        let mut hf = TimeFunction::zeros(nt_rt, 1, 1);
+        for tstp in -1..=(nt_rt as i64) {
+            hf.block_mut(tstp)[0] = Complex::new(eps, 0.0);
+        }
+        let kt = 5i64;
+        kadanoffbaym::dyson::dyson_mat(
+            &mut g,
+            &sig,
+            0.0,
+            &hf,
+            beta,
+            kt,
+            kadanoffbaym::base::MatsubaraMethod::Fixpoint,
+            true,
+            None,
+            1e-12,
+        );
+        kadanoffbaym::dyson::dyson_start(&mut g, 0.0, &hf, &sig, beta, h_rt, kt);
+        for tstp in (kt + 1)..=(nt_rt as i64) {
+            kadanoffbaym::dyson::dyson_timestep(tstp, &mut g, 0.0, &hf, &sig, beta, h_rt, kt);
+        }
+        g
+    };
+    let scale_green = |g: &kadanoffbaym::types::ContourGreen,
+                       w: f64|
+     -> kadanoffbaym::types::ContourGreen {
+        let wc = Complex::new(w, 0.0);
+        let mut out =
+            kadanoffbaym::types::ContourGreen::new(&contour, Sign::Fermi, Complex::ZERO);
+        for n in 0..=(nt_rt as i64) {
+            for jj in 0..=n {
+                out.ret.block_mut(out.ret.idx(n, jj))[0] =
+                    g.ret.block(g.ret.idx(n, jj))[0] * wc;
+                out.less.block_mut(out.less.idx(jj, n))[0] =
+                    g.less.block(g.less.idx(jj, n))[0] * wc;
+            }
+            for m in 0..=(ntau as i64) {
+                out.lmix.raw_block_at_mut(n, m)[0] = g.lmix.raw_block_at(n, m)[0] * wc;
+            }
+        }
+        for m in 0..=(ntau as i64) {
+            out.mat.block_mut(m as usize)[0] = g.mat.block(m as usize)[0] * wc;
+        }
+        out
+    };
+    let mk_pair = |lvl: &kadanoffbaym::types::ContourGreen,
+                   v: f64|
+     -> (
+        kadanoffbaym::types::ContourGreen,
+        kadanoffbaym::types::ContourGreen,
+    ) {
+        let fwd = scale_green(lvl, v * v);
+        let mut cc =
+            kadanoffbaym::types::ContourGreen::new(&contour, Sign::Fermi, Complex::ZERO);
+        crate::dmft::set_bwd_from_fwd_mat(&mut cc, &fwd);
+        for t in 0..=(nt_rt as i64) {
+            crate::dmft::set_bwd_from_fwd_tstp(t, &mut cc, &fwd);
+        }
+        (fwd, cc)
+    };
+    let lvl1 = mk_level(0.5);
+    let lvl2 = mk_level(-0.8);
+    let (d1, d1c) = mk_pair(&lvl1, 0.3);
+    let (d2, d2c) = mk_pair(&lvl2, 0.35);
+    let c0a = hs.flavor(0, 0, false);
+    let c0c = hs.flavor(0, 0, true);
+    let c1a = hs.flavor(1, 0, false);
+    let c1c = hs.flavor(1, 0, true);
+    let pp_ints = [
+        Hybridization {
+            delta: &d1,
+            op_cre_fl: c0c,
+            op_ann_fl: c0a,
+            fermion: true,
+            backward: false,
+        },
+        Hybridization {
+            delta: &d1c,
+            op_cre_fl: c0a,
+            op_ann_fl: c0c,
+            fermion: true,
+            backward: true,
+        },
+        Hybridization {
+            delta: &d2,
+            op_cre_fl: c1c,
+            op_ann_fl: c1a,
+            fermion: true,
+            backward: false,
+        },
+        Hybridization {
+            delta: &d2c,
+            op_cre_fl: c1a,
+            op_ann_fl: c1c,
+            fermion: true,
+            backward: true,
+        },
+    ];
+    let mut solver =
+        crate::solver::ImpuritySolver::new(nt_rt, ntau, beta, h_rt, test_kt() as _, 2, hs.clone(), ham);
+    solver.solve_atomic();
+    for _ in 0..12 {
+        solver.pp_step(-1, &pp_ints);
+    }
+    solver.set_t0();
+    let integ = Integrator::new(test_kt() as _);
+    let dtau = beta / ntau as f64;
+    let fits = super::fit_channels_rt_ext(&pp_ints, h_rt, nt_rt, 2, crate::xca::W_MAX_DEFAULT);
+    let proj: Vec<_> = (0..pp_ints.len())
+        .map(|c| {
+            super::fit::csoe_project_all(
+                pp_ints[c].delta,
+                &fits[c],
+                beta,
+                dtau,
+                h_rt,
+                nt_rt,
+                ntau,
+            )
+        })
+        .collect();
+    for n in 0..=(nt_rt as i64) {
+        solver.pp_step(n, &pp_ints);
+        // native reference: order 2 (NCA + OCA) minus order 1 (NCA)
+        solver.order = 1;
+        solver.update_sigma(n, &pp_ints);
+        let s1 = solver.pp_sigma.clone();
+        solver.order = 2;
+        solver.update_sigma(n, &pp_ints);
+        let s2 = solver.pp_sigma.clone();
+        // Junction identity on the PPSC-gated native OCA increment.
+        // The les row j = 0 must equal the transposed conjugate of the
+        // mixed component at physical tau = beta (stored index 0). This
+        // calibrates the sign convention of the identity on a trusted
+        // implementation before it is applied to the block-cut families.
+        {
+            let (mut plus, mut minus, mut scale) = (0.0f64, 0.0f64, 0.0f64);
+            for s in 0..hs.ns() {
+                let dim = hs.sectors[s].dim;
+                for r in 0..dim {
+                    for c in 0..dim {
+                        let li = r * dim + c;
+                        let lv = s2[s].less.raw_block_at(0, n)[li]
+                            - s1[s].less.raw_block_at(0, n)[li];
+                        let ti = c * dim + r;
+                        let tv = (s2[s].lmix.raw_block_at(n, 0)[ti]
+                            - s1[s].lmix.raw_block_at(n, 0)[ti])
+                            .conj();
+                        plus = plus.max((lv + tv).abs());
+                        minus = minus.max((lv - tv).abs());
+                        scale = scale.max(lv.abs());
+                    }
+                }
+            }
+            eprintln!(
+                "native junction n={n}: |L - conjT| {minus:.3e} |L + conjT| {plus:.3e} (scale {scale:.3e})"
+            );
+        }
+        // three components: JUpper -> ret(n, j), JLower -> less(j, n),
+        // Tau(mu) -> lmix(n, ntau - mu)
+        let nt = ntau as i64;
+        let anchors: Vec<Anchor> = (0..=n)
+            .flat_map(|j| [Anchor::JUpper(j), Anchor::JLower(j)])
+            .chain((0..=nt).map(Anchor::Tau))
+            .collect();
+        for anchor in anchors {
+            let (j, tag, is_tau) = match &anchor {
+                Anchor::JUpper(j) => (*j, "ret", false),
+                Anchor::JLower(j) => (*j, "less", false),
+                Anchor::Tau(_) => (n, "lmix", true),
+                _ => unreachable!(),
+            };
+            let got = super::evalfam2m::sigma_cuts_m_mat(
+                2, &hs, &pp_ints, None, &proj, &solver.pp_g, &anchor, n, h_rt, beta, dtau, 5,
+                &integ,
+            );
+            let (mut worst, mut scale) = (0.0f64, 0.0f64);
+            // NQIST_M2_TAUDUMP: element-resolved dump of the mixed component.
+            // The per-mu worst element switches sectors, which hides the
+            // functional shape of the error in the summary line.
+            if is_tau && std::env::var_os("NQIST_M2_TAUDUMP").is_some() {
+                let mu = match &anchor {
+                    Anchor::Tau(mm) => nt - *mm,
+                    _ => unreachable!(),
+                };
+                let mut txt = String::new();
+                for (s, q) in [(4usize, 10usize), (4, 5), (1, 3), (1, 0)] {
+                    let a = s2[s].lmix.raw_block_at(n, mu)[q];
+                    let b = s1[s].lmix.raw_block_at(n, mu)[q];
+                    let g = got[s].raw()[q];
+                    txt.push_str(&format!(
+                        " s{s}[{q}] got({:+.3e},{:+.3e}) oca({:+.3e},{:+.3e})",
+                        g.re,
+                        g.im,
+                        (a - b).re,
+                        (a - b).im
+                    ));
+                }
+                eprintln!("taudump n={n} mu={mu}:{}", txt);
+            }
+            let mut diag_txt = String::new();
+            for s in 0..hs.ns() {
+                let dim = hs.sectors[s].dim;
+                let (a, b) = if is_tau {
+                    let mu = match &anchor {
+                        Anchor::Tau(mm) => nt - *mm,
+                        _ => unreachable!(),
+                    };
+                    (
+                        s2[s].lmix.raw_block_at(n, mu),
+                        s1[s].lmix.raw_block_at(n, mu),
+                    )
+                } else if tag == "ret" {
+                    (
+                        s2[s].ret.raw_block_at(n, j),
+                        s1[s].ret.raw_block_at(n, j),
+                    )
+                } else {
+                    (s2[s].less.raw_block_at(j, n), s1[s].less.raw_block_at(j, n))
+                };
+                for q in 0..dim * dim {
+                    let want = a[q] - b[q];
+                    let g = got[s].raw()[q];
+                    if want.abs() > 1e-9 {
+                        worst = worst.max((g - want).abs());
+                        scale = scale.max(want.abs());
+                    }
+                    if j == n && q % (dim + 1) == 0 && !is_tau {
+                        diag_txt.push_str(&format!(
+                            " s{s} got({:+.3e},{:+.3e}) oca({:+.3e},{:+.3e})",
+                            g.re, g.im, want.re, want.im
+                        ));
+                    }
+                }
+            }
+            // worst-element ratio (characterizes a factor / phase / shape error)
+            let mut ratio_txt = String::new();
+            if std::env::var_os("NQIST_M2_RATIO").is_some() {
+                let mut bw = 0.0f64;
+                for s in 0..hs.ns() {
+                    let dim = hs.sectors[s].dim;
+                    for q in 0..dim * dim {
+                        let (a, b) = if is_tau {
+                            let mu = match &anchor {
+                                Anchor::Tau(mm) => nt - *mm,
+                                _ => unreachable!(),
+                            };
+                            (s2[s].lmix.raw_block_at(n, mu), s1[s].lmix.raw_block_at(n, mu))
+                        } else if tag == "ret" {
+                            (s2[s].ret.raw_block_at(n, j), s1[s].ret.raw_block_at(n, j))
+                        } else {
+                            (s2[s].less.raw_block_at(j, n), s1[s].less.raw_block_at(j, n))
+                        };
+                        let want = a[q] - b[q];
+                        let d = (got[s].raw()[q] - want).abs();
+                        if want.abs() > 1e-9 && d >= bw {
+                            bw = d;
+                            let r = got[s].raw()[q] / want;
+                            ratio_txt = format!(
+                                " @s{s}[{q}] got({:+.3e},{:+.3e}) oca({:+.3e},{:+.3e}) ratio {:+.4}{:+.4}i",
+                                got[s].raw()[q].re, got[s].raw()[q].im, want.re, want.im, r.re, r.im
+                            );
+                        }
+                    }
+                }
+            }
+            // UNFILTERED maxima: exposes a vacuous pass (both sides zero)
+            let (mut gmax, mut wmax) = (0.0f64, 0.0f64);
+            for s in 0..hs.ns() {
+                let dim = hs.sectors[s].dim;
+                for q in 0..dim * dim {
+                    gmax = gmax.max(got[s].raw()[q].abs());
+                    let w = if is_tau {
+                        let mu = match &anchor {
+                            Anchor::Tau(mm) => nt - *mm,
+                            _ => unreachable!(),
+                        };
+                        s2[s].lmix.raw_block_at(n, mu)[q] - s1[s].lmix.raw_block_at(n, mu)[q]
+                    } else if tag == "ret" {
+                        s2[s].ret.raw_block_at(n, j)[q] - s1[s].ret.raw_block_at(n, j)[q]
+                    } else {
+                        s2[s].less.raw_block_at(j, n)[q] - s1[s].less.raw_block_at(j, n)[q]
+                    };
+                    wmax = wmax.max(w.abs());
+                }
+            }
+            eprintln!(
+                "m2-dimer {anchor:?} n={n}: worst {worst:.3e} (scale {scale:.3e}) |got|max {gmax:.3e} |want|max {wmax:.3e}{}{}",
+                if j == n { &diag_txt } else { "" },
+                ratio_txt
+            );
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// L<->R MIRROR SYMMETRY of the block-cut les families on real dimer data:
+//   Sigma_(nl,ni,nr)(t,t) = -conj(Sigma_(nr,ni,nl)(t,t)) elementwise on the
+// diagonal (the matrix form carries a transpose). The m=2 architecture,
+// validated against the native OCA to 1e-4, satisfies this to ~1e-12 - it is
+// what makes the summed equal-time les purely imaginary. Self-mirror cuts
+// must be purely imaginary. NQIST_MIRROR_M selects the order (default 3);
+// run m=2 with XCA_M2_MODERN=1.
+// ---------------------------------------------------------------------------
+#[test]
+#[ignore]
+fn xca_dimer_cut_mirror_symmetry() {
+    use kadanoffbaym::types::TimeFunction;
+    use super::evalfam2::Anchor;
+
+    let m: usize = std::env::var("NQIST_MIRROR_M")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(3);
+    let (nt_rt, ntau, beta, h_rt) = (6usize, 24usize, 5.0f64, 0.05f64);
+    let hs = crate::hilbert::build(2, crate::hilbert::SectorClass::SpinResolved);
+    let ham = crate::hamilton::LocalHamiltonian::TwoBandKanamori {
+        mu: 0.0,
+        u: vec![2.0; nt_rt + 2],
+        j: vec![0.4; nt_rt + 2],
+        delta: vec![0.8; nt_rt + 2],
+        bz: vec![0.0; nt_rt + 2],
+    };
+    let contour = Contour::new(
+        nt_rt as i64,
+        ntau as i64,
+        1,
+        1,
+        h_rt * nt_rt as f64,
+        beta,
+    );
+    let mk_level = |eps: f64| -> kadanoffbaym::types::ContourGreen {
+        let mut g = kadanoffbaym::types::ContourGreen::new(&contour, Sign::Fermi, Complex::ZERO);
+        let sig = kadanoffbaym::types::ContourGreen::new(&contour, Sign::Fermi, Complex::ZERO);
+        let mut hf = TimeFunction::zeros(nt_rt, 1, 1);
+        for tstp in -1..=(nt_rt as i64) {
+            hf.block_mut(tstp)[0] = Complex::new(eps, 0.0);
+        }
+        let kt = 5i64;
+        kadanoffbaym::dyson::dyson_mat(
+            &mut g,
+            &sig,
+            0.0,
+            &hf,
+            beta,
+            kt,
+            kadanoffbaym::base::MatsubaraMethod::Fixpoint,
+            true,
+            None,
+            1e-12,
+        );
+        kadanoffbaym::dyson::dyson_start(&mut g, 0.0, &hf, &sig, beta, h_rt, kt);
+        for tstp in (kt + 1)..=(nt_rt as i64) {
+            kadanoffbaym::dyson::dyson_timestep(tstp, &mut g, 0.0, &hf, &sig, beta, h_rt, kt);
+        }
+        g
+    };
+    let scale_green = |g: &kadanoffbaym::types::ContourGreen,
+                       w: f64|
+     -> kadanoffbaym::types::ContourGreen {
+        let wc = Complex::new(w, 0.0);
+        let mut out =
+            kadanoffbaym::types::ContourGreen::new(&contour, Sign::Fermi, Complex::ZERO);
+        for n in 0..=(nt_rt as i64) {
+            for jj in 0..=n {
+                out.ret.block_mut(out.ret.idx(n, jj))[0] =
+                    g.ret.block(g.ret.idx(n, jj))[0] * wc;
+                out.less.block_mut(out.less.idx(jj, n))[0] =
+                    g.less.block(g.less.idx(jj, n))[0] * wc;
+            }
+            for mm in 0..=(ntau as i64) {
+                out.lmix.raw_block_at_mut(n, mm)[0] = g.lmix.raw_block_at(n, mm)[0] * wc;
+            }
+        }
+        for mm in 0..=(ntau as i64) {
+            out.mat.block_mut(mm as usize)[0] = g.mat.block(mm as usize)[0] * wc;
+        }
+        out
+    };
+    let mk_pair = |lvl: &kadanoffbaym::types::ContourGreen,
+                   v: f64|
+     -> (
+        kadanoffbaym::types::ContourGreen,
+        kadanoffbaym::types::ContourGreen,
+    ) {
+        let fwd = scale_green(lvl, v * v);
+        let mut cc =
+            kadanoffbaym::types::ContourGreen::new(&contour, Sign::Fermi, Complex::ZERO);
+        crate::dmft::set_bwd_from_fwd_mat(&mut cc, &fwd);
+        for t in 0..=(nt_rt as i64) {
+            crate::dmft::set_bwd_from_fwd_tstp(t, &mut cc, &fwd);
+        }
+        (fwd, cc)
+    };
+    let lvl1 = mk_level(0.5);
+    let lvl2 = mk_level(-0.8);
+    let (d1, d1c) = mk_pair(&lvl1, 0.3);
+    let (d2, d2c) = mk_pair(&lvl2, 0.35);
+    let c0a = hs.flavor(0, 0, false);
+    let c0c = hs.flavor(0, 0, true);
+    let c1a = hs.flavor(1, 0, false);
+    let c1c = hs.flavor(1, 0, true);
+    let pp_ints = [
+        Hybridization {
+            delta: &d1,
+            op_cre_fl: c0c,
+            op_ann_fl: c0a,
+            fermion: true,
+            backward: false,
+        },
+        Hybridization {
+            delta: &d1c,
+            op_cre_fl: c0a,
+            op_ann_fl: c0c,
+            fermion: true,
+            backward: true,
+        },
+        Hybridization {
+            delta: &d2,
+            op_cre_fl: c1c,
+            op_ann_fl: c1a,
+            fermion: true,
+            backward: false,
+        },
+        Hybridization {
+            delta: &d2c,
+            op_cre_fl: c1a,
+            op_ann_fl: c1c,
+            fermion: true,
+            backward: true,
+        },
+    ];
+    let mut solver =
+        crate::solver::ImpuritySolver::new(nt_rt, ntau, beta, h_rt, test_kt() as _, 2, hs.clone(), ham);
+    solver.solve_atomic();
+    for _ in 0..12 {
+        solver.pp_step(-1, &pp_ints);
+    }
+    solver.set_t0();
+    let integ = Integrator::new(test_kt() as _);
+    let dtau = beta / ntau as f64;
+    let fits = super::fit_channels_rt_ext(&pp_ints, h_rt, nt_rt, 2, crate::xca::W_MAX_DEFAULT);
+    let proj: Vec<_> = (0..pp_ints.len())
+        .map(|c| {
+            super::fit::csoe_project_all(
+                pp_ints[c].delta,
+                &fits[c],
+                beta,
+                dtau,
+                h_rt,
+                nt_rt,
+                ntau,
+            )
+        })
+        .collect();
+    let chans = super::boson_rt::chans_with_bath(&pp_ints, None);
+    let topos = crate::xca::topology::connected_pairings(m);
+    // full cut value: per sector, dim*dim, summed over topologies,
+    // channel sets and pole combos with the topology/channel factor
+    let eval_full = |cut: &super::evalfam2::FamCut,
+                     anchor: &Anchor,
+                     n: i64,
+                     pp_g: &[kadanoffbaym::types::PseudoGreen]|
+     -> Vec<Vec<Vec<Complex>>> {
+        let mut acc: Vec<Vec<Vec<Complex>>> = topos
+            .iter()
+            .map(|_| {
+                (0..hs.ns())
+                    .map(|s| vec![Complex::ZERO; hs.sectors[s].dim * hs.sectors[s].dim])
+                    .collect()
+            })
+            .collect();
+        for (ti, topo) in topos.iter().enumerate() {
+            for cs in super::evalm::ChannelIter::new(chans.len(), m) {
+                let mut stat = 1.0f64;
+                for &c in &cs {
+                    if pp_ints[c].backward {
+                        stat *= -1.0;
+                    }
+                }
+                let fac = Complex::new(-stat * topo.parity, 0.0);
+                for s0 in 0..hs.ns() {
+                    let Some(chain) = super::boson_rt::build_rt_chain_mixed_m(
+                        &hs,
+                        &topo.pairs,
+                        &cs,
+                        &chans,
+                        s0,
+                    ) else {
+                        continue;
+                    };
+                    let nel = hs.sectors[s0].dim * hs.sectors[s0].dim;
+                    let mut combo = vec![0usize; m];
+                    loop {
+                        let v = super::evalfam2m::eval_cut_m(
+                            m, cut, anchor, &chain, &topo.pairs, &cs, &combo, &proj, &pp_ints,
+                            None, pp_g, n, h_rt, beta, dtau, test_kt() as _, &integ,
+                        );
+                        for q in 0..nel {
+                            acc[ti][s0][q] += fac * v.raw()[q];
+                        }
+                        let mut idx = 0;
+                        let mut wrapped = false;
+                        loop {
+                            if idx == m {
+                                wrapped = true;
+                                break;
+                            }
+                            combo[idx] += 1;
+                            if combo[idx] < proj[cs[idx]].poles.len() {
+                                break;
+                            }
+                            combo[idx] = 0;
+                            idx += 1;
+                        }
+                        if wrapped {
+                            break;
+                        }
+                    }
+                }
+            }
+        }
+        acc
+    };
+    for n in 0..=(nt_rt as i64) {
+        solver.pp_step(n, &pp_ints);
+        if n != 3 && n != 5 {
+            continue;
+        }
+        let anchor = Anchor::JLower(n);
+        let cuts = super::evalfam2::families(m, &anchor);
+        let per_topo: Vec<Vec<Vec<Vec<Complex>>>> =
+            cuts.iter().map(|cut| eval_full(cut, &anchor, n, &solver.pp_g)).collect();
+        // per-topology diagonal character: anti-Hermitian-type (Re ~ 0) vs
+        // Hermitian-type (Im ~ 0) - pinpoints the topologies carrying the
+        // quarter-turn phase error
+        if std::env::var_os("NQIST_MIRROR_TOPO").is_some() {
+            for (i, cut) in cuts.iter().enumerate() {
+                let mut txt = String::new();
+                for (ti, topo) in topos.iter().enumerate() {
+                    let (mut re, mut im) = (0.0f64, 0.0f64);
+                    for s in 0..hs.ns() {
+                        let dim = hs.sectors[s].dim;
+                        for r in 0..dim {
+                            let z = per_topo[i][ti][s][r * dim + r];
+                            re = re.max(z.re.abs());
+                            im = im.max(z.im.abs());
+                        }
+                    }
+                    txt.push_str(&format!(
+                        " T{ti}{:?}[Re {re:.2e} Im {im:.2e}]",
+                        topo.pairs
+                    ));
+                }
+                eprintln!(
+                    "topo m={m} n={n} ({},{},{}):{}",
+                    cut.nl, cut.ni, cut.nr, txt
+                );
+            }
+        }
+        let vals: Vec<Vec<Vec<Complex>>> = per_topo
+            .iter()
+            .map(|pt| {
+                (0..hs.ns())
+                    .map(|s| {
+                        let nel = hs.sectors[s].dim * hs.sectors[s].dim;
+                        let mut v = vec![Complex::ZERO; nel];
+                        for t in pt {
+                            for q in 0..nel {
+                                v[q] += t[s][q];
+                            }
+                        }
+                        v
+                    })
+                    .collect()
+            })
+            .collect();
+        for (i, cut) in cuts.iter().enumerate() {
+            let mir = cuts
+                .iter()
+                .position(|c| (c.nl, c.ni, c.nr) == (cut.nr, cut.ni, cut.nl))
+                .unwrap();
+            let (mut w_t, mut w_n, mut scale, mut re_diag, mut im_diag) =
+                (0.0f64, 0.0f64, 0.0f64, 0.0f64, 0.0f64);
+            for s in 0..hs.ns() {
+                let dim = hs.sectors[s].dim;
+                for r in 0..dim {
+                    for c in 0..dim {
+                        let l = vals[i][s][r * dim + c];
+                        let rt = vals[mir][s][c * dim + r];
+                        let rn = vals[mir][s][r * dim + c];
+                        w_t = w_t.max((l + rt.conj()).abs());
+                        w_n = w_n.max((l + rn.conj()).abs());
+                        scale = scale.max(l.abs());
+                        if r == c {
+                            re_diag = re_diag.max(l.re.abs());
+                            im_diag = im_diag.max(l.im.abs());
+                        }
+                    }
+                }
+            }
+            eprintln!(
+                "mirror m={m} n={n} ({},{},{}): |L+conj(R^T)| {w_t:.3e} |L+conj(R)| {w_n:.3e} (scale {scale:.3e}) diag |Re| {re_diag:.3e} |Im| {im_diag:.3e}{}",
+                cut.nl, cut.ni, cut.nr,
+                if mir == i { " SELF" } else { "" }
+            );
+        }
+    }
+    // greater/retarded family magnitude vs the les family on the same
+    // propagators. The ret-slot increment is exactly zero on the diagonal
+    // at every order (structural: the native OCA shows it too), so only the
+    // off-diagonal j < n carries it - this probe tells whether the m=3
+    // greater families produce anything there at all.
+    if std::env::var_os("NQIST_MIRROR_GTR").is_some() {
+        for n in 0..=(nt_rt as i64) {
+            for j in 0..=n {
+                let mx = |anchor: &Anchor| -> f64 {
+                    super::evalfam2m::sigma_cuts_m_mat(
+                        m, &hs, &pp_ints, None, &proj, &solver.pp_g, anchor, n, h_rt, beta, dtau, 5,
+                        &integ,
+                    )
+                    .iter()
+                    .map(|b| b.raw().iter().map(|z| z.abs()).fold(0.0f64, f64::max))
+                    .fold(0.0f64, f64::max)
+                };
+                eprintln!(
+                    "gtr m={m} ({j},{n}): |JUpper| {:.3e} |JLower| {:.3e}",
+                    mx(&Anchor::JUpper(j)),
+                    mx(&Anchor::JLower(j))
+                );
+            }
+        }
+    }
+    // Junction identity on the block-cut families: the two sides are
+    // evaluated by independent walks (the les row j = 0 against the mixed
+    // component at physical tau = beta, stored index 0).
+    if std::env::var_os("NQIST_MIRROR_JUNCTION").is_some() {
+        let ntau_i = ntau as i64;
+        // NQIST_JUNCTION_MU overrides the mixed side's tau (diagnostic: the
+        // junction identity itself only holds at mu = ntau)
+        let jmu = std::env::var("NQIST_JUNCTION_MU")
+            .ok()
+            .and_then(|v| v.parse::<i64>().ok())
+            .unwrap_or(ntau_i);
+        for n in 0..=(nt_rt as i64) {
+            let lj = super::evalfam2m::sigma_cuts_m_mat(
+                m, &hs, &pp_ints, None, &proj, &solver.pp_g, &Anchor::JLower(0), n, h_rt, beta,
+                dtau, test_kt() as _, &integ,
+            );
+            let tj = super::evalfam2m::sigma_cuts_m_mat(
+                m, &hs, &pp_ints, None, &proj, &solver.pp_g, &Anchor::Tau(jmu), n, h_rt, beta,
+                dtau, test_kt() as _, &integ,
+            );
+            let (mut plus, mut minus, mut scale, mut tmax) = (0.0f64, 0.0f64, 0.0f64, 0.0f64);
+            // worst element of the junction residual (its identity matters:
+            // the max over sectors hides which sector carries the growth)
+            let (mut w_el, mut w_val, mut w_l, mut w_t) = ((0usize, 0usize, 0usize), 0.0f64, Complex::ZERO, Complex::ZERO);
+            for s in 0..hs.ns() {
+                let dim = hs.sectors[s].dim;
+                for r in 0..dim {
+                    for c in 0..dim {
+                        let lv = lj[s].raw()[r * dim + c];
+                        let tv = tj[s].raw()[c * dim + r].conj();
+                        plus = plus.max((lv + tv).abs());
+                        minus = minus.max((lv - tv).abs());
+                        scale = scale.max(lv.abs());
+                        tmax = tmax.max(tv.abs());
+                        if (lv + tv).abs() > w_val {
+                            w_val = (lv + tv).abs();
+                            w_el = (s, r, c);
+                            w_l = lv;
+                            w_t = tv;
+                        }
+                    }
+                }
+            }
+            eprintln!(
+                "junction m={m} n={n} mu={jmu}: |L - conjT| {minus:.3e} |L + conjT| {plus:.3e} (scale {scale:.3e}) |L|max {scale:.6e} |T|max {tmax:.6e}"
+            );
+            eprintln!(
+                "  worst s{}[{},{}]: L({:+.4e},{:+.4e}) conjT({:+.4e},{:+.4e})",
+                w_el.0, w_el.1, w_el.2, w_l.re, w_l.im, w_t.re, w_t.im
+            );
+        }
+    }
+    // NQIST_MIXED_T0: the mixed (Tau) families at t = 0 against the
+    // EQUILIBRIUM Matsubara self-energy - the only exact reference the m>=3
+    // mixed component has. On a static state lmix(0, m) = i*sig*mat(ntau - m),
+    // so the higher-order increment of mat(k) is the reference for Tau(mu=k)
+    // (stored index ntau - k). XCA_MCUT restricts the block-cut side.
+    if std::env::var_os("NQIST_MIXED_T0").is_some() {
+        solver.order = 3;
+        for _ in 0..12 {
+            solver.pp_step(-1, &pp_ints);
+        }
+        solver.set_t0();
+        let sgn = Complex::new(0.0, solver.pp_g[0].sign.as_i64() as f64);
+        solver.order = 2;
+        solver.update_sigma(-1, &pp_ints);
+        let s2 = solver.pp_sigma.clone();
+        solver.order = 3;
+        solver.update_sigma(-1, &pp_ints);
+        let s3 = solver.pp_sigma.clone();
+        let dump = true;
+        for mu in 0..=ntau as i64 {
+            let got = super::evalfam2m::sigma_cuts_m_mat(
+                m, &hs, &pp_ints, None, &proj, &solver.pp_g, &Anchor::Tau(mu), 0, h_rt, beta,
+                dtau, test_kt() as _, &integ,
+            );
+            let (mut worst_p, mut worst_m, mut scale) = (0.0f64, 0.0f64, 0.0f64);
+            let mut txt = String::new();
+            for s in 0..hs.ns() {
+                let dim = hs.sectors[s].dim;
+                for q in 0..dim * dim {
+                    let dmat = s3[s].mat.block(mu as usize)[q] - s2[s].mat.block(mu as usize)[q];
+                    // sector parity: the mixed and Matsubara components differ
+                    // by (-1)^N in odd-particle sectors (the native OCA shows
+                    // the same, see the native-fill calibration below)
+                    let wp = Complex::new(hs.sectors[s].sig.as_i64() as f64, 0.0) * sgn * dmat;
+                    let wm = -wp;
+                    worst_p = worst_p.max((got[s].raw()[q] - wp).abs());
+                    worst_m = worst_m.max((got[s].raw()[q] - wm).abs());
+                    scale = scale.max(wp.abs());
+                }
+            }
+            if dump {
+                for (s, q) in [(4usize, 10usize), (4, 5), (1, 3), (1, 0)] {
+                    let dm = s3[s].mat.block(mu as usize)[q] - s2[s].mat.block(mu as usize)[q];
+                    let g = got[s].raw()[q];
+                    let w = Complex::new(hs.sectors[s].sig.as_i64() as f64, 0.0) * sgn * dm;
+                    txt.push_str(&format!(
+                        " s{s}[{q}] got({:+.3e},{:+.3e}) ref({:+.3e},{:+.3e})",
+                        g.re, g.im, w.re, w.im
+                    ));
+                }
+            }
+            eprintln!(
+                "mixed-t0 m={m} mu={mu}: worst(+i.sig) {worst_p:.3e} worst(-i.sig) {worst_m:.3e} (scale {scale:.3e}){txt}"
+            );
+        }
+        // Reference-construction calibration on the trusted native OCA:
+        // does its own t=0 mixed increment equal i*sig*mat_inc with ONE sign
+        // in every sector? If it does, a sector-parity sign in the block-cut
+        // comparison is a block-cut error, not a convention.
+        solver.order = 1;
+        solver.update_sigma(-1, &pp_ints);
+        let s1m = solver.pp_sigma.clone();
+        solver.pp_step(0, &pp_ints);
+        solver.order = 2;
+        solver.update_sigma(0, &pp_ints);
+        let r2 = solver.pp_sigma.clone();
+        solver.order = 1;
+        solver.update_sigma(0, &pp_ints);
+        let r1 = solver.pp_sigma.clone();
+        for mu in [1i64, 12, 23] {
+            for (s, q) in [(4usize, 10usize), (4, 5), (1, 3), (1, 0)] {
+                let dm = s2[s].mat.block(mu as usize)[q] - s1m[s].mat.block(mu as usize)[q];
+                let li = ntau as i64 - mu;
+                let lm =
+                    r2[s].lmix.raw_block_at(0, li)[q] - r1[s].lmix.raw_block_at(0, li)[q];
+                let rf = sgn * dm;
+                eprintln!(
+                    "native-fill mu={mu} s{s}[{q}]: lmix_inc({:+.3e},{:+.3e}) i*sig*mat_inc({:+.3e},{:+.3e})",
+                    lm.re,
+                    lm.im,
+                    rf.re,
+                    rf.im
+                );
+            }
+        }
+    }
+}
+
 #[test]
 #[ignore]
 fn xca_split_diag() {
@@ -13709,5 +14536,709 @@ fn xca_split_diag() {
                 b_.im
             );
         }
+    }
+}
+
+/// Equal-time Hermiticity / TTI probe of the m>=2 les (JLower) cut
+/// sums on the balanced two-band dimer state (the PPSC-anchored
+/// setup of xca_m2_dimer_cuts_vs_native_oca, where the m=2 cut sum
+/// matches the native OCA to 1e-4 relative). A Keldysh self-energy
+/// obeys Sigma^<(t,t)^dag = -Sigma^<(t,t) (anti-Hermitian: the
+/// DIAGONAL real part must vanish) and on a stationary state the cut
+/// SUM is row-independent. Per row n the probe prints the
+/// anti-Hermiticity defect, the magnitude, and the row-to-row
+/// difference; NQIST_EQT_DETAIL adds the per-cut diagonal real parts
+/// (the cut whose real part grows with n localizes the drift driver).
+/// NQIST_EQT_M selects the order (default 3).
+#[test]
+#[ignore]
+fn xca_m3_les_eqtime_hermiticity_probe() {
+    use super::evalfam2::{families, Anchor};
+    use crate::xca::topology::connected_pairings;
+    use kadanoffbaym::types::TimeFunction;
+
+    let (beta, h_rt) = (5.0f64, 0.05f64);
+    // NQIST_EQT_NT: real-time steps. The default 6 sits at/inside the
+    // kt=5 startup window; NQIST_EQT_NT=24 exits it (production grid).
+    let nt_rt: usize = std::env::var("NQIST_EQT_NT")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(6);
+    // NQIST_EQT_NTAU / NQIST_EQT_KT (diagnostic): tau resolution and
+    // Gregory order. The band/continuation hypotheses predict the
+    // equal-time block tracks one of them.
+    let ntau: usize = std::env::var("NQIST_EQT_NTAU")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(24);
+    let kt: i64 = std::env::var("NQIST_EQT_KT")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(5);
+    assert!((1..=5).contains(&kt), "NQIST_EQT_KT must be 1..=5");
+    // NQIST_EQT_MU (diagnostic): shift the local level off the bath
+    // resonance. NQIST_EQT_VSCALE (diagnostic): scale the bath coupling
+    // (faster pp decoherence). Both are inert at the defaults.
+    let mu_shift: f64 = std::env::var("NQIST_EQT_MU")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(0.0);
+    let vscale: f64 = std::env::var("NQIST_EQT_VSCALE")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(1.0);
+    let hs = crate::hilbert::build(2, crate::hilbert::SectorClass::SpinResolved);
+    let ham = crate::hamilton::LocalHamiltonian::TwoBandKanamori {
+        mu: mu_shift,
+        u: vec![2.0; nt_rt + 2],
+        j: vec![0.4; nt_rt + 2],
+        delta: vec![0.8; nt_rt + 2],
+        bz: vec![0.0; nt_rt + 2],
+    };
+    let contour = Contour::new(
+        nt_rt as i64,
+        ntau as i64,
+        1,
+        1,
+        h_rt * nt_rt as f64,
+        beta,
+    );
+    let mk_level = |eps: f64| -> ContourGreen {
+        let mut g = ContourGreen::new(&contour, Sign::Fermi, Complex::ZERO);
+        let sig = ContourGreen::new(&contour, Sign::Fermi, Complex::ZERO);
+        let mut hf = TimeFunction::zeros(nt_rt, 1, 1);
+        for tstp in -1..=(nt_rt as i64) {
+            hf.block_mut(tstp)[0] = Complex::new(eps, 0.0);
+        }
+        kadanoffbaym::dyson::dyson_mat(
+            &mut g,
+            &sig,
+            0.0,
+            &hf,
+            beta,
+            kt,
+            kadanoffbaym::base::MatsubaraMethod::Fixpoint,
+            true,
+            None,
+            1e-12,
+        );
+        kadanoffbaym::dyson::dyson_start(&mut g, 0.0, &hf, &sig, beta, h_rt, kt);
+        for tstp in (kt + 1)..=(nt_rt as i64) {
+            kadanoffbaym::dyson::dyson_timestep(tstp, &mut g, 0.0, &hf, &sig, beta, h_rt, kt);
+        }
+        g
+    };
+    let scale_green = |g: &ContourGreen, w: f64| -> ContourGreen {
+        let wc = Complex::new(w, 0.0);
+        let mut out = ContourGreen::new(&contour, Sign::Fermi, Complex::ZERO);
+        for n in 0..=(nt_rt as i64) {
+            for jj in 0..=n {
+                out.ret.block_mut(out.ret.idx(n, jj))[0] =
+                    g.ret.block(g.ret.idx(n, jj))[0] * wc;
+                out.less.block_mut(out.less.idx(jj, n))[0] =
+                    g.less.block(g.less.idx(jj, n))[0] * wc;
+            }
+            for m in 0..=(ntau as i64) {
+                out.lmix.raw_block_at_mut(n, m)[0] = g.lmix.raw_block_at(n, m)[0] * wc;
+            }
+        }
+        for m in 0..=(ntau as i64) {
+            out.mat.block_mut(m as usize)[0] = g.mat.block(m as usize)[0] * wc;
+        }
+        out
+    };
+    let mk_pair = |lvl: &ContourGreen, v: f64| -> (ContourGreen, ContourGreen) {
+        let fwd = scale_green(lvl, v * v);
+        let mut cc = ContourGreen::new(&contour, Sign::Fermi, Complex::ZERO);
+        crate::dmft::set_bwd_from_fwd_mat(&mut cc, &fwd);
+        for t in 0..=(nt_rt as i64) {
+            crate::dmft::set_bwd_from_fwd_tstp(t, &mut cc, &fwd);
+        }
+        (fwd, cc)
+    };
+    // NQIST_EQT_EPS (diagnostic): shift the bath levels off the pp
+    // spectrum. If the L-window n^2 growth shrinks with the detuning,
+    // it is resonance-driven rather than generic window growth.
+    let eps_shift: f64 = std::env::var("NQIST_EQT_EPS")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(0.0);
+    let lvl1 = mk_level(0.5 + eps_shift);
+    let lvl2 = mk_level(-0.8 + eps_shift);
+    let (d1, d1c) = mk_pair(&lvl1, 0.3 * vscale.sqrt());
+    let (d2, d2c) = mk_pair(&lvl2, 0.35 * vscale.sqrt());
+    let c0a = hs.flavor(0, 0, false);
+    let c0c = hs.flavor(0, 0, true);
+    let c1a = hs.flavor(1, 0, false);
+    let c1c = hs.flavor(1, 0, true);
+    let pp_ints = [
+        Hybridization {
+            delta: &d1,
+            op_cre_fl: c0c,
+            op_ann_fl: c0a,
+            fermion: true,
+            backward: false,
+        },
+        Hybridization {
+            delta: &d1c,
+            op_cre_fl: c0a,
+            op_ann_fl: c0c,
+            fermion: true,
+            backward: true,
+        },
+        Hybridization {
+            delta: &d2,
+            op_cre_fl: c1c,
+            op_ann_fl: c1a,
+            fermion: true,
+            backward: false,
+        },
+        Hybridization {
+            delta: &d2c,
+            op_cre_fl: c1a,
+            op_ann_fl: c1c,
+            fermion: true,
+            backward: true,
+        },
+    ];
+    let mut solver = crate::solver::ImpuritySolver::new(
+        nt_rt,
+        ntau,
+        beta,
+        h_rt,
+        kt as _,
+        2,
+        hs.clone(),
+        ham,
+    );
+    solver.solve_atomic();
+    for _ in 0..12 {
+        solver.pp_step(-1, &pp_ints);
+    }
+    solver.set_t0();
+    let integ = Integrator::new(kt);
+    let dtau = beta / ntau as f64;
+    let m: usize = std::env::var("NQIST_EQT_M")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(3);
+    let fits = super::fit_channels_rt_ext(&pp_ints, h_rt, nt_rt, 2, crate::xca::W_MAX_DEFAULT);
+    let proj: Vec<_> = (0..pp_ints.len())
+        .map(|c| {
+            super::fit::csoe_project_all(
+                &pp_ints[c].delta,
+                &fits[c],
+                beta,
+                dtau,
+                h_rt,
+                nt_rt,
+                ntau,
+            )
+        })
+        .collect();
+    let chans = super::boson_rt::chans_with_bath(&pp_ints, None);
+    let topos = connected_pairings(m);
+    let detail = std::env::var_os("NQIST_EQT_DETAIL").is_some();
+    let mut prev: Option<Vec<Vec<Complex>>> = None;
+    let mut prev_lag: Vec<Option<Vec<Vec<Complex>>>> = vec![None; 7];
+    for n in 0..=nt_rt as i64 {
+        // advance the static state one real-time row before reading
+        // it (the set_t0 row alone leaves the n > 0 blocks unpopulated)
+        solver.pp_step(n, &pp_ints);
+        if n == 0 {
+            continue;
+        }
+        if std::env::var_os("NQIST_EQT_OCA").is_some() {
+            // native OCA order-2 minus order-1 increment at the same
+            // (n, n) block: the reference against which the cut sum
+            // was PPSC-gated
+            let saved = solver.pp_sigma.clone();
+            solver.order = 1;
+            solver.update_sigma(n, &pp_ints);
+            let s1 = solver.pp_sigma.clone();
+            solver.order = 2;
+            solver.update_sigma(n, &pp_ints);
+            let (mut hh, mut sc) = (0.0f64, 0.0f64);
+            for s in 0..hs.ns() {
+                let dim = hs.sectors[s].dim;
+                let b: Vec<Complex> = (0..dim * dim)
+                    .map(|q| {
+                        solver.pp_sigma[s].less.raw_block_at(n, n)[q]
+                            - s1[s].less.raw_block_at(n, n)[q]
+                    })
+                    .collect();
+                for r in 0..dim {
+                    for c in 0..dim {
+                        hh = hh.max((b[r * dim + c] + b[c * dim + r].conj()).abs());
+                        sc = sc.max(b[r * dim + c].abs());
+                    }
+                }
+            }
+            solver.pp_sigma = saved;
+            solver.order = 2;
+            eprintln!("eqt oca n={n}: antiherm {hh:.3e} |B| {sc:.3e}");
+        }
+        let anchor = Anchor::JLower(n);
+        let mut sum = vec![Vec::<Complex>::new(); hs.ns()];
+        for cut in families(m, &anchor) {
+            let mut cutsum = vec![Vec::<Complex>::new(); hs.ns()];
+            // per-topology accumulator (the detail print separates the
+            // mat-chord topologies the MM phase rule skips)
+            let mut toposum = vec![vec![Vec::<Complex>::new(); hs.ns()]; topos.len()];
+            for (ti, topo) in topos.iter().enumerate() {
+                // FULL channel enumeration (with replacement) - a
+                // partial cs set breaks the cut-sum's anti-Hermiticity
+                for cs in super::evalm::ChannelIter::new(chans.len(), m) {
+                    for s0 in 0..hs.ns() {
+                        let Some(chain) = super::boson_rt::build_rt_chain_mixed_m(
+                            &hs,
+                            &topo.pairs,
+                            &cs,
+                            &chans,
+                            s0,
+                        ) else {
+                            continue;
+                        };
+                        let mut stat = 1.0f64;
+                        for &c in &cs {
+                            if pp_ints[c].backward {
+                                stat *= -1.0;
+                            }
+                        }
+                        let fac = Complex::new(
+                            if m % 2 == 0 { stat } else { -stat } * topo.parity,
+                            0.0,
+                        );
+                        let dim = hs.sectors[s0].dim;
+                        if sum[s0].is_empty() {
+                            sum[s0] = vec![Complex::ZERO; dim * dim];
+                        }
+                        if cutsum[s0].is_empty() {
+                            cutsum[s0] = vec![Complex::ZERO; dim * dim];
+                        }
+                        if toposum[ti][s0].is_empty() {
+                            toposum[ti][s0] = vec![Complex::ZERO; dim * dim];
+                        }
+                        let mut combo = vec![0usize; m];
+                        loop {
+                            let v = super::evalfam2m::eval_cut_m(
+                                m,
+                                &cut,
+                                &anchor,
+                                &chain,
+                                &topo.pairs,
+                                &cs,
+                                &combo,
+                                &proj,
+                                &pp_ints,
+                                None,
+                                &solver.pp_g,
+                                n,
+                                h_rt,
+                                beta,
+                                dtau,
+                                kt,
+                                &integ,
+                            );
+                            if detail
+                                && s0 == 4
+                                && std::env::var_os("NQIST_EQT_CS_DUMP").is_some()
+                                && matches!((cut.nl, cut.ni, cut.nr), (1, 2, 1))
+                                && ti == 2
+                            {
+                                let sv = v.get(3, 3);
+                                eprintln!(
+                                    "eqt n={n} (1,2,1) topo2 cs={cs:?} combo={combo:?} s4[3,3] {:+.3e}{:+.3e}i",
+                                    sv.re, sv.im
+                                );
+                            }
+                            for q in 0..v.len() {
+                                cutsum[s0][q] += fac * v.raw()[q];
+                                sum[s0][q] += fac * v.raw()[q];
+                                toposum[ti][s0][q] += fac * v.raw()[q];
+                            }
+                            let mut idx = 0;
+                            let mut wrapped = false;
+                            loop {
+                                if idx == m {
+                                    wrapped = true;
+                                    break;
+                                }
+                                combo[idx] += 1;
+                                if combo[idx] < proj[cs[idx]].poles.len() {
+                                    break;
+                                }
+                                combo[idx] = 0;
+                                idx += 1;
+                            }
+                            if wrapped {
+                                break;
+                            }
+                        }
+                    }
+                }
+            }
+            if detail {
+                for (s0, block) in cutsum.iter().enumerate() {
+                    let dim = hs.sectors[s0].dim;
+                    if block.is_empty() {
+                        continue;
+                    }
+                    let mut re_diag = 0.0f64;
+                    let mut diag = 0.0f64;
+                    let mut pick = Complex::ZERO;
+                    for r in 0..dim {
+                        let x = block[r * dim + r];
+                        if x.abs() >= diag {
+                            pick = x;
+                        }
+                        re_diag = re_diag.max(x.re.abs());
+                        diag = diag.max(x.abs());
+                    }
+                    if diag > 1e-14 {
+                        eprintln!(
+                            "eqt n={n} cut ({},{},{}): s{s0} |Re diag| {re_diag:.3e} |diag| {diag:.3e} arg {:+.3e}{:+.3e}i",
+                            cut.nl, cut.ni, cut.nr, pick.re, pick.im
+                        );
+                    }
+                }
+                if matches!((cut.nl, cut.ni, cut.nr), (0, 4, 0) | (1, 2, 1) | (1, 3, 0) | (0, 3, 1)) {
+                    for (ti, topo) in topos.iter().enumerate() {
+                        let s0 = 4usize;
+                        let dim = hs.sectors[s0].dim;
+                        let block = &toposum[ti][s0];
+                        if block.is_empty() {
+                            continue;
+                        }
+                        let mut pick = Complex::ZERO;
+                        let mut mag = 0.0f64;
+                        for r in 0..dim {
+                            let x = block[r * dim + r];
+                            if x.abs() >= mag {
+                                mag = x.abs();
+                                pick = x;
+                            }
+                        }
+                        eprintln!(
+                            "eqt n={n} cut ({},{},{}) topo{ti} {:?}: s4 diag {:+.3e}{:+.3e}i",
+                            cut.nl, cut.ni, cut.nr, topo.pairs, pick.re, pick.im
+                        );
+                    }
+                }
+            }
+        }
+        let (mut herm, mut scale, mut tti) = (0.0f64, 0.0f64, 0.0f64);
+        let mut tti_desc = String::new();
+        for (s0, block) in sum.iter().enumerate() {
+            let dim = hs.sectors[s0].dim;
+            if block.is_empty() {
+                continue;
+            }
+            for r in 0..dim {
+                for c in 0..dim {
+                    let x = block[r * dim + c];
+                    herm = herm.max((x + block[c * dim + r].conj()).abs());
+                    scale = scale.max(x.abs());
+                }
+            }
+            if let Some(p) = &prev {
+                if !p[s0].is_empty() {
+                    for (q, x) in block.iter().enumerate() {
+                        let d = (*x - p[s0][q]).abs();
+                        if d > tti {
+                            tti = d;
+                            tti_desc = format!(
+                                "s{s0} q{q} [{},{}] now {:+.3e}{:+.3e}i prev {:+.3e}{:+.3e}i",
+                                q / dim,
+                                q % dim,
+                                x.re,
+                                x.im,
+                                p[s0][q].re,
+                                p[s0][q].im
+                            );
+                        }
+                    }
+                }
+            }
+        }
+        if std::env::var_os("NQIST_EQT_CROSS").is_some() {
+            let cross = super::evalfam2m::sigma_cuts_m_mat(
+                m,
+                &hs,
+                &pp_ints,
+                None,
+                &proj,
+                &solver.pp_g,
+                &Anchor::JLower(n),
+                n,
+                h_rt,
+                beta,
+                dtau,
+                kt,
+                &integ,
+            );
+            let mut cc = 0.0f64;
+            for (s, block) in cross.iter().enumerate() {
+                let dim = hs.sectors[s].dim;
+                if sum[s].is_empty() {
+                    continue;
+                }
+                for r in 0..dim {
+                    for c in 0..dim {
+                        cc = cc.max((block.get(r, c) - sum[s][r * dim + c]).abs());
+                    }
+                }
+            }
+            eprintln!("eqt cross n={n}: manual-vs-machine {cc:.3e}");
+        }
+        eprintln!(
+            "eqt n={n}: antiherm |B+B^dag| {herm:.3e} |B| {scale:.3e} TTI-vs-prev {tti:.3e} @ {tti_desc}"
+        );
+        if std::env::var_os("NQIST_EQT_JUNCTION").is_some() && n >= 1 {
+            // Junction identity: Sigma^<(0,n) = -[Sigma^mix(n, 0)]^dag
+            // (storage index 0 of lmix, i.e. the Tau(ntau) write). Both
+            // sides are the m-order cut sums; the production Tau write
+            // also carries the output sector sign pp_g[s].sign.
+            let eval_sum = |anchor: &Anchor, nn: i64| -> Vec<Vec<Complex>> {
+                let mut sum = vec![Vec::<Complex>::new(); hs.ns()];
+                for cut in families(m, anchor) {
+                    for topo in &topos {
+                        for cs in super::evalm::ChannelIter::new(chans.len(), m) {
+                            for s0 in 0..hs.ns() {
+                                let Some(chain) = super::boson_rt::build_rt_chain_mixed_m(
+                                    &hs,
+                                    &topo.pairs,
+                                    &cs,
+                                    &chans,
+                                    s0,
+                                ) else {
+                                    continue;
+                                };
+                                let mut stat = 1.0f64;
+                                for &c in &cs {
+                                    if pp_ints[c].backward {
+                                        stat *= -1.0;
+                                    }
+                                }
+                                let fac = Complex::new(
+                                    if m % 2 == 0 { stat } else { -stat } * topo.parity,
+                                    0.0,
+                                );
+                                let dim = hs.sectors[s0].dim;
+                                if sum[s0].is_empty() {
+                                    sum[s0] = vec![Complex::ZERO; dim * dim];
+                                }
+                                let mut combo = vec![0usize; m];
+                                loop {
+                                    let v = super::evalfam2m::eval_cut_m(
+                                        m,
+                                        &cut,
+                                        anchor,
+                                        &chain,
+                                        &topo.pairs,
+                                        &cs,
+                                        &combo,
+                                        &proj,
+                                        &pp_ints,
+                                        None,
+                                        &solver.pp_g,
+                                        nn,
+                                        h_rt,
+                                        beta,
+                                        dtau,
+                                        kt,
+                                        &integ,
+                                    );
+                                    for q in 0..v.len() {
+                                        sum[s0][q] += fac * v.raw()[q];
+                                    }
+                                    let mut idx = 0;
+                                    let mut wrapped = false;
+                                    loop {
+                                        if idx == m {
+                                            wrapped = true;
+                                            break;
+                                        }
+                                        combo[idx] += 1;
+                                        if combo[idx] < proj[cs[idx]].poles.len() {
+                                            break;
+                                        }
+                                        combo[idx] = 0;
+                                        idx += 1;
+                                    }
+                                    if wrapped {
+                                        break;
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+                sum
+            };
+            let les = eval_sum(&Anchor::JLower(0), n);
+            let mix = eval_sum(&Anchor::Tau(ntau as i64), n);
+            let (mut plus, mut minus, mut scale) = (0.0f64, 0.0f64, 0.0f64);
+            for s0 in 0..hs.ns() {
+                let dim = hs.sectors[s0].dim;
+                if les[s0].is_empty() || mix[s0].is_empty() {
+                    continue;
+                }
+                let sg = Complex::new(solver.pp_g[s0].sign.as_i64() as f64, 0.0);
+                for r in 0..dim {
+                    for c in 0..dim {
+                        let lv = les[s0][r * dim + c];
+                        let tv = (mix[s0][c * dim + r] * sg).conj();
+                        plus = plus.max((lv + tv).abs());
+                        minus = minus.max((lv - tv).abs());
+                        scale = scale.max(lv.abs());
+                    }
+                }
+            }
+            eprintln!(
+                "eqt n={n}: JUNCTION |L+M^dag| {plus:.3e} |L-M^dag| {minus:.3e} (scale {scale:.3e})"
+            );
+        }
+        if std::env::var_os("NQIST_EQT_LAG").is_some() && n >= 1 {
+            // Lag sweep: the cut decomposition's near-diagonal rows, and
+            // (NQIST_EQT_OCA) the native OCA order2-order1 increment at
+            // the same (j, n) - the exact reference. If the cut sum
+            // deviates only for lag < kt (the hermitian-continuation
+            // band width) the band handling, not the window, is wrong.
+            let oca_incr = if std::env::var_os("NQIST_EQT_OCA").is_some() {
+                let saved = solver.pp_sigma.clone();
+                solver.order = 1;
+                solver.update_sigma(n, &pp_ints);
+                let s1 = solver.pp_sigma.clone();
+                solver.order = 2;
+                solver.update_sigma(n, &pp_ints);
+                let s2 = solver.pp_sigma.clone();
+                solver.pp_sigma = saved;
+                solver.order = 2;
+                Some((s1, s2))
+            } else {
+                None
+            };
+            for lag in 0..=6.min(n) {
+                let j = n - lag;
+                let anchor_lag = Anchor::JLower(j);
+                let mut lagsum = vec![Vec::<Complex>::new(); hs.ns()];
+                for cut in families(m, &anchor_lag) {
+                    for topo in &topos {
+                        for cs in super::evalm::ChannelIter::new(chans.len(), m) {
+                            for s0 in 0..hs.ns() {
+                                let Some(chain) = super::boson_rt::build_rt_chain_mixed_m(
+                                    &hs,
+                                    &topo.pairs,
+                                    &cs,
+                                    &chans,
+                                    s0,
+                                ) else {
+                                    continue;
+                                };
+                                let mut stat = 1.0f64;
+                                for &c in &cs {
+                                    if pp_ints[c].backward {
+                                        stat *= -1.0;
+                                    }
+                                }
+                                let fac = Complex::new(
+                                    if m % 2 == 0 { stat } else { -stat } * topo.parity,
+                                    0.0,
+                                );
+                                let dim = hs.sectors[s0].dim;
+                                if lagsum[s0].is_empty() {
+                                    lagsum[s0] = vec![Complex::ZERO; dim * dim];
+                                }
+                                let mut combo = vec![0usize; m];
+                                loop {
+                                    let v = super::evalfam2m::eval_cut_m(
+                                        m,
+                                        &cut,
+                                        &anchor_lag,
+                                        &chain,
+                                        &topo.pairs,
+                                        &cs,
+                                        &combo,
+                                        &proj,
+                                        &pp_ints,
+                                        None,
+                                        &solver.pp_g,
+                                        n,
+                                        h_rt,
+                                        beta,
+                                        dtau,
+                                        kt,
+                                        &integ,
+                                    );
+                                    for q in 0..v.len() {
+                                        lagsum[s0][q] += fac * v.raw()[q];
+                                    }
+                                    let mut idx = 0;
+                                    let mut wrapped = false;
+                                    loop {
+                                        if idx == m {
+                                            wrapped = true;
+                                            break;
+                                        }
+                                        combo[idx] += 1;
+                                        if combo[idx] < proj[cs[idx]].poles.len() {
+                                            break;
+                                        }
+                                        combo[idx] = 0;
+                                        idx += 1;
+                                    }
+                                    if wrapped {
+                                        break;
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+                let mut line = String::new();
+                if let Some((s1, s2)) = &oca_incr {
+                    let (mut rel, mut oscale) = (0.0f64, 0.0f64);
+                    for s0 in 0..hs.ns() {
+                        let dim = hs.sectors[s0].dim;
+                        if lagsum[s0].is_empty() {
+                            continue;
+                        }
+                        for q in 0..dim * dim {
+                            let want = s2[s0].less.raw_block_at(j, n)[q]
+                                - s1[s0].less.raw_block_at(j, n)[q];
+                            let got = lagsum[s0][q];
+                            if want.abs() > 1e-12 {
+                                rel = rel.max((got - want).abs() / want.abs());
+                            }
+                            oscale = oscale.max(want.abs());
+                        }
+                    }
+                    line.push_str(&format!(
+                        " cutsum-vs-oca {rel:.3e} (oca scale {oscale:.3e})"
+                    ));
+                }
+                let (mut ltti, mut lscale) = (0.0f64, 0.0f64);
+                for (s0, block) in lagsum.iter().enumerate() {
+                    let dim = hs.sectors[s0].dim;
+                    if block.is_empty() {
+                        continue;
+                    }
+                    for (q, x) in block.iter().enumerate() {
+                        lscale = lscale.max(x.abs());
+                        if let Some(p) = &prev_lag[lag as usize] {
+                            if !p[s0].is_empty() {
+                                ltti = ltti.max((*x - p[s0][q]).abs());
+                            }
+                        }
+                    }
+                }
+                eprintln!(
+                    "eqt n={n} lag={lag}: TTI-vs-prev {ltti:.3e} |B| {lscale:.3e}{line}"
+                );
+                prev_lag[lag as usize] = Some(lagsum);
+            }
+        }
+        prev = Some(sum);
     }
 }
