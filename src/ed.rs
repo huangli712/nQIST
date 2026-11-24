@@ -25,6 +25,14 @@
 //           `bath` order. Operator strings act right-to-left;
 //           Hermitian conjugates must be supplied explicitly (the
 //           builder asserts Hermiticity).
+//
+//           Phonon mode (Holstein): an optional truncated Einstein
+//           oscillator can be added to the joint space
+//           (`PhononSpec`): `H_ph = omega b^dag b + sum_k
+//           lambda_k(t) F_k (b + b^dag)`. The composite basis index
+//           packs the fermion occupation bits below the phonon
+//           number, so the fermion-only layout is the `nph = 1`
+//           special case.
 
 use crate::hamilton::LocalHamiltonian;
 use crate::hilbert::HilbertSpace;
@@ -46,6 +54,64 @@ pub struct BathCoupling {
 // call sites.
 pub use crate::hamilton::OpTerm;
 
+/// One electron-phonon coupling term of the joint space:
+/// `lambda(tstp + 1) * (fermionic string) (b + b^dag)`, with the
+/// string in the `OpTerm` mode convention (Holstein: the doublon
+/// `n_up n_dn`).
+#[derive(Clone, Debug)]
+pub struct PhononCoupling {
+    pub ops: Vec<(usize, bool)>,
+    /// `lambda(tstp + 1)` (length `nt + 2`, like the Hamiltonian arrays).
+    pub lambda: Vec<f64>,
+}
+
+/// A truncated Einstein phonon mode added to the joint impurity +
+/// bath space: `H_ph = omega b^dag b + sum_k lambda_k(t) F_k (b +
+/// b^dag)` with `nph` retained number states `0..nph-1`.
+#[derive(Clone, Debug)]
+pub struct PhononSpec {
+    /// Number of retained phonon levels.
+    pub nph: usize,
+    /// Phonon frequency.
+    pub omega: f64,
+    /// Electron-phonon coupling terms.
+    pub couplings: Vec<PhononCoupling>,
+}
+
+/// Composite joint-space layout: the fermion occupation bits in the
+/// low `nfbits` bits, the phonon number above them (`nph = 1` is the
+/// fermion-only layout).
+#[derive(Clone, Copy)]
+struct Layout {
+    nfbits: usize,
+    nph: usize,
+}
+
+impl Layout {
+    fn new(nfbits: usize, nph: usize) -> Layout {
+        assert!(nph >= 1, "ed: at least one phonon level is required");
+        Layout { nfbits, nph }
+    }
+
+    fn dim(&self) -> usize {
+        (1usize << self.nfbits) * self.nph
+    }
+
+    fn split(&self, idx: usize) -> (usize, usize) {
+        (idx & ((1usize << self.nfbits) - 1), idx >> self.nfbits)
+    }
+
+    fn join(&self, f: usize, p: usize) -> usize {
+        f | (p << self.nfbits)
+    }
+}
+
+/// Fermionic bit count of a fermion-only joint space of dimension `dim`.
+fn nfbits_of_pow2(dim: usize) -> usize {
+    assert!(dim.is_power_of_two(), "ed: {dim} is not a fermion-only dimension");
+    dim.trailing_zeros() as usize
+}
+
 // ------------------------------------------------------------------
 // static equilibrium reference (Lehmann)
 // ------------------------------------------------------------------
@@ -55,6 +121,8 @@ pub use crate::hamilton::OpTerm;
 pub struct EdReference {
     dim: usize,
     nmodes: usize,
+    /// Joint-space layout (fermion bits + optional phonon levels).
+    lay: Layout,
     evals: Vec<f64>,
     evecs: DenseMat,
     /// Boltzmann weights `e^{-beta (E - Emin)}` (unnormalized).
@@ -74,7 +142,20 @@ impl EdReference {
         terms: &[OpTerm],
         beta: f64,
     ) -> EdReference {
-        let h = joint_hamiltonian(ham, hs_imp, bath, terms, -1);
+        Self::build_with_phonon(ham, hs_imp, bath, terms, beta, None)
+    }
+
+    /// Diagonalize impurity + bath + phonon mode at the equilibrium
+    /// time slice (`tstp = -1`); `phonon = None` is [`EdReference::build`].
+    pub fn build_with_phonon(
+        ham: &LocalHamiltonian,
+        hs_imp: &HilbertSpace,
+        bath: &[BathCoupling],
+        terms: &[OpTerm],
+        beta: f64,
+        phonon: Option<&PhononSpec>,
+    ) -> EdReference {
+        let h = joint_hamiltonian(ham, hs_imp, bath, terms, -1, phonon);
         let nmodes = 2 * hs_imp.norb + bath.len();
         let dim = h.size();
         let (evals, evecs) = eigh(&h);
@@ -84,6 +165,7 @@ impl EdReference {
         EdReference {
             dim,
             nmodes,
+            lay: Layout::new(nmodes, phonon.map_or(1, |p| p.nph)),
             evals,
             evecs,
             weights,
@@ -111,7 +193,7 @@ impl EdReference {
 
     fn c_eig(&self, mode: usize) -> Ref<'_, DenseMat> {
         if self.c_eig.borrow()[mode].is_none() {
-            let cm = c_matrix(self.dim, mode);
+            let cm = c_matrix(&self.lay, mode);
             let ce = self.evecs.adjoint().mat_mul(&cm).mat_mul(&self.evecs);
             self.c_eig.borrow_mut()[mode] = Some(ce);
         }
@@ -186,9 +268,10 @@ impl EdReference {
     /// Thermal expectation `<O>` of an operator string.
     pub fn expectation(&self, ops: &[(usize, bool)]) -> Complex {
         let mut om = DenseMat::zeros(self.dim);
-        for st in 0..self.dim as u64 {
-            if let Some((tgt, s)) = apply_ops(ops, st) {
-                om.set(tgt as usize, st as usize, s);
+        for idx in 0..self.dim {
+            let (f, p) = self.lay.split(idx);
+            if let Some((tgt, s)) = apply_ops(ops, f as u64) {
+                om.set(self.lay.join(tgt as usize, p), idx, s);
             }
         }
         let oe = self.evecs.adjoint().mat_mul(&om).mat_mul(&self.evecs);
@@ -197,6 +280,20 @@ impl EdReference {
             acc += oe.get(i, i) * Complex::new(self.weights[i], 0.0);
         }
         acc / Complex::new(self.zpart, 0.0)
+    }
+
+    /// Thermal phonon number `<b^dag b>` (zero without a phonon mode).
+    pub fn phonon_number(&self) -> f64 {
+        let mut acc = 0.0f64;
+        for i in 0..self.dim {
+            let mut n = 0.0f64;
+            for idx in 0..self.dim {
+                let a = self.evecs.get(idx, i);
+                n += self.lay.split(idx).1 as f64 * (a * a.conj()).re;
+            }
+            acc += self.weights[i] * n;
+        }
+        acc / self.zpart
     }
 }
 
@@ -229,9 +326,26 @@ impl EdEvolution {
         beta: f64,
         modes: &[usize],
     ) -> EdEvolution {
+        let nfbits = nfbits_of_pow2(h0.size());
+        Self::build_with_layout(h0, h_steps, dt, beta, modes, nfbits)
+    }
+
+    /// [`EdEvolution::build`] on an explicitly laid out joint space:
+    /// `nfbits` is the number of fermionic bits (the phonon levels
+    /// are `h0.size() / 2^nfbits`).
+    pub fn build_with_layout(
+        h0: &DenseMat,
+        h_steps: &[DenseMat],
+        dt: f64,
+        beta: f64,
+        modes: &[usize],
+        nfbits: usize,
+    ) -> EdEvolution {
+        let lay = Layout::new(nfbits, h0.size() >> nfbits);
+        assert_eq!(lay.dim(), h0.size(), "ed: layout does not match the Hamiltonian size");
         let mut a_t: Vec<Vec<DenseMat>> = modes
             .iter()
-            .map(|&m| vec![c_matrix(h0.size(), m)])
+            .map(|&m| vec![c_matrix(&lay, m)])
             .collect();
         let mut u = identity(h0.size());
         let mut prop: Option<DenseMat> = None;
@@ -244,7 +358,7 @@ impl EdEvolution {
             u = p.mat_mul(&u);
             let ua = u.adjoint();
             for (mi, &m) in modes.iter().enumerate() {
-                let cm = c_matrix(h0.size(), m);
+                let cm = c_matrix(&lay, m);
                 a_t[mi].push(ua.mat_mul(&cm).mat_mul(&u));
             }
         }
@@ -266,9 +380,26 @@ impl EdEvolution {
         beta: f64,
         modes: &[usize],
     ) -> EdEvolution {
+        let nfbits = nfbits_of_pow2(h0.size());
+        Self::build_quench_with_layout(h0, h1, nt, dt, beta, modes, nfbits)
+    }
+
+    /// [`EdEvolution::build_quench`] on an explicitly laid out joint
+    /// space (see [`EdEvolution::build_with_layout`]).
+    pub fn build_quench_with_layout(
+        h0: &DenseMat,
+        h1: &DenseMat,
+        nt: usize,
+        dt: f64,
+        beta: f64,
+        modes: &[usize],
+        nfbits: usize,
+    ) -> EdEvolution {
+        let lay = Layout::new(nfbits, h0.size() >> nfbits);
+        assert_eq!(lay.dim(), h0.size(), "ed: layout does not match the Hamiltonian size");
         let mut a_t: Vec<Vec<DenseMat>> = modes
             .iter()
-            .map(|&m| vec![c_matrix(h0.size(), m)])
+            .map(|&m| vec![c_matrix(&lay, m)])
             .collect();
         let mut u = identity(h0.size());
         let prop = spectral_propagator(h1, dt);
@@ -276,7 +407,7 @@ impl EdEvolution {
             u = prop.mat_mul(&u);
             let ua = u.adjoint();
             for (mi, &m) in modes.iter().enumerate() {
-                let cm = c_matrix(h0.size(), m);
+                let cm = c_matrix(&lay, m);
                 a_t[mi].push(ua.mat_mul(&cm).mat_mul(&u));
             }
         }
@@ -368,11 +499,13 @@ fn impurity_energy(ham: &LocalHamiltonian, hs: &HilbertSpace, psi: u64, tstp: i6
     panic!("ed: impurity pattern {psi:b} not found in any sector");
 }
 
-fn apply_term(h: &mut DenseMat, dim: usize, coeff: Complex, ops: &[(usize, bool)]) {
-    for st in 0..dim as u64 {
-        if let Some((tgt, s)) = apply_ops(ops, st) {
-            let cur = h.get(tgt as usize, st as usize);
-            h.set(tgt as usize, st as usize, cur + coeff * s);
+fn apply_term(h: &mut DenseMat, lay: &Layout, coeff: Complex, ops: &[(usize, bool)]) {
+    for idx in 0..lay.dim() {
+        let (f, p) = lay.split(idx);
+        if let Some((tgt, s)) = apply_ops(ops, f as u64) {
+            let row = lay.join(tgt as usize, p);
+            let cur = h.get(row, idx);
+            h.set(row, idx, cur + coeff * s);
         }
     }
 }
@@ -381,58 +514,106 @@ fn apply_term(h: &mut DenseMat, dim: usize, coeff: Complex, ops: &[(usize, bool)
 /// blocks via `sector_block` at time `tstp` (diagonal AND, for the
 /// full-Kanamori variant, the off-diagonal spin-flip / pair-hopping
 /// entries) + bath occupations + bath couplings and caller terms
-/// through the operator-string machinery.
+/// through the operator-string machinery, plus the optional phonon
+/// mode (`omega b^dag b` and the e-ph terms).
 fn joint_hamiltonian(
     ham: &LocalHamiltonian,
     hs_imp: &HilbertSpace,
     bath: &[BathCoupling],
     terms: &[OpTerm],
     tstp: i64,
+    phonon: Option<&PhononSpec>,
 ) -> DenseMat {
     let imp_modes = 2 * hs_imp.norb;
-    let dim = 1usize << (imp_modes + bath.len());
+    let lay = Layout::new(imp_modes + bath.len(), phonon.map_or(1, |p| p.nph));
+    let dim = lay.dim();
     let mut h = DenseMat::zeros(dim);
     // scatter every impurity sector block (full matrix per sector)
-    // into EVERY bath configuration subspace (H_imp tensor I_bath)
+    // into EVERY bath configuration and phonon number subspace
+    // (H_imp tensor I_bath tensor I_ph)
     let ncfg = 1usize << bath.len();
     for s in 0..hs_imp.ns() {
         let blk = ham.sector_block(hs_imp, s, tstp);
         for cfg in 0..ncfg {
             let off = ((cfg as u64) << imp_modes) as usize;
-            for (i, &si) in hs_imp.sectors[s].states.iter().enumerate() {
-                for (j, &sj) in hs_imp.sectors[s].states.iter().enumerate() {
-                    h.set(si as usize + off, sj as usize + off, blk.get(i, j));
+            for p in 0..lay.nph {
+                for (i, &si) in hs_imp.sectors[s].states.iter().enumerate() {
+                    for (j, &sj) in hs_imp.sectors[s].states.iter().enumerate() {
+                        h.set(
+                            lay.join(si as usize + off, p),
+                            lay.join(sj as usize + off, p),
+                            blk.get(i, j),
+                        );
+                    }
                 }
             }
         }
     }
-    for st in 0..dim as u64 {
-        let mut e = 0.0;
+    for idx in 0..dim {
+        let (f, p) = lay.split(idx);
+        let mut e = match phonon {
+            Some(ph) => ph.omega * p as f64,
+            None => 0.0,
+        };
         for (b, bc) in bath.iter().enumerate() {
-            e += bc.eps * ((st >> (imp_modes + b)) & 1) as f64;
+            e += bc.eps * ((f >> (imp_modes + b)) & 1) as f64;
         }
         if e != 0.0 {
-            let cur = h.get(st as usize, st as usize);
-            h.set(st as usize, st as usize, cur + Complex::new(e, 0.0));
+            let cur = h.get(idx, idx);
+            h.set(idx, idx, cur + Complex::new(e, 0.0));
         }
     }
     for (b, bc) in bath.iter().enumerate() {
         let bb = imp_modes + b;
         apply_term(
             &mut h,
-            dim,
+            &lay,
             Complex::new(bc.v, 0.0),
             &[(bc.imp_mode, true), (bb, false)],
         );
         apply_term(
             &mut h,
-            dim,
+            &lay,
             Complex::new(bc.v, 0.0),
             &[(bb, true), (bc.imp_mode, false)],
         );
     }
     for t in terms {
-        apply_term(&mut h, dim, t.coeff, &t.ops);
+        apply_term(&mut h, &lay, t.coeff, &t.ops);
+    }
+    // e-ph terms: lambda(tstp) * F (b + b^dag), F applied to the
+    // fermion part (Jordan-Wigner signs), b / b^dag to the phonon number
+    if let Some(ph) = phonon {
+        let i = (tstp + 1) as usize;
+        for cpl in &ph.couplings {
+            assert!(
+                tstp >= -1 && i < cpl.lambda.len(),
+                "ed: phonon coupling index {i} out of range (len {})",
+                cpl.lambda.len()
+            );
+            let lam = cpl.lambda[i];
+            for idx in 0..dim {
+                let (f, p) = lay.split(idx);
+                let Some((tf, s)) = apply_ops(&cpl.ops, f as u64) else {
+                    continue;
+                };
+                let amp = lam * s.re;
+                if p >= 1 {
+                    let row = lay.join(tf as usize, p - 1);
+                    let cur = h.get(row, idx);
+                    h.set(row, idx, cur + Complex::new(amp * (p as f64).sqrt(), 0.0));
+                }
+                if p + 1 < lay.nph {
+                    let row = lay.join(tf as usize, p + 1);
+                    let cur = h.get(row, idx);
+                    h.set(
+                        row,
+                        idx,
+                        cur + Complex::new(amp * ((p + 1) as f64).sqrt(), 0.0),
+                    );
+                }
+            }
+        }
     }
     // Hermiticity guard: a missing h.c. term fails here.
     for i in 0..dim {
@@ -456,21 +637,38 @@ pub fn hamiltonian_at(
     terms: &[OpTerm],
     tstp: i64,
 ) -> DenseMat {
-    joint_hamiltonian(ham, hs_imp, bath, terms, tstp)
+    joint_hamiltonian(ham, hs_imp, bath, terms, tstp, None)
 }
 
-/// Annihilation matrix of `mode` on the full space (Jordan-Wigner).
-fn c_matrix(dim: usize, mode: usize) -> DenseMat {
+/// [`hamiltonian_at`] with the phonon mode of `phonon` added to the
+/// joint space (dimension `2^(2 norb + nbath) * nph`).
+pub fn hamiltonian_at_phonon(
+    ham: &LocalHamiltonian,
+    hs_imp: &HilbertSpace,
+    bath: &[BathCoupling],
+    terms: &[OpTerm],
+    tstp: i64,
+    phonon: &PhononSpec,
+) -> DenseMat {
+    joint_hamiltonian(ham, hs_imp, bath, terms, tstp, Some(phonon))
+}
+
+/// Annihilation matrix of `mode` on the joint space (Jordan-Wigner
+/// on the fermion part, identity on the phonon levels).
+fn c_matrix(lay: &Layout, mode: usize) -> DenseMat {
+    let dim = lay.dim();
     let mut cm = DenseMat::zeros(dim);
     let bit = 1u64 << mode;
-    for st in 0..dim as u64 {
+    for idx in 0..dim {
+        let (f, p) = lay.split(idx);
+        let st = f as u64;
         if st & bit != 0 {
             let sign = if (st & (bit - 1)).count_ones() % 2 == 1 {
                 -1.0
             } else {
                 1.0
             };
-            cm.set((st & !bit) as usize, st as usize, Complex::new(sign, 0.0));
+            cm.set(lay.join((st & !bit) as usize, p), idx, Complex::new(sign, 0.0));
         }
     }
     cm
@@ -736,6 +934,245 @@ mod tests {
         let h1 = hamiltonian_at(&twoband_ham(3.0, 0.4, 0.8, 8), &hs, &dimer_bath(), &[], -1);
         let ev = EdEvolution::build_quench(&h0, &h1, 25, 0.06, BETA, &[0, 1, 2, 3]);
         for m in [0usize, 1, 2, 3] {
+            for n in [0usize, 9, 25] {
+                let d = ev.greens_gtr(m, n, n) - ev.greens_les(m, n, n) + Complex::new(0.0, 1.0);
+                assert!((d * d.conj()).re < 1e-20, "mode {m} n {n}: {d:?}");
+            }
+        }
+    }
+
+    // ------------------------------------------------------------------
+    // phonon mode
+    // ------------------------------------------------------------------
+
+    /// Doublon string `n_up n_dn` (the Holstein vertex).
+    const DOCC: [(usize, bool); 4] = [(0, true), (0, false), (1, true), (1, false)];
+
+    #[test]
+    fn phonon_unit_layout_reproduces_fermion_only() {
+        // a single phonon level without couplings is the fermion-only
+        // space: both construction routes must agree bit for bit
+        let hs = build(2, SectorClass::SpinResolved);
+        let ham = twoband_ham(2.0, 0.4, 0.8, 2);
+        let ham_q = twoband_ham(3.0, 0.4, 0.8, 2);
+        let bath = dimer_bath();
+        let phonon = PhononSpec {
+            nph: 1,
+            omega: 0.9,
+            couplings: Vec::new(),
+        };
+        let a = EdReference::build(&ham, &hs, &bath, &[], BETA);
+        let b = EdReference::build_with_phonon(&ham, &hs, &bath, &[], BETA, Some(&phonon));
+        assert_eq!(a.dim(), b.dim());
+        assert!((a.partition() / b.partition() - 1.0).abs() < 1e-12);
+        for m in 0..4 {
+            for i in [1usize, 12, 24, 48, 72, 95] {
+                let tau = BETA * i as f64 / 96.0;
+                assert!((a.greens_tau(m, tau) - b.greens_tau(m, tau)).abs() < 1e-12);
+            }
+        }
+        let n_up = [(0usize, true), (0, false)];
+        let d = a.expectation(&n_up) - b.expectation(&n_up);
+        assert!((d * d.conj()).re < 1e-24);
+        assert_eq!(b.phonon_number(), 0.0);
+        let ha = hamiltonian_at(&ham, &hs, &bath, &[], -1);
+        let hb = hamiltonian_at_phonon(&ham, &hs, &bath, &[], -1, &phonon);
+        for i in 0..64usize {
+            for j in 0..64usize {
+                let d = ha.get(i, j) - hb.get(i, j);
+                assert!((d * d.conj()).re < 1e-28);
+            }
+        }
+        let h1a = hamiltonian_at(&ham_q, &hs, &bath, &[], 0);
+        let h1b = hamiltonian_at_phonon(&ham_q, &hs, &bath, &[], 0, &phonon);
+        let ev_a = EdEvolution::build_quench(&ha, &h1a, 10, 0.05, BETA, &[0, 1]);
+        let ev_b =
+            EdEvolution::build_quench_with_layout(&hb, &h1b, 10, 0.05, BETA, &[0, 1], 6);
+        for (n, np) in [(5usize, 0usize), (10, 3), (10, 0)] {
+            for (x, y) in [
+                (ev_a.greens_gtr(0, n, np), ev_b.greens_gtr(0, n, np)),
+                (ev_a.greens_les(1, np, n), ev_b.greens_les(1, np, n)),
+                (ev_a.greens_ret(1, n, np), ev_b.greens_ret(1, n, np)),
+            ] {
+                let d = x - y;
+                assert!((d * d.conj()).re < 1e-28);
+            }
+        }
+    }
+
+    #[test]
+    fn displaced_oscillator_spectrum() {
+        // independent-boson closed form: H = eps n_up + omega b^dag b
+        // + lambda n_up (b + b^dag) has the empty ladder m omega and
+        // the displaced ladder eps - lambda^2/omega + m omega
+        let hs = build(1, SectorClass::SpinResolved);
+        let (eps, omega, lam, nph) = (0.3f64, 0.8, 0.5, 24usize);
+        let ham = LocalHamiltonian::SingleBand {
+            mu: 0.0,
+            u: vec![0.0; 2],
+            eps_up: vec![eps; 2],
+            eps_do: vec![50.0; 2], // the down level is pushed away
+        };
+        let phonon = PhononSpec {
+            nph,
+            omega,
+            couplings: vec![PhononCoupling {
+                ops: vec![(0, true), (0, false)],
+                lambda: vec![lam; 2],
+            }],
+        };
+        let ed = EdReference::build_with_phonon(&ham, &hs, &[], &[], BETA, Some(&phonon));
+        assert_eq!(ed.dim(), 4 * nph);
+        let mut got = ed.eigenvalues().to_vec();
+        got.sort_by(|a, b| a.partial_cmp(b).unwrap());
+        let mut want: Vec<f64> = (0..nph)
+            .flat_map(|m| [m as f64 * omega, eps - lam * lam / omega + m as f64 * omega])
+            .collect();
+        want.sort_by(|a, b| a.partial_cmp(b).unwrap());
+        // the low half of the spectrum is truncation-converged
+        for (a, b) in got.iter().zip(&want).take(nph / 2) {
+            assert!((a - b).abs() < 1e-9, "{got:?} vs {want:?}");
+        }
+    }
+
+    #[test]
+    fn displaced_oscillator_thermal_phonon_number() {
+        // doublon-projector coupling: the displaced thermal oscillator
+        // on the doublon has <n> = n_B + (lambda/omega)^2, every other
+        // state the free thermal value n_B, hence
+        // <n_ph> = n_B(omega) + P_d (lambda/omega)^2 with P_d the
+        // thermal doublon probability of the atomic impurity with the
+        // polaron-shifted doublon energy E_d = -lambda^2/omega
+        // (particle-hole form: E_0 = E_d^0 = 0, E_s = -U/2)
+        let hs = build(1, SectorClass::SpinResolved);
+        let (u, omega, lam, nph) = (3.0f64, 0.8, 0.5, 24usize);
+        let ham = LocalHamiltonian::SingleBand {
+            mu: 0.0,
+            u: vec![u; 2],
+            eps_up: vec![0.0; 2],
+            eps_do: vec![0.0; 2],
+        };
+        let phonon = PhononSpec {
+            nph,
+            omega,
+            couplings: vec![PhononCoupling {
+                ops: DOCC.to_vec(),
+                lambda: vec![lam; 2],
+            }],
+        };
+        let ed = EdReference::build_with_phonon(&ham, &hs, &[], &[], BETA, Some(&phonon));
+        let e_d = -lam * lam / omega;
+        let z = 1.0 + 2.0 * (BETA * u * 0.5).exp() + (-BETA * e_d).exp();
+        let p_d = (-BETA * e_d).exp() / z;
+        let n_b = 1.0 / ((BETA * omega).exp() - 1.0);
+        let want = n_b + p_d * (lam / omega).powi(2);
+        let got = ed.phonon_number();
+        println!("thermal phonon number: {got:.12} vs closed form {want:.12}");
+        assert!((got - want).abs() < 1e-8, "{got} vs {want}");
+    }
+
+    #[test]
+    fn phonon_truncation_convergence() {
+        // doublon-coupled phonon: G_up(tau) must converge with the
+        // number of retained phonon levels
+        let hs = build(1, SectorClass::SpinResolved);
+        let (omega, lam) = (0.8f64, 0.5);
+        let ham = LocalHamiltonian::SingleBand {
+            mu: 0.0,
+            u: vec![3.0; 2],
+            eps_up: vec![0.0; 2],
+            eps_do: vec![0.0; 2],
+        };
+        let g = |nph: usize| -> Vec<f64> {
+            let phonon = PhononSpec {
+                nph,
+                omega,
+                couplings: vec![PhononCoupling {
+                    ops: DOCC.to_vec(),
+                    lambda: vec![lam; 2],
+                }],
+            };
+            let ed = EdReference::build_with_phonon(&ham, &hs, &[], &[], BETA, Some(&phonon));
+            (1..=20)
+                .map(|i| ed.greens_tau(0, BETA * i as f64 / 20.0))
+                .collect()
+        };
+        let (g6, g9, g12) = (g(6), g(9), g(12));
+        let dist = |a: &[f64], b: &[f64]| {
+            a.iter().zip(b).map(|(x, y)| (x - y).abs()).fold(0.0f64, f64::max)
+        };
+        let (d69, d912) = (dist(&g6, &g9), dist(&g9, &g12));
+        println!("phonon truncation: |G6 - G9| {d69:.3e}, |G9 - G12| {d912:.3e}");
+        assert!(d912 < 1e-2 * d69 && d912 < 1e-9, "{d69:.3e} -> {d912:.3e}");
+    }
+
+    #[test]
+    fn no_quench_evolution_with_phonon_matches_lehmann() {
+        // with a phonon-coupled impurity and H(t) = h0 the explicit
+        // unitary evolution must reproduce the equilibrium Lehmann
+        // correlators exactly
+        let hs = build(1, SectorClass::SpinResolved);
+        let (omega, lam, nph) = (0.8f64, 0.5, 12usize);
+        let ham = LocalHamiltonian::SingleBand {
+            mu: 0.0,
+            u: vec![3.0; 22],
+            eps_up: vec![0.0; 22],
+            eps_do: vec![0.0; 22],
+        };
+        let phonon = PhononSpec {
+            nph,
+            omega,
+            couplings: vec![PhononCoupling {
+                ops: DOCC.to_vec(),
+                lambda: vec![lam; 22],
+            }],
+        };
+        let h = hamiltonian_at_phonon(&ham, &hs, &[], &[], -1, &phonon);
+        let ev = EdEvolution::build_quench_with_layout(&h, &h, 20, 0.05, BETA, &[0, 1], 2);
+        let ed = EdReference::build_with_phonon(&ham, &hs, &[], &[], BETA, Some(&phonon));
+        for m in [0usize, 1] {
+            for (n, np) in [(5usize, 0usize), (20, 3), (20, 0), (17, 16)] {
+                let t = (n - np) as f64 * 0.05;
+                for (a, b) in [
+                    (ev.greens_gtr(m, n, np), ed.greens_gtr(m, t)),
+                    (ev.greens_les(m, n, np), ed.greens_les(m, t)),
+                    (ev.greens_ret(m, n, np), ed.greens_ret(m, t)),
+                ] {
+                    let d = a - b;
+                    assert!((d * d.conj()).re < 1e-18, "mode {m} ({n},{np}): {a:?} vs {b:?}");
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn evolution_anticommutator_with_phonon_quench() {
+        // a lambda quench 0.5 -> 0.8 with the phonon: the canonical
+        // identity G^>(t,t) - G^<(t,t) = -i survives the evolution
+        let hs = build(1, SectorClass::SpinResolved);
+        let mut lambda = vec![0.8f64; 22];
+        lambda[0] = 0.5;
+        let ham = LocalHamiltonian::SingleBand {
+            mu: 0.0,
+            u: vec![3.0; 22],
+            eps_up: vec![0.0; 22],
+            eps_do: vec![0.0; 22],
+        };
+        let phonon = PhononSpec {
+            nph: 12,
+            omega: 0.8,
+            couplings: vec![PhononCoupling {
+                ops: DOCC.to_vec(),
+                lambda,
+            }],
+        };
+        let h0 = hamiltonian_at_phonon(&ham, &hs, &[], &[], -1, &phonon);
+        let h1 = hamiltonian_at_phonon(&ham, &hs, &[], &[], 0, &phonon);
+        // doublon state (bits 0, 1) <-> one phonon: the lambda sqrt(1)
+        // coupling element
+        assert_ne!(h0.get(3, 7), h1.get(3, 7));
+        let ev = EdEvolution::build_quench_with_layout(&h0, &h1, 25, 0.06, BETA, &[0, 1], 2);
+        for m in [0usize, 1] {
             for n in [0usize, 9, 25] {
                 let d = ev.greens_gtr(m, n, n) - ev.greens_les(m, n, n) + Complex::new(0.0, 1.0);
                 assert!((d * d.conj()).re < 1e-20, "mode {m} n {n}: {d:?}");

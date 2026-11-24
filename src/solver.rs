@@ -1380,43 +1380,39 @@ mod tests {
         assert!((solver.pp_mu - pp_mu0).abs() < 1e-9);
     }
 
-    /// Equilibrium XCA(3) + Holstein smoke: the Matsubara G path must
-    /// accept the boson channels. The old plumbing fitted all channels
-    /// (4 fermion + 2 boson) but passed the fermion-only slice into
+        /// Equilibrium XCA(3) + Holstein: (1) the Matsubara G path must
+    /// accept the boson channels - the old plumbing fitted 4 fermion
+    /// + 2 boson channels but passed the fermion-only slice into
     /// `add_gf_mat_xca`, whose `one SOE fit per channel` assertion
-    /// panicked. Structural only - the XCA boson-pair calibration is
-    /// still open (see `xca_holstein_m2_anchor_matches_oca_boson` and
-    /// `xca_gf_holstein_m2_anchor_matches_oca_boson`).
+    /// panicked; (2) the boson lines must actually enter the m >= 3
+    /// XCA diagrams, not only the OCA part. The isolated m = 3 boson
+    /// content is (G3_b - G2_b) - (G3_n - G2_n) at one fixed pp_g.
+    /// Structural only: the XCA boson-pair calibration is still open
+    /// (see `xca_holstein_m2_anchor_matches_oca_boson`).
     #[test]
     fn equilibrium_xca_m3_holstein_gf_smoke() {
         use crate::nca::BosonBath;
         use kadanoffbaym::types::ContourGreen;
 
         let (nt, ntau, beta, h) = (2usize, 8usize, 5.0f64, 0.05f64);
-        let mut solver = ImpuritySolver::new(
-            nt,
-            ntau,
-            beta,
-            h,
-            3,
-            3,
-            build(1, SectorClass::SpinResolved),
-            SingleBand {
-                mu: 0.0,
-                u: vec![3.0; nt + 2],
-                eps_up: vec![0.0; nt + 2],
-                eps_do: vec![0.0; nt + 2],
-            },
-        );
-        let mut d0 = crate::boson::green_from_eps_phonon(nt, ntau, beta, h, 1.0);
-        crate::boson::scale_phonon(&mut d0, &vec![0.3; nt + 2]);
+        let make = |order: usize| {
+            ImpuritySolver::new(
+                nt,
+                ntau,
+                beta,
+                h,
+                3,
+                order,
+                build(1, SectorClass::SpinResolved),
+                SingleBand {
+                    mu: 0.0,
+                    u: vec![3.0; nt + 2],
+                    eps_up: vec![0.0; nt + 2],
+                    eps_do: vec![0.0; nt + 2],
+                },
+            )
+        };
         let contour = Contour::new(nt as i64, ntau as i64, 1, 1, nt as f64 * h, beta);
-        let mut d0_cc = ContourGreen::new(&contour, Sign::Bose, Complex::ZERO);
-        crate::boson::set_bwd_from_fwd_boson_mat(&mut d0_cc, &d0);
-        let blocks = crate::boson::docc_blocks(&solver.hs);
-        solver.set_boson_bath(Some(BosonBath { d0, d0_cc, blocks }));
-
-        solver.solve_atomic();
         let dtau = beta / ntau as f64;
         let mut delta = ContourGreen::new(&contour, Sign::Fermi, Complex::ZERO);
         for m in 0..=ntau {
@@ -1426,22 +1422,59 @@ mod tests {
         let mut delta_cc = ContourGreen::new(&contour, Sign::Fermi, Complex::ZERO);
         crate::dmft::set_bwd_from_fwd_mat(&mut delta_cc, &delta);
 
-        let pp_ints = crate::dmft::get_pp_ints(&delta, &delta_cc, &solver);
-        let verts = crate::dmft::get_gf_verts(&solver);
-        let _ = solver.pp_step(MATSUBARA, &pp_ints);
-        let g = solver.get_spgf_mat(&verts, &pp_ints);
+        let mut s3b = make(3);
+        let mut d0 = crate::boson::green_from_eps_phonon(nt, ntau, beta, h, 1.0);
+        crate::boson::scale_phonon(&mut d0, &vec![0.3; nt + 2]);
+        let mut d0_cc = ContourGreen::new(&contour, Sign::Bose, Complex::ZERO);
+        crate::boson::set_bwd_from_fwd_boson_mat(&mut d0_cc, &d0);
+        let blocks = crate::boson::docc_blocks(&s3b.hs);
+        s3b.set_boson_bath(Some(BosonBath { d0, d0_cc, blocks }));
+        s3b.solve_atomic();
+        let pp_ints = crate::dmft::get_pp_ints(&delta, &delta_cc, &s3b);
+        let verts = crate::dmft::get_gf_verts(&s3b);
+        let _ = s3b.pp_step(MATSUBARA, &pp_ints);
+        let g3b = s3b.get_spgf_mat(&verts, &pp_ints);
         assert!(
-            g.iter()
+            g3b.iter()
                 .flatten()
                 .all(|z| z.re.is_finite() && z.im.is_finite()),
             "non-finite G"
         );
-        let max = g
+        let max = g3b
             .iter()
             .flatten()
             .map(|z| z.abs())
             .fold(0.0f64, f64::max);
         assert!(max > 1e-6, "empty G");
+
+        // same pp_g, bath removed: the XCA m >= 3 path without boson
+        let bath = s3b.boson.take();
+        let g3n = s3b.get_spgf_mat(&verts, &pp_ints);
+        let mut s2b = make(2);
+        s2b.boson = bath;
+        s2b.pp_g = s3b.pp_g.clone();
+        let g2b = s2b.get_spgf_mat(&verts, &pp_ints);
+        let mut s2n = make(2);
+        s2n.pp_g = s3b.pp_g.clone();
+        let g2n = s2n.get_spgf_mat(&verts, &pp_ints);
+
+        // isolate the m = 3 XCA boson content (the OCA boson part is
+        // common to g3b/g2b and cancels)
+        let mut xca3_scale = 0.0f64;
+        let mut boson_m3 = 0.0f64;
+        for i in 0..g3b[0].len() {
+            xca3_scale = xca3_scale.max((g3b[0][i] - g2b[0][i]).abs());
+            let value = (g3b[0][i] - g2b[0][i]) - (g3n[0][i] - g2n[0][i]);
+            boson_m3 = boson_m3.max(value.abs());
+        }
+        eprintln!(
+            "[xca m3 holstein] XCA3 increment {xca3_scale:.3e}, boson m=3 content {boson_m3:.3e}"
+        );
+        assert!(xca3_scale > 1e-6, "XCA(3) increment is inert");
+        assert!(
+            boson_m3 > 1e-6,
+            "boson channels do not enter the XCA m>=3 G: {boson_m3:.3e}"
+        );
     }
 
     /// Real-time single-particle G closure: at order >= 3 the OCA

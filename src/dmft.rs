@@ -777,6 +777,22 @@ where
                 crate::io::fmt_g6(0.5 * (o.n_up - o.n_dn)),
                 crate::io::fmt_g6(o.trace)
             )
+        } else if solver.hs.norb == 3 {
+            // three-band format: the observable set of the C++
+            // update_exp_vals print (three_band_hubbard.hpp); `n` is
+            // the total density n1 + n2 + n3
+            let obs = crate::observable::update_exp_vals_three_band(solver, tstp);
+            format!(
+                "obs: {} {} {} {} {} {} {} {}",
+                tstp,
+                crate::io::fmt_g6(tstp as f64 * solver.h),
+                crate::io::fmt_g6(obs.n1 + obs.n2 + obs.n3),
+                crate::io::fmt_g6(obs.d1),
+                crate::io::fmt_g6(obs.d2),
+                crate::io::fmt_g6(obs.d3),
+                crate::io::fmt_g6(obs.m),
+                crate::io::fmt_g6(obs.q)
+            )
         } else {
             let obs = crate::observable::update_exp_vals_two_band(solver, tstp);
             format!(

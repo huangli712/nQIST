@@ -361,7 +361,22 @@ pub(crate) fn add_sigma_mat_xca(
             // the NCA (i*stat x kernel i) and OCA (i^2 x stat x
             // crossing x debug -1) totals of the calibrated kernels
             let msign = if m.is_multiple_of(2) { 1.0 } else { -1.0 };
-            let base_pref = Complex::new(msign * stat * topo.parity, 0.0);
+            // The calibrated OCA pair prefactor carries the two-line
+            // fermion-loop sign: -1 for a fermion-fermion pair, +1
+            // for every other pair. The m = 2 backbone already
+            // carries that loop sign inside `eval_into`, so the
+            // prefactor must cancel it for non-fermion pairs -
+            // without this the boson-boson diagrams enter with the
+            // opposite sign (measured ratio -1.0000000 against the
+            // OCA reference; the fermion-fermion ratio is +1).
+            // Orders >= 3 with boson lines remain uncalibrated.
+            let pair_loop_sign = if m == 2 && !cs.iter().all(|&c| pp_ints[c].fermion) {
+                -1.0
+            } else {
+                1.0
+            };
+            let base_pref =
+                Complex::new(msign * stat * topo.parity * pair_loop_sign, 0.0);
 
             for s0 in 0..hs.ns() {
                 let Some(chain) = build_chain(m, &topo.pairs, &cs, pp_ints, hs, s0) else {
@@ -721,13 +736,16 @@ pub(crate) mod probe {
         }
     }
 
-    /// XCA(2) restricted to the channel assignment `cs` (single
+        /// XCA(2) restricted to the channel assignment `cs` (single
     /// topology), evaluated into a fresh sigma buffer.
     pub(crate) fn xca2_single(fx: &ProbeFx, cs: [usize; 2]) -> Vec<PseudoGreen> {
-        let ntau = 96usize;
-        let beta = 5.0f64;
-        let channels: Vec<OcaChannel> = fx
-            .pp_ints
+        let channels = fermion_channels(fx);
+        xca2_single_ch(fx, &channels, cs)
+    }
+
+    /// Fermion-only channel view of the fixture.
+    pub(crate) fn fermion_channels(fx: &ProbeFx) -> Vec<OcaChannel<'static>> {
+        fx.pp_ints
             .iter()
             .map(|h| oca::OcaChannel {
                 delta: h.delta,
@@ -736,8 +754,19 @@ pub(crate) mod probe {
                 ann: oca::VertSrc::Flavor(h.op_ann_fl),
                 cre: oca::VertSrc::Flavor(h.op_cre_fl),
             })
-            .collect();
-        let fits = crate::xca::fit_channels(&channels, beta, ntau, 12, 6.0);
+            .collect()
+    }
+
+    /// XCA(2) for one channel assignment over an arbitrary channel
+    /// set (the boson-extended diagnosis driver).
+    pub(crate) fn xca2_single_ch(
+        fx: &ProbeFx,
+        channels: &[OcaChannel],
+        cs: [usize; 2],
+    ) -> Vec<PseudoGreen> {
+        let ntau = 96usize;
+        let beta = 5.0f64;
+        let fits = crate::xca::fit_channels(channels, beta, ntau, 12, 6.0);
         let grids = Grids {
             ntau,
             dtau: beta / ntau as f64,
@@ -760,12 +789,8 @@ pub(crate) mod probe {
             let msign = 1.0f64; // m even
             let base_pref = Complex::new(msign * stat * topo.parity, 0.0);
             for s0 in 0..fx.hs.ns() {
-                let Some(chain) = build_chain(2, &topo.pairs, &cs, &channels, &fx.hs, s0) else {
+                let Some(chain) = build_chain(2, &topo.pairs, &cs, channels, &fx.hs, s0) else {
                     continue;
-                };
-                let empty_kern = || Kernels {
-                    vertex: vec![None; 4],
-                    edge: vec![Vec::new(); 3],
                 };
                 // pole loop over line 1
                 let mut pole_l = vec![0usize; 1];
@@ -783,7 +808,7 @@ pub(crate) mod probe {
                     };
                     pref *= fit.coefs[l] / Complex::new(denom, 0.0);
                     eval_into(
-                        2, b0, &cs, &chain, &kern, &fits, &channels, &grids, &integ, pref, s0,
+                        2, b0, &cs, &chain, &kern, &fits, channels, &grids, &integ, pref, s0,
                         &mut out, &mut ws,
                     );
                     pole_l[0] += 1;
@@ -791,29 +816,30 @@ pub(crate) mod probe {
                         break 'poles;
                     }
                 }
-                let _ = empty_kern;
             }
         }
         out
     }
 
-    /// Native OCA diagrams filtered to one ordered channel pair.
+        /// Native OCA diagrams filtered to one ordered channel pair.
     pub(crate) fn oca_single(fx: &ProbeFx, c1: usize, c2: usize) -> (Vec<PseudoGreen>, Vec<usize>) {
-        let channels: Vec<OcaChannel> = fx
-            .pp_ints
-            .iter()
-            .map(|h| oca::OcaChannel {
-                delta: h.delta,
-                fermion: h.fermion,
-                backward: h.backward,
-                ann: oca::VertSrc::Flavor(h.op_ann_fl),
-                cre: oca::VertSrc::Flavor(h.op_cre_fl),
-            })
-            .collect();
-        let all = oca::build_sigma_diagrams_oca_channels(&fx.hs, &channels);
+        let channels = fermion_channels(fx);
+        oca_single_ch(fx, &channels, c1, c2)
+    }
+
+    /// Native OCA diagrams filtered to one ordered channel pair over
+    /// an arbitrary channel set (the boson-extended diagnosis driver).
+    pub(crate) fn oca_single_ch(
+        fx: &ProbeFx,
+        channels: &[OcaChannel],
+        c1: usize,
+        c2: usize,
+    ) -> (Vec<PseudoGreen>, Vec<usize>) {
+        let all = oca::build_sigma_diagrams_oca_channels(&fx.hs, channels);
         let mut picked = Vec::new();
         for (idx, d) in all.iter().enumerate() {
-            if std::ptr::eq(d.lam1, channels[c1].delta) && std::ptr::eq(d.lam2, channels[c2].delta)
+            if std::ptr::eq(d.lam1, channels[c1].delta)
+                && std::ptr::eq(d.lam2, channels[c2].delta)
             {
                 picked.push(idx);
             }

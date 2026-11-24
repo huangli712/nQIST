@@ -2051,3 +2051,61 @@ m=2 production + m=3 greater/les gates all green and untouched.
   XCA boson item is confined to the sigma-side diagram assembly,
   not to the shared channel/chain resolution.
 - suite: 133 passed / 0 failed / 13 ignored (release).
+
+### Cost profile of the real-time m=3 matrix path (2026-11-24)
+
+`update_sigma` on a two-band Kanamori solver (order 3, `rt_xca_poles=2`,
+nt=6, ntau=8, 4 fermion channels):
+
+| configuration | `update_sigma(0)` | `update_sigma(1)` | `update_sigma(2)` |
+|---|---|---|---|
+| full | 27.06 s | 41.04 s | 59.78 s |
+| `XCA_MCUT=fam:all` (chains + pole odometer only) | 0.087 s | 0.139 s | 0.361 s |
+
+So `evalfam2m::eval_cut_m` is >99.7% of the cost and the matrix chain
+builds are ~0.3%: **caching `build_rt_chain_mixed_m` is not the lever**.
+`kanamori_dimer_realtime_xca3_vs_ed` (2716 s) is therefore `#[ignore]`d
+as a manual ED re-baseline gate; the practical lever is anchor-level
+parallelism (the anchors are independent and write disjoint rows), or
+the `rt_xca_poles` budget.
+
+### A1 closed (2026-11-24): the m=2 boson self-energy sign
+
+Per-pair decomposition of XCA(2) against the native OCA diagram
+(`a1_boson_pair_decomposition`, ignored driver, 6-channel Holstein
+fixture):
+
+| channel pair | XCA / OCA |
+|---|---|
+| f-f | +1 (1e-8 .. 1e-11) |
+| b-b | **-1.0000000** (plus-residual 5.8e-9) |
+| mixed | no diagrams on either side |
+
+Mixed pairs vanish because the docc vertex is sector-diagonal while a
+single fermion line changes the occupation: the chain cannot close.
+The b-b class was a pure sign flip. Fix: `add_sigma_mat_xca` applies
+the calibrated OCA two-line fermion-loop sign for m = 2 (prefactor
+times -1 for non-fermion pairs). The anchor
+`xca_holstein_m2_anchor_matches_oca_boson` is now **1.550e-10** (was
+0.518172988) and un-ignored; the fermion-only m = 2 anchor is
+unchanged. Orders >= 3 with boson lines remain the open item (the
+mixed m = 3 R-cut calibration).
+
+### Real-time m=2 boson-boson sign (2026-11-24): verified consistent
+
+The equilibrium m=2 sign bug was in `xca::sigma::add_sigma_mat_xca`
+(the `eval_into` backbone). The real-time m=2 route
+(`sigma_cuts_m` / `eval2`, `rt_xca_m2`, non-default) has its own
+prefactor and is **not** affected. Evidence from
+`rt_m2_holstein_anchor_vs_stock` on the 6-channel Holstein fixture:
+the stock decomposition shows the b-b contribution is exactly zero in
+sectors 0/1/2 and ~3.3e-3 in sector 3 (the only sector with a nonzero
+docc vertex), and there the cut path matches the stock on the greater
+component to **0.2%** at j=0 and ~0.03% on the "less" cells
+(`m2-hol j=0/5/10 WORST dev ~3.2e-4`). A flipped b-b sign would show
+an O(1) relative deviation in sector 3, not 0.2%. Same conclusion for
+m=3 mixed: `m3-les-class` fff/bff/bbb coupling ratios are machine
+exact (1.4e-17) and the direct-transcription deviation is 0.24%.
+What is still missing for m >= 3 + Holstein is not a sign check but an
+**external physics reference** (an ED with a phonon mode), which
+`ed.rs` does not currently provide.

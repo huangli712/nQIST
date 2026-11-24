@@ -181,6 +181,87 @@ pub fn update_exp_vals_two_band(solver: &ImpuritySolver, tstp: i64) -> TwoBandOb
 }
 
 // ------------------------------------------------------------------
+// three-band observables (blueprint three_band_hubbard.hpp
+// update_exp_vals): orbital densities, doublons, magnetization, the
+// interaction energy and the density-matrix trace, read state by
+// state from the density-matrix diagonal (bit convention
+// `spin * norb + orb`, C++ identical).
+// ------------------------------------------------------------------
+
+/// Three-band local observables of a timestep.
+#[derive(Clone, Copy, Debug)]
+pub struct ThreeBandObservables {
+    pub q: f64,
+    pub e_int: f64,
+    pub n1: f64,
+    pub n2: f64,
+    pub n3: f64,
+    pub m: f64,
+    /// Orbital doublon occupations `d_i = n_iu n_id`.
+    pub d1: f64,
+    pub d2: f64,
+    pub d3: f64,
+}
+
+/// Evaluate the three-band observables at `tstp` (blueprint
+/// `update_exp_vals` of three_band_hubbard.hpp).
+pub fn update_exp_vals_three_band(solver: &ImpuritySolver, tstp: i64) -> ThreeBandObservables {
+    let hs = &solver.hs;
+    assert!(
+        matches!(solver.ham, LocalHamiltonian::ThreeBand { .. }) && hs.norb == 3,
+        "update_exp_vals_three_band: only the three-band case is implemented"
+    );
+    let rho = &solver.rho[(tstp + 1) as usize];
+    let mut obs = ThreeBandObservables {
+        q: 0.0,
+        e_int: 0.0,
+        n1: 0.0,
+        n2: 0.0,
+        n3: 0.0,
+        m: 0.0,
+        d1: 0.0,
+        d2: 0.0,
+        d3: 0.0,
+    };
+    for s in 0..hs.ns() {
+        let d = hs.sectors[s].dim;
+        let h = solver.ham.sector_block(hs, s, tstp);
+        let mut tr = kadanoffbaym::complex::Complex::ZERO;
+        for i in 0..d {
+            for j in 0..d {
+                tr += rho[s].get(i, j) * h.get(j, i);
+            }
+        }
+        obs.e_int += tr.re;
+        obs.q += rho[s].trace().re;
+        for i in 0..d {
+            let w = rho[s].get(i, i).re;
+            let state = hs.sectors[s].states[i];
+            for orb in 0..3 {
+                let nu = occupation(hs, state, orb, 0);
+                let nd = occupation(hs, state, orb, 1);
+                match orb {
+                    0 => {
+                        obs.n1 += w * (nu + nd);
+                        obs.d1 += w * nu * nd;
+                    }
+                    1 => {
+                        obs.n2 += w * (nu + nd);
+                        obs.d2 += w * nu * nd;
+                    }
+                    _ => {
+                        obs.n3 += w * (nu + nd);
+                        obs.d3 += w * nu * nd;
+                    }
+                }
+                obs.m += w * (nu - nd);
+            }
+        }
+    }
+    obs
+}
+
+// ------------------------------------------------------------------
 // tests
 // ------------------------------------------------------------------
 
@@ -230,5 +311,61 @@ mod tests {
         // E_int matches the sector eigenvalues weighted by rho
         let e_direct = obs.e_int;
         assert!(e_direct.abs() > 1e-6);
+    }
+
+    #[test]
+    fn three_band_atomic_observables_match_boltzmann() {
+        // atomic limit: rho is the Boltzmann distribution of the sector
+        // eigenvalues (the Matsubara quadrature is exact to 1e-10 on
+        // this grid), so every observable equals its explicit
+        // Fock-state sum; half filling gives n1 + n2 + n3 = 3 and m = 0
+        use crate::hamilton::LocalHamiltonian::ThreeBand;
+        let hs = build(3, SectorClass::SpinResolved);
+        let (nt, beta, u, j) = (4usize, 5.0f64, 3.0, 0.4);
+        let ham = ThreeBand {
+            mu: 0.0,
+            u: vec![u; nt + 2],
+            j: vec![j; nt + 2],
+            delta: vec![0.0; nt + 2],
+            bz: vec![0.0; nt + 2],
+        };
+        let mut solver = ImpuritySolver::new(nt, 256, beta, 0.02, 5, 1, hs.clone(), ham.clone());
+        solver.solve_atomic();
+        solver.pp_step(MATSUBARA, &[]);
+        let obs = update_exp_vals_three_band(&solver, MATSUBARA);
+        // reference: direct Boltzmann sums over the 64 Fock states
+        let occ = |psi: u64, orb: usize, spin: usize| ((psi >> (spin * 3 + orb)) & 1) as f64;
+        let mut z = 0.0;
+        let mut want = [0.0f64; 6]; // [n, m, d1, d2, d3, E]
+        for psi in 0..64u64 {
+            let n_up = (psi & 0b111).count_ones() as usize;
+            let n_dn = (psi & 0b111000).count_ones() as usize;
+            let s = n_up * 4 + n_dn;
+            let idx = hs.sectors[s].states.iter().position(|&x| x == psi).unwrap();
+            let e = ham.sector_block(&hs, s, -1).get(idx, idx).re;
+            let w = (-beta * e).exp();
+            z += w;
+            want[0] += w * (n_up + n_dn) as f64;
+            want[1] += w * (n_up as f64 - n_dn as f64);
+            for orb in 0..3 {
+                want[2 + orb] += w * occ(psi, orb, 0) * occ(psi, orb, 1);
+            }
+            want[5] += w * e;
+        }
+        for w in want.iter_mut() {
+            *w /= z;
+        }
+        let got = [
+            obs.n1 + obs.n2 + obs.n3,
+            obs.m,
+            obs.d1,
+            obs.d2,
+            obs.d3,
+            obs.e_int,
+        ];
+        for (a, b) in got.iter().zip(want) {
+            assert!((a - b).abs() < 1e-10, "{got:?} vs {want:?}");
+        }
+        assert!((obs.q - 1.0).abs() < 1e-12);
     }
 }

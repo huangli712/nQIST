@@ -221,7 +221,33 @@ fn kanamori_dimer_realtime_nca_vs_ed() {
     check_kanamori_dimer_realtime(1, 40, NTAU, RealtimeChecks::StationarityAndQuench);
 }
 
+/// Tier 2 gate: real-time OCA (order = 2) with the full dimer on the
+/// NCA grid - the same two legs as the NCA gate (no-quench
+/// stationarity for the density and the full-Kanamori variant, then
+/// the J quench against the exact unitary evolution). The short-grid
+/// diagnostics below fail their 1e-6 stationarity gate by Matsubara
+/// quadrature error (drift 5.2e-6 at ntau = 24 vs 1.3e-7 at ntau =
+/// 48, ~ntau^-5), so the gate runs at the production resolution
+/// NTAU = 96. HEAVY - ignored for the default suite; run with
+/// `cargo test --release --test xca_twoband_dimer -- --ignored`.
 #[test]
+#[ignore = "heavy: two-band OCA real-time dimer; run manually"]
+fn kanamori_dimer_realtime_oca_vs_ed() {
+    check_kanamori_dimer_realtime(2, 40, NTAU, RealtimeChecks::StationarityAndQuench);
+}
+
+/// Tier 2 gate: two-band real-time XCA(3) vs the exact 64-state
+/// unitary evolution. Measured 2026-11-24: worst |G - G_ed| =
+/// 1.625e-2 (density) / 1.371e-2 (Kanamori), budget 7e-2, in
+/// 2716 s. HEAVY - ignored for the default suite; run with
+/// `cargo test --release --test xca_twoband_dimer -- --ignored`.
+/// PROFILED (same date): >99.7% of the cost is inside
+/// `evalfam2m::eval_cut_m` (`update_sigma(0)` 27.06 s with cuts vs
+/// 0.087 s with `XCA_MCUT=fam:all` at nt=6/ntau=8), so caching the
+/// chain builds (~0.3%) is not the lever; anchor-level parallelism
+/// is.
+#[test]
+#[ignore = "heavy: 2716 s (nt=6, ntau=24) ED re-baseline gate; run manually"]
 fn kanamori_dimer_realtime_xca3_vs_ed() {
     check_kanamori_dimer_realtime(3, 6, 24, RealtimeChecks::Quench);
 }

@@ -86,6 +86,27 @@ pub enum LocalHamiltonian {
         /// Magnetic field `Bz(tstp + 1)`.
         bz: Vec<f64>,
     },
+    /// Three-band Kanamori density-density Hamiltonian (blueprint
+    /// `three_band_hubbard.hpp`):
+    /// `H = Bz(t) m + 0.5 delta(t) (n1 - n2 - n3) - mu n
+    ///      - 0.5 (5U - 10J) n + U (n1u n1d + n2u n2d + n3u n3d)
+    ///      + (U - 2J) (n1 n2 + n1 n3 + n2 n3)
+    ///      - J (n1u n2u + n1d n2d + n1u n3u + n1d n3d + n2u n3u + n2d n3d)`
+    /// with the magnetization `m = n1u - n1d + n2u - n2d + n3u - n3d`
+    /// and the half-filling shift `0.5 (5U - 10J) n` ("one up, two
+    /// down" crystal-field splitting; requires `norb = 3`).
+    ThreeBand {
+        /// Chemical potential.
+        mu: f64,
+        /// `U(tstp + 1)`.
+        u: Vec<f64>,
+        /// `J(tstp + 1)` (Hund's coupling).
+        j: Vec<f64>,
+        /// Level splitting `delta(tstp + 1)`.
+        delta: Vec<f64>,
+        /// Magnetic field `Bz(tstp + 1)`.
+        bz: Vec<f64>,
+    },
 }
 
 impl LocalHamiltonian {
@@ -148,6 +169,20 @@ impl LocalHamiltonian {
                 }
                 h
             }
+            LocalHamiltonian::ThreeBand {
+                mu,
+                u,
+                j,
+                delta,
+                bz,
+            } => {
+                assert_eq!(hs.norb, 3, "ThreeBand Hamiltonian needs norb = 3");
+                let iu = time_index(tstp, u.len(), "U");
+                let ij = time_index(tstp, j.len(), "J");
+                let idl = time_index(tstp, delta.len(), "delta");
+                let ib = time_index(tstp, bz.len(), "Bz");
+                threeband_diagonal_block(hs, s, *mu, u[iu], j[ij], delta[idl], bz[ib])
+            }
         }
     }
 }
@@ -194,6 +229,42 @@ fn twoband_diagonal_block(
             + ut * (n1u * n1d + n2u * n2d)
             + (ut - 2.0 * jt) * (n1 * n2)
             - jt * (n1u * n2u + n1d * n2d);
+        h.set(col, col, Complex::new(e, 0.0));
+    }
+    h
+}
+
+/// Density-diagonal block of the three-band Kanamori Hamiltonian
+/// (blueprint `three_band_hubbard.hpp` `get_hamiltonian`). Bits:
+/// up block 0..2, dn block 3..5 (`spin * norb + orb`).
+fn threeband_diagonal_block(
+    hs: &HilbertSpace,
+    s: usize,
+    mu: f64,
+    ut: f64,
+    jt: f64,
+    del: f64,
+    bzt: f64,
+) -> DenseMat {
+    let half_filling_shift = 0.5 * (5.0 * ut - 10.0 * jt);
+    let dim = hs.sectors[s].dim;
+    let mut h = DenseMat::zeros(dim);
+    for (col, &psi) in hs.sectors[s].states.iter().enumerate() {
+        let n1u = occ(psi, 0);
+        let n2u = occ(psi, 1);
+        let n3u = occ(psi, 2);
+        let n1d = occ(psi, 3);
+        let n2d = occ(psi, 4);
+        let n3d = occ(psi, 5);
+        let n1 = n1u + n1d;
+        let n2 = n2u + n2d;
+        let n3 = n3u + n3d;
+        let n = n1 + n2 + n3;
+        let m = n1u - n1d + n2u - n2d + n3u - n3d;
+        let e = bzt * m + 0.5 * del * (n1 - n2 - n3) - mu * n - half_filling_shift * n
+            + ut * (n1u * n1d + n2u * n2d + n3u * n3d)
+            + (ut - 2.0 * jt) * (n1 * n2 + n1 * n3 + n2 * n3)
+            - jt * (n1u * n2u + n1d * n2d + n1u * n3u + n1d * n3d + n2u * n3u + n2d * n3d);
         h.set(col, col, Complex::new(e, 0.0));
     }
     h
@@ -564,5 +635,92 @@ mod tests {
         w3.sort_by(|a, b| a.partial_cmp(b).unwrap());
         assert_close(&w1, &[-s, -s, -s, -s], "N = 1");
         assert_close(&w3, &[-s, -s, -s, -s], "N = 3");
+    }
+
+    /// Diagonal energy of the three-band occupation pattern `psi`
+    /// (bits `spin * norb + orb`: 1u, 2u, 3u, 1d, 2d, 3d) at `tstp`
+    /// through the sector layout `s = N_up * 4 + N_dn`.
+    fn three_band_energy(ham: &LocalHamiltonian, hs: &HilbertSpace, psi: u64, tstp: i64) -> f64 {
+        let n_up = (psi & 0b111).count_ones() as usize;
+        let n_dn = (psi & 0b111000).count_ones() as usize;
+        let s = n_up * 4 + n_dn;
+        let idx = hs.sectors[s].states.iter().position(|&x| x == psi).unwrap();
+        ham.sector_block(hs, s, tstp).get(idx, idx).re
+    }
+
+    #[test]
+    fn three_band_hand_energies() {
+        // U = 3, J = 0.4 (shift 5.5), delta = 0.8, Bz = 0.1, mu = 0.2:
+        // diagonal energies of selected occupation patterns by hand
+        let hs = build(3, SectorClass::SpinResolved);
+        let ham = LocalHamiltonian::ThreeBand {
+            mu: 0.2,
+            u: series(3.0, 3),
+            j: series(0.4, 3),
+            delta: series(0.8, 3),
+            bz: series(0.1, 3),
+        };
+        for (psi, want) in [
+            (0b000000u64, 0.0),  // empty
+            (0b000001, -5.2),    // 1u: 0.4 - 0.2 - 5.5 + 0.1
+            (0b000010, -6.0),    // 2u: -0.4 - 0.2 - 5.5 + 0.1
+            (0b000100, -6.0),    // 3u
+            (0b001001, -7.6),    // 1u 1d: 0.8 - 0.4 - 11 + U
+            (0b000011, -9.4),    // 1u 2u: -0.4 - 11 + 0.2 + (U - 3J)
+            (0b010001, -9.2),    // 1u 2d: -0.4 - 11 + (U - 2J)
+            (0b000111, -11.8),   // 1u 2u 3u: -0.4 - 0.6 - 16.5 + 0.3 + 3(U - 2J) - 3J
+            (0b111111, -2.0),    // full: -0.8 - 1.2 - 33 + 15U - 30J
+        ] {
+            let e = three_band_energy(&ham, &hs, psi, -1);
+            assert!((e - want).abs() < 1e-12, "pattern {psi:06b}: {e} vs {want}");
+        }
+    }
+
+    #[test]
+    fn three_band_particle_hole_symmetry() {
+        // at mu = delta = Bz = 0 the half-filling shift makes the
+        // spectrum exactly particle-hole symmetric: E(psi_bar) = E(psi)
+        // for every one of the 64 Fock states (N = 1 <-> 5, 2 <-> 4)
+        let hs = build(3, SectorClass::SpinResolved);
+        let ham = LocalHamiltonian::ThreeBand {
+            mu: 0.0,
+            u: series(3.0, 3),
+            j: series(0.4, 3),
+            delta: series(0.0, 3),
+            bz: series(0.0, 3),
+        };
+        for psi in 0..64u64 {
+            let d = three_band_energy(&ham, &hs, psi, -1)
+                - three_band_energy(&ham, &hs, !psi & 0b111111, -1);
+            assert!(d.abs() < 1e-12, "pattern {psi:06b}: PH mismatch {d}");
+        }
+    }
+
+    #[test]
+    fn three_band_time_dependent_hand_check() {
+        // U quench 3.0 -> 3.5 and delta quench 0 -> 0.8 at tstp = 0
+        // (shift 5.5 -> 6.75): the doublon and the single occupation
+        // move by their analytic increments
+        let hs = build(3, SectorClass::SpinResolved);
+        let mut u = series(3.0, 3);
+        u[1] = 3.5; // tstp = 0
+        let mut delta = series(0.0, 3);
+        delta[1] = 0.8; // tstp = 0
+        let ham = LocalHamiltonian::ThreeBand {
+            mu: 0.0,
+            u,
+            j: series(0.4, 3),
+            delta,
+            bz: series(0.0, 3),
+        };
+        for (psi, e_eq, e_q) in [
+            (0b000001u64, -5.5, 0.4 - 6.75), // 1u
+            (0b001001, -8.0, 0.8 - 13.5 + 3.5), // 1u 1d
+        ] {
+            let e0 = three_band_energy(&ham, &hs, psi, -1);
+            let e1 = three_band_energy(&ham, &hs, psi, 0);
+            assert!((e0 - e_eq).abs() < 1e-12, "pattern {psi:06b}: {e0} vs {e_eq}");
+            assert!((e1 - e_q).abs() < 1e-12, "pattern {psi:06b}: {e1} vs {e_q}");
+        }
     }
 }

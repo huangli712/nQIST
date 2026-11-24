@@ -1042,25 +1042,23 @@ mod tests {
         }
     }
 
-    /// KNOWN OPEN (2026-11-18): the m = 2 boson-inclusive anchor.
-    /// XCA(2) with boson channels disagrees with the native
-    /// OCA(channels) beyond the calibrated tolerance (total-relative
-    /// ~0.5): (a) a pre-existing fermion-only offset of the pure OCA
-    /// part (~2.6x at the OCA-part scale) that the established
-    /// total-relative tolerance in `xca_order2_sigma_matches_oca`
-    /// masks, and (b) boson-pair bookkeeping (adding the backward
-    /// boson channel REDUCES the XCA total instead of adding
-    /// diagrams). Root cause lives in the XCA topology prefactors vs
-    /// the C++ OCA pair rules for mixed statistics; needs dedicated
-    /// XCA-side calibration work. The m = 1 anchor above is exact.
+    /// m = 2 boson-inclusive self-energy anchor: XCA(1) + XCA(2)
+    /// with the fermion + Holstein channel set vs NCA + native OCA
+    /// (boson channels included).
     ///
-    /// NARROWED (2026-11-24): the companion GF anchor
-    /// (`xca_gf_holstein_m2_anchor_matches_oca_boson`) passes at
-    /// 7.2e-11 on the same `OcaChannel` set, so the channel/chain
-    /// resolution of boson vertices is correct. The residual 0.518
-    /// is confined to the sigma-side diagram assembly.
+    /// CLOSED (2026-11-24): the historical ~0.518 deviation was a
+    /// pure sign flip of the boson-boson pair class. The per-pair
+    /// diagnosis (`a1_boson_pair_decomposition`) gives XCA/OCA =
+    /// -1.0000000 for b-b, +1 for f-f, and NO diagrams for mixed
+    /// pairs (the diagonal docc vertex plus a single fermion line
+    /// cannot close the sector chain), while the companion GF anchor
+    /// passed at 7.2e-11 - so the channel/chain resolution was never
+    /// the culprit. `add_sigma_mat_xca` now applies the calibrated
+    /// OCA two-line fermion-loop sign for m = 2.
+    ///
+    /// Still open (separate item): orders >= 3 with boson lines (the
+    /// mixed m = 3 R-cut calibration).
     #[test]
-    #[ignore = "XCA-side open item (per PPSC-anchor direction): XCA(2) boson-pair topology vs native OCA deviates ~0.5; the native OCA+Holstein path is C++-gated (1253/1253); owned by the XCA calibration"]
     fn xca_holstein_m2_anchor_matches_oca_boson() {
         let fx = Fixture::new();
         let pp_ints = fx.pp_ints();
@@ -1102,6 +1100,7 @@ mod tests {
                 max_rel = max_rel.max((a - b).abs() / scale);
             }
         }
+        eprintln!("[m2 holstein sigma anchor] max_rel = {max_rel:.3e}");
         assert!(
             max_rel < 1.0e-3,
             "m2 anchor max relative deviation {max_rel}"
@@ -1111,10 +1110,10 @@ mod tests {
     /// m = 2 boson-inclusive GF anchor: XCA(2) with boson channels
     /// vs `nca::gf_mat` + `oca::add_gf_mat_oca` (boson included).
     /// Measured 7.2e-11 relative (OCA-part scale 1.6e2) - the GF
-    /// chain/vertex handling of boson channels is correct. NOTE: the
-    /// *self-energy* anchor above still deviates ~0.5, so the open
-    /// XCA boson item is confined to the sigma-side pair bookkeeping,
-    /// not to the shared channel/chain resolution.
+    /// chain/vertex handling of boson channels is correct. This is
+    /// the probe that localized the old ~0.5 self-energy deviation to
+    /// the sigma-side pair prefactor (fixed above by the m = 2
+    /// fermion-loop sign).
     #[test]
     fn xca_gf_holstein_m2_anchor_matches_oca_boson() {
         let fx = Fixture::new();
@@ -1398,6 +1397,77 @@ mod probe_test {
                         );
                     }
                 }
+            }
+        }
+    }
+
+    /// A1 diagnosis (2026-11-24): per ordered channel-pair comparison
+    /// of XCA(2) against the native OCA diagram over the fermion +
+    /// Holstein channel set (6 channels). Prints dev/scale/rel per
+    /// channel class so the bad pair rules can be isolated.
+    #[test]
+    #[ignore = "A1 diagnosis driver (prints the per-class deviation table)"]
+    fn a1_boson_pair_decomposition() {
+        use crate::nca;
+        use crate::oca;
+        use kadanoffbaym::complex::Complex;
+        use kadanoffbaym::types::{Contour, ContourGreen, Sign};
+
+        const BETA: f64 = 5.0;
+        const NTAU: usize = 96;
+
+        let fx = probe::fixture();
+        let pp_ints = &fx.pp_ints;
+        let mut d0 = crate::boson::green_from_eps_phonon(4, NTAU, BETA, 0.02, 1.0);
+        crate::boson::scale_phonon(&mut d0, &vec![0.3; 4 + 2]);
+        let contour = Contour::new(4, NTAU as i64, 1, 1, 0.08, BETA);
+        let mut d0_cc = ContourGreen::new(&contour, Sign::Bose, Complex::ZERO);
+        crate::boson::set_bwd_from_fwd_boson_mat(&mut d0_cc, &d0);
+        let bath = nca::BosonBath {
+            d0,
+            d0_cc,
+            blocks: crate::boson::docc_blocks(&fx.hs),
+        };
+        let chans = oca::channels_with_bath(&pp_ints, Some(&bath));
+        let class = |c: usize| -> &'static str {
+            let bos = c >= pp_ints.len();
+            match (bos, chans[c].backward) {
+                (false, false) => "f-fwd",
+                (false, true) => "f-bwd",
+                (true, false) => "b-fwd",
+                (true, true) => "b-bwd",
+            }
+        };
+        for c1 in 0..chans.len() {
+            for c2 in 0..chans.len() {
+                let xca = probe::xca2_single_ch(&fx, &chans, [c1, c2]);
+                let (oca, picked) = probe::oca_single_ch(&fx, &chans, c1, c2);
+                let mut dev = 0.0f64;
+                let mut plus = 0.0f64;
+                let mut scale = 0.0f64;
+                let mut ratio = Complex::ZERO;
+                let mut worst = 0.0f64;
+                for s in 0..4usize {
+                    for i in 1..=NTAU {
+                        let a = oca[s].mat.block(i)[0];
+                        let b = xca[s].mat.block(i)[0];
+                        dev = dev.max((a - b).abs());
+                        plus = plus.max((a + b).abs());
+                        scale = scale.max(a.abs());
+                        if (a - b).abs() > worst && a.abs() > 1e-9 {
+                            worst = (a - b).abs();
+                            ratio = b / a;
+                        }
+                    }
+                }
+                println!(
+                    "pair ({c1},{c2}) {}/{} picked={} dev={dev:.3e} plus={plus:.3e} scale={scale:.3e} rel={:.3e} ratio={:?}",
+                    class(c1),
+                    class(c2),
+                    picked.len(),
+                    dev / scale.max(1e-6),
+                    ratio
+                );
             }
         }
     }
