@@ -394,14 +394,13 @@ fn threeband_dimer_nca_vs_ed() {
     );
 }
 
-/// Equilibrium gate: OCA against the same exact reference. HEAVY
-/// (the Matsubara OCA kernel costs ~30 s per pseudo-particle
-/// iteration at ntau = 64) - ignored for the default suite; run with
-/// `cargo test --release --test threeband_dimer -- --ignored`. The
-/// OCA error exceeds the NCA error at these couplings (non-monotonic
-/// bold series, as in the two-band dimer), so the budget is absolute.
+/// Equilibrium gate: OCA against the same exact reference. Measured
+/// ~144 s in release (the Matsubara OCA kernel costs ~30 s per
+/// pseudo-particle iteration at ntau = 64), so it is a default gate;
+/// the real-time OCA leg below remains heavy. The OCA error exceeds
+/// the NCA error at these couplings (non-monotonic bold series, as in
+/// the two-band dimer), so the budget is absolute.
 #[test]
-#[ignore = "heavy: three-band OCA equilibrium dimer (~3 min); run manually"]
 fn threeband_dimer_oca_vs_ed() {
     let ham = mk_ham(U_HUB, J_HUND, CRYSTAL, NT + 2);
     let err = dimer_errors(&ham, 2, 1.0);

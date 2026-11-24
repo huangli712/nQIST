@@ -78,9 +78,9 @@ output against the tracked one at the budget the tests use (1e-6 absolute or
 ## Run the gates
 
 ```
-cargo test --release --test ppsc_ref                  # fast gates (7)
-cargo test --release --test ppsc_ref -- --ignored     # heavy gates (5)
-scripts/heavy_gates.sh                                # selected heavy OCA tier (~5 h)
+cargo test --release --test ppsc_ref                  # fast gates (8)
+cargo test --release --test ppsc_ref -- --ignored     # heavy gates (4)
+scripts/heavy_gates.sh                                # selected heavy OCA tier (~6 h)
 scripts/heavy_gates.sh --list                         # list the tier and ETAs
 scripts/heavy_gates.sh --background                   # detached run (does not block)
 scripts/heavy_gates.sh --status                       # run state + progress tail
@@ -90,7 +90,9 @@ cargo run --release --example <example> -- data/ppsc/<case>/case.toml
 The selected heavy OCA tier is `scripts/heavy_gates.sh`
 (`xca_twoband_dimer::kanamori_dimer_realtime_oca_vs_ed`,
 `threeband_dimer::threeband_kanamori_bz_oca_vs_ed`,
+`threeband_dimer::threeband_dimer_realtime_oca_vs_ed`,
 `threeband_dimer::threeband_kanamori_realtime_oca_vs_ed`,
+`ppsc_ref::two_band_oca_matches_reference`,
 `ppsc_ref::oca_realtime_matches_reference`,
 `ppsc_ref::three_band_oca_matches_reference`,
 `ppsc_ref::prb96_photodoping_matches_reference`); run it as a separate CI

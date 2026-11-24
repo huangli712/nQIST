@@ -967,12 +967,11 @@ fn oca_realtime_matches_reference() {
 // ------------------------------------------------------------------
 // P7: two-band Kanamori quench vs the archived reference
 // (data/ppsc/two_band_u35/run.log, produced by
-// ppsc_programs/two_band_hubbard_bethe.ex). Runtime-dominated: run
-// with cargo test --release -- --ignored two_band
+// ppsc_programs/two_band_hubbard_bethe.ex). Measured ~144 s in
+// release, so it is a default gate (the OCA variant stays heavy).
 // ------------------------------------------------------------------
 
 #[test]
-#[ignore = "two-band quench (~minutes); run with --release -- --ignored"]
 fn two_band_matches_reference() {
     use nqist::dmft::{run_equilibrium_multi, run_realtime_multi, run_start_window_multi};
     use nqist::hamilton::LocalHamiltonian::TwoBand;

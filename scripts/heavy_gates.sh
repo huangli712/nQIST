@@ -13,7 +13,9 @@
 # Gates (one thread, reference machine):
 #   - xca_twoband_dimer::kanamori_dimer_realtime_oca_vs_ed   (~603 s)
 #   - threeband_dimer::threeband_kanamori_bz_oca_vs_ed       (~285 s)
+#   - threeband_dimer::threeband_dimer_realtime_oca_vs_ed    (~56 min)
 #   - threeband_dimer::threeband_kanamori_realtime_oca_vs_ed (~80 min)
+#   - ppsc_ref::two_band_oca_matches_reference               (~15 min)
 #   - ppsc_ref::oca_realtime_matches_reference               (~30-60 min)
 #   - ppsc_ref::three_band_oca_matches_reference             (~2.2 h)
 #   - ppsc_ref::prb96_photodoping_matches_reference          (~3 min)
@@ -29,7 +31,9 @@ export NQIST_PROGRESS=1
 gates=(
     "xca_twoband_dimer|kanamori_dimer_realtime_oca_vs_ed|603 s"
     "threeband_dimer|threeband_kanamori_bz_oca_vs_ed|285 s"
+    "threeband_dimer|threeband_dimer_realtime_oca_vs_ed|56 min"
     "threeband_dimer|threeband_kanamori_realtime_oca_vs_ed|80 min"
+    "ppsc_ref|two_band_oca_matches_reference|15 min"
     "ppsc_ref|oca_realtime_matches_reference|30-60 min"
     "ppsc_ref|three_band_oca_matches_reference|2.2 h"
     "ppsc_ref|prb96_photodoping_matches_reference|3 min"
