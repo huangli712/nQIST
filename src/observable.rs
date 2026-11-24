@@ -208,7 +208,10 @@ pub struct ThreeBandObservables {
 pub fn update_exp_vals_three_band(solver: &ImpuritySolver, tstp: i64) -> ThreeBandObservables {
     let hs = &solver.hs;
     assert!(
-        matches!(solver.ham, LocalHamiltonian::ThreeBand { .. }) && hs.norb == 3,
+        matches!(
+            solver.ham,
+            LocalHamiltonian::ThreeBand { .. } | LocalHamiltonian::ThreeBandKanamori { .. }
+        ) && hs.norb == 3,
         "update_exp_vals_three_band: only the three-band case is implemented"
     );
     let rho = &solver.rho[(tstp + 1) as usize];

@@ -107,6 +107,25 @@ pub enum LocalHamiltonian {
         /// Magnetic field `Bz(tstp + 1)`.
         bz: Vec<f64>,
     },
+    /// Full rotationally-invariant three-band Kanamori Hamiltonian:
+    /// the density-density part of [`LocalHamiltonian::ThreeBand`]
+    /// plus the spin-flip and pair-hopping strings of
+    /// [`kanamori_offdiag_terms_norb`] for every orbital pair (same
+    /// parameter meaning and `tstp + 1` time convention; requires
+    /// `norb = 3`). The strings preserve the `(N_up, N_dn)` sectors,
+    /// so the `SpinResolved` layout is unchanged.
+    ThreeBandKanamori {
+        /// Chemical potential.
+        mu: f64,
+        /// `U(tstp + 1)`.
+        u: Vec<f64>,
+        /// `J(tstp + 1)` (Hund's coupling).
+        j: Vec<f64>,
+        /// Level splitting `delta(tstp + 1)`.
+        delta: Vec<f64>,
+        /// Magnetic field `Bz(tstp + 1)`.
+        bz: Vec<f64>,
+    },
 }
 
 impl LocalHamiltonian {
@@ -182,6 +201,27 @@ impl LocalHamiltonian {
                 let idl = time_index(tstp, delta.len(), "delta");
                 let ib = time_index(tstp, bz.len(), "Bz");
                 threeband_diagonal_block(hs, s, *mu, u[iu], j[ij], delta[idl], bz[ib])
+            }
+            LocalHamiltonian::ThreeBandKanamori {
+                mu,
+                u,
+                j,
+                delta,
+                bz,
+            } => {
+                assert_eq!(
+                    hs.norb, 3,
+                    "ThreeBandKanamori Hamiltonian needs norb = 3"
+                );
+                let iu = time_index(tstp, u.len(), "U");
+                let ij = time_index(tstp, j.len(), "J");
+                let idl = time_index(tstp, delta.len(), "delta");
+                let ib = time_index(tstp, bz.len(), "Bz");
+                let mut h = threeband_diagonal_block(hs, s, *mu, u[iu], j[ij], delta[idl], bz[ib]);
+                for term in kanamori_offdiag_terms_norb(3, j[ij]) {
+                    add_term_via_cop(&mut h, hs, s, &term);
+                }
+                h
             }
         }
     }
@@ -303,38 +343,70 @@ fn add_term_via_cop(h: &mut DenseMat, hs: &HilbertSpace, s: usize, term: &OpTerm
 }
 
 /// Off-diagonal terms of the rotationally-invariant two-band
-/// Kanamori interaction: the spin-flip and pair-hopping strings with
-/// their Hermitian conjugates (coefficients `-J` / `+J`; the
-/// fermionic signs are fixed entirely by the operator construction
-/// and gated by the N = 2 singlet/triplet closed forms). Mode
-/// convention `spin * norb + orb`: 0 = 1u, 1 = 2u, 2 = 1d, 3 = 2d.
+/// Kanamori interaction (wrapper of
+/// [`kanamori_offdiag_terms_norb`] at `norb = 2`).
+pub fn kanamori_offdiag_terms(j: f64) -> Vec<OpTerm> {
+    kanamori_offdiag_terms_norb(2, j)
+}
+
+/// Off-diagonal terms of the rotationally-invariant `norb`-orbital
+/// Kanamori interaction for every orbital pair `(a, b)`, `a < b`:
+/// the spin-flip and pair-hopping strings with their Hermitian
+/// conjugates (coefficients `-J` / `+J`; the fermionic signs are
+/// fixed entirely by the operator construction and gated by the
+/// N = 2 closed forms). Mode convention `spin * norb + orb`.
 /// Together with the density-diagonal fill this completes the full
 /// rotationally-invariant Kanamori interaction; no diagonal
 /// re-derivation is needed (the diagonal already realizes
 /// U / U - 2J / U - 3J).
-pub fn kanamori_offdiag_terms(j: f64) -> Vec<OpTerm> {
+pub fn kanamori_offdiag_terms_norb(norb: usize, j: f64) -> Vec<OpTerm> {
+    assert!(norb >= 2, "kanamori_offdiag_terms_norb: norb must be >= 2");
     let mj = Complex::new(-j, 0.0);
     let pj = Complex::new(j, 0.0);
-    vec![
-        // spin-flip: -J (c^dag_{1u} c_{1d}) (c^dag_{2d} c_{2u}) + h.c.
-        OpTerm {
-            coeff: mj,
-            ops: vec![(0, true), (2, false), (3, true), (1, false)],
-        },
-        OpTerm {
-            coeff: mj,
-            ops: vec![(1, true), (3, false), (2, true), (0, false)],
-        },
-        // pair-hopping: +J c^dag_{1u} c^dag_{1d} c_{2d} c_{2u} + h.c.
-        OpTerm {
-            coeff: pj,
-            ops: vec![(0, true), (2, true), (3, false), (1, false)],
-        },
-        OpTerm {
-            coeff: pj,
-            ops: vec![(1, true), (3, true), (2, false), (0, false)],
-        },
-    ]
+    let mut out = Vec::new();
+    for a in 0..norb {
+        for b in (a + 1)..norb {
+            // spin-flip: -J (c^dag_{a,u} c_{a,d}) (c^dag_{b,d} c_{b,u}) + h.c.
+            out.push(OpTerm {
+                coeff: mj,
+                ops: vec![
+                    (a, true),
+                    (norb + a, false),
+                    (norb + b, true),
+                    (b, false),
+                ],
+            });
+            out.push(OpTerm {
+                coeff: mj,
+                ops: vec![
+                    (b, true),
+                    (norb + b, false),
+                    (norb + a, true),
+                    (a, false),
+                ],
+            });
+            // pair-hopping: +J c^dag_{a,u} c^dag_{a,d} c_{b,d} c_{b,u} + h.c.
+            out.push(OpTerm {
+                coeff: pj,
+                ops: vec![
+                    (a, true),
+                    (norb + a, true),
+                    (norb + b, false),
+                    (b, false),
+                ],
+            });
+            out.push(OpTerm {
+                coeff: pj,
+                ops: vec![
+                    (b, true),
+                    (norb + b, true),
+                    (norb + a, false),
+                    (a, false),
+                ],
+            });
+        }
+    }
+    out
 }
 
 // ------------------------------------------------------------------
@@ -721,6 +793,124 @@ mod tests {
             let e1 = three_band_energy(&ham, &hs, psi, 0);
             assert!((e0 - e_eq).abs() < 1e-12, "pattern {psi:06b}: {e0} vs {e_eq}");
             assert!((e1 - e_q).abs() < 1e-12, "pattern {psi:06b}: {e1} vs {e_q}");
+        }
+    }
+
+    #[test]
+    fn three_band_kanamori_j0_equals_density() {
+        let hs = build(3, SectorClass::SpinResolved);
+        let len = 3;
+        let density = LocalHamiltonian::ThreeBand {
+            mu: 0.2,
+            u: series(3.0, len),
+            j: series(0.0, len), // same J as the full variant below
+            delta: series(0.8, len),
+            bz: series(0.1, len),
+        };
+        let full_j0 = LocalHamiltonian::ThreeBandKanamori {
+            mu: 0.2,
+            u: series(3.0, len),
+            j: series(0.0, len), // the off-diagonal strings vanish
+            delta: series(0.8, len),
+            bz: series(0.1, len),
+        };
+        for tstp in [-1i64, 0] {
+            for s in 0..hs.ns() {
+                let a = density.sector_block(&hs, s, tstp);
+                let b = full_j0.sector_block(&hs, s, tstp);
+                for i in 0..a.size() {
+                    for j in 0..a.size() {
+                        assert!(
+                            (a.get(i, j) - b.get(i, j)).abs() < 1e-15,
+                            "tstp {tstp} sector {s} ({i},{j})"
+                        );
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn three_band_kanamori_multiplet_closed_forms() {
+        // U = 3, J = 0.4, hand-checked with the shift s = 0.5 (5U - 10J).
+        // (1,1) sector: the three intra-orbital doublons mix through
+        // pair hopping (+J) -> {U + 2J, U - J, U - J}; each orbital
+        // pair contributes a spin-flip-mixed Sz = 0 pair
+        // -> {U - 3J (triplet), U - J (singlet)} per pair. Sorted
+        // (relative to -2s): [U - 3J] x3, [U - J] x5, [U + 2J].
+        let hs = build(3, SectorClass::SpinResolved);
+        let ham = LocalHamiltonian::ThreeBandKanamori {
+            mu: 0.0,
+            u: series(3.0, 3),
+            j: series(0.4, 3),
+            delta: series(0.0, 3),
+            bz: series(0.0, 3),
+        };
+        let s = 0.5 * (5.0 * 3.0 - 10.0 * 0.4);
+        // sector index = N_up * (norb + 1) + N_dn
+        let (w, _) = eigh(&ham.sector_block(&hs, 5, -1));
+        let mut got: Vec<f64> = w.iter().map(|x| x + 2.0 * s).collect();
+        got.sort_by(|a, b| a.partial_cmp(b).unwrap());
+        let mut want = vec![3.0 - 3.0 * 0.4; 3];
+        want.extend(vec![3.0 - 0.4; 5]);
+        want.push(3.0 + 2.0 * 0.4);
+        for (a, b) in got.iter().zip(&want) {
+            assert!((a - b).abs() < 1e-10, "(1,1) spectrum {got:?} vs {want:?}");
+        }
+        // (N_up, N_dn) = (2, 0) and (0, 2): three parallel-spin pairs,
+        // no off-diagonal string acts -> U - 3J each
+        for sec in [8usize, 2] {
+            let (w, _) = eigh(&ham.sector_block(&hs, sec, -1));
+            for x in w {
+                assert!((x + 2.0 * s - (3.0 - 3.0 * 0.4)).abs() < 1e-10);
+            }
+        }
+    }
+
+    #[test]
+    fn three_band_kanamori_tier0a_matches_ed_compiler() {
+        // solver-side dense sector blocks vs the ED-side full-space
+        // string application on the density variant plus the same terms
+        let hs = build(3, SectorClass::SpinResolved);
+        let mut u = series(3.0, 3);
+        u[1] = 3.4; // tstp = 0 quench exercises the per-slice terms
+        let mut j = series(0.4, 3);
+        j[1] = 0.5;
+        let full = LocalHamiltonian::ThreeBandKanamori {
+            mu: 0.1,
+            u: u.clone(),
+            j: j.clone(),
+            delta: series(0.8, 3),
+            bz: series(0.3, 3),
+        };
+        let density = LocalHamiltonian::ThreeBand {
+            mu: 0.1,
+            u,
+            j,
+            delta: series(0.8, 3),
+            bz: series(0.3, 3),
+        };
+        for tstp in [-1i64, 0] {
+            let jt = if tstp < 0 { 0.4 } else { 0.5 };
+            let terms = kanamori_offdiag_terms_norb(3, jt);
+            let full_ed = crate::ed::hamiltonian_at(&density, &hs, &[], &terms, tstp);
+            for s in 0..hs.ns() {
+                let blk = full.sector_block(&hs, s, tstp);
+                let d = hs.sectors[s].dim;
+                for i in 0..d {
+                    for jj in 0..d {
+                        let a = blk.get(i, jj);
+                        let b = full_ed.get(
+                            hs.sectors[s].states[i] as usize,
+                            hs.sectors[s].states[jj] as usize,
+                        );
+                        assert!(
+                            (a - b).abs() < 1e-14,
+                            "tstp {tstp} sector {s} ({i},{jj}): {a:?} vs {b:?}"
+                        );
+                    }
+                }
+            }
         }
     }
 }

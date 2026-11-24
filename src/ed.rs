@@ -265,6 +265,31 @@ impl EdReference {
         acc * Complex::new(0.0, -1.0 / self.zpart)
     }
 
+    /// Equilibrium spectral function `A(ω) = -(1/π) Im G^R(ω)` with a
+    /// Lorentzian broadening `eta`, per flavor `mode`.
+    pub fn spectral_function(&self, mode: usize, omega: &[f64], eta: f64) -> Vec<f64> {
+        assert!(eta > 0.0, "spectral_function: eta must be positive");
+        let c = self.c_eig(mode);
+        let mut a = vec![0.0f64; omega.len()];
+        let pref = 1.0 / (std::f64::consts::PI * self.zpart);
+        for i in 0..self.dim {
+            for j in 0..self.dim {
+                let m = c.get(i, j);
+                let m2 = (m * m.conj()).re;
+                if m2 == 0.0 {
+                    continue;
+                }
+                let w = self.weights[i] + self.weights[j];
+                let e = self.evals[j] - self.evals[i];
+                for (k, &om) in omega.iter().enumerate() {
+                    let d = om - e;
+                    a[k] += pref * m2 * w * eta / (d * d + eta * eta);
+                }
+            }
+        }
+        a
+    }
+
     /// Thermal expectation `<O>` of an operator string.
     pub fn expectation(&self, ops: &[(usize, bool)]) -> Complex {
         let mut om = DenseMat::zeros(self.dim);
@@ -1178,5 +1203,32 @@ mod tests {
                 assert!((d * d.conj()).re < 1e-20, "mode {m} n {n}: {d:?}");
             }
         }
+    }
+
+    #[test]
+    fn spectral_function_atomic_two_peaks() {
+        // Half-filled atomic limit (eps = mu = 0): the exact A(omega)
+        // is 1/2 delta(omega + U/2) + 1/2 delta(omega - U/2), broadened
+        // by eta. Validates the Lehmann weights and the peak signs.
+        let hs = build(1, SectorClass::SpinResolved);
+        let ham = LocalHamiltonian::SingleBand {
+            mu: 0.0,
+            u: vec![2.0; 2],
+            eps_up: vec![0.0; 2],
+            eps_do: vec![0.0; 2],
+        };
+        let ed = EdReference::build(&ham, &hs, &[], &[], 5.0);
+        let eta = 0.05;
+        let omega = crate::spectral::omega_grid(3.0, 301);
+        let a = ed.spectral_function(0, &omega, eta);
+        let lor = |x: f64, e: f64| {
+            eta / (std::f64::consts::PI * ((x - e).powi(2) + eta * eta))
+        };
+        let mut worst = 0.0f64;
+        for (&om, &v) in omega.iter().zip(&a) {
+            worst = worst.max((v - 0.5 * (lor(om, -1.0) + lor(om, 1.0))).abs());
+        }
+        println!("atomic ED spectral function: worst {worst:.3e}");
+        assert!(worst < 1e-12, "atomic ED A(omega) mismatch: {worst:.3e}");
     }
 }

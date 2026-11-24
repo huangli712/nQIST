@@ -242,6 +242,7 @@ impl ImpuritySolver {
     /// clean grid `dtau = beta / ntau`, `m = 0..=ntau`. Returns the
     /// `pp_dens, pp_mu = ...` log line.
     pub fn solve_atomic(&mut self) -> String {
+        let _timed = crate::progress::Timed::new("solver", "solve_atomic");
         let ns = self.hs.ns();
         let mut evals: Vec<Vec<f64>> = Vec::with_capacity(ns);
         let mut evecs: Vec<DenseMat> = Vec::with_capacity(ns);
@@ -693,6 +694,14 @@ impl ImpuritySolver {
                     let beta = self.beta;
                     let h = self.h;
                     let kt = self.kt as i64;
+                    if std::env::var("NQIST_SKIP_OCA_SIGMA").is_ok() {
+                        static WARNED: std::sync::Once = std::sync::Once::new();
+                        WARNED.call_once(|| {
+                            eprintln!(
+                                "warning: NQIST_SKIP_OCA_SIGMA is set: the real-time OCA self-energy kernel is disabled (diagnostic switch)"
+                            );
+                        });
+                    }
                     for d in &diagrams {
                         if std::env::var("NQIST_SKIP_OCA_SIGMA").is_err() {
                             oca::add_sigma_tstp_oca(
@@ -916,6 +925,7 @@ impl ImpuritySolver {
     /// Matsubara component of the NCA single-particle Green's
     /// functions per GF vertex (blueprint `get_spgf` at `tstp = -1`).
     pub fn get_spgf_mat(&self, verts: &[GfVertex], pp_ints: &[Hybridization]) -> Vec<Vec<Complex>> {
+        let _timed = crate::progress::Timed::new("solver", "get_spgf_mat");
         let mut out = nca::gf_mat(&self.hs, &self.pp_g, verts);
         let xca_lo = if self.order >= 2 {
             {
@@ -989,6 +999,8 @@ impl ImpuritySolver {
         tstp: i64,
         pp_ints: &[Hybridization],
     ) -> Vec<GreenTimeStep> {
+        let _timed = (tstp > self.kt as i64)
+            .then(|| crate::progress::Timed::new("solver", format!("get_spgf(tstp={tstp})")));
         let contour = Contour::new(
             self.nt as i64,
             self.ntau as i64,
@@ -1010,6 +1022,14 @@ impl ImpuritySolver {
             let beta = self.beta;
             let h = self.h;
             let kt = self.kt as i64;
+            if std::env::var("NQIST_SKIP_OCA_GF").is_ok() {
+                static WARNED: std::sync::Once = std::sync::Once::new();
+                WARNED.call_once(|| {
+                    eprintln!(
+                        "warning: NQIST_SKIP_OCA_GF is set: the real-time OCA vertex-correction kernel is disabled (diagnostic switch)"
+                    );
+                });
+            }
             for d in &diagrams {
                 if std::env::var("NQIST_SKIP_OCA_GF").is_err() {
                     oca::add_gf_tstp_oca(tstp, d, pp_g, beta, h, kt, &integ, &mut out[d.vertex]);
@@ -1080,6 +1100,7 @@ impl ImpuritySolver {
     }
 
     pub fn pp_step(&mut self, tstp: i64, pp_ints: &[Hybridization]) -> Option<String> {
+        let _timed = crate::progress::Timed::new("solver", format!("pp_step(tstp={tstp})"));
         let (n1, n2) = if tstp <= self.kt as i64 && tstp >= 0 {
             (0, self.kt as i64)
         } else {

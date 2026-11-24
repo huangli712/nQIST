@@ -80,8 +80,24 @@ output against the tracked one at the budget the tests use (1e-6 absolute or
 ```
 cargo test --release --test ppsc_ref                  # fast gates (7)
 cargo test --release --test ppsc_ref -- --ignored     # heavy gates (5)
+scripts/heavy_gates.sh                                # selected heavy OCA tier (~5 h)
+scripts/heavy_gates.sh --list                         # list the tier and ETAs
+scripts/heavy_gates.sh --background                   # detached run (does not block)
+scripts/heavy_gates.sh --status                       # run state + progress tail
 cargo run --release --example <example> -- data/ppsc/<case>/case.toml
 ```
+
+The selected heavy OCA tier is `scripts/heavy_gates.sh`
+(`xca_twoband_dimer::kanamori_dimer_realtime_oca_vs_ed`,
+`threeband_dimer::threeband_kanamori_bz_oca_vs_ed`,
+`threeband_dimer::threeband_kanamori_realtime_oca_vs_ed`,
+`ppsc_ref::oca_realtime_matches_reference`,
+`ppsc_ref::three_band_oca_matches_reference`,
+`ppsc_ref::prb96_photodoping_matches_reference`); run it as a separate CI
+job so the default suite stays fast. `--background` detaches the run
+(log `target/heavy_gates/latest.log`); `--status` tails it. The script
+exports `NQIST_PROGRESS=1` and passes `--nocapture`, so the DMFT
+iteration and solver solve timings stream while it runs.
 
 ## Holstein coupling convention
 

@@ -23,7 +23,9 @@ pub mod ipt;
 pub mod nca;
 pub mod observable;
 pub mod oca;
+pub mod progress;
 pub mod solver;
+pub mod spectral;
 pub mod xca;
 pub mod xca_rt;
 

@@ -1141,6 +1141,61 @@ fn kanamori_dimer_nca_oca_vs_ed() {
         "OCA: {errors:?}"
     );
 }
+
+/// Field gate: the same full-Kanamori dimer with Bz = 0.3. Every
+/// other end-to-end test runs at Bz = 0 (only the Hamiltonian unit
+/// tests exercised the term), so this covers the field path for NCA
+/// and OCA against the 64-state ED reference.
+#[test]
+fn kanamori_dimer_bz_field_vs_ed() {
+    use nqist::ed::{BathCoupling, EdReference};
+    use nqist::hamilton::LocalHamiltonian::TwoBandKanamori;
+    let hs = build(2, SectorClass::SpinResolved);
+    let ham = TwoBandKanamori {
+        mu: 0.0,
+        u: vec![U_HUB; NT + 2],
+        j: vec![J_HUND; NT + 2],
+        delta: vec![CRYSTAL; NT + 2],
+        bz: vec![0.3; NT + 2],
+    };
+    let bath = [
+        BathCoupling {
+            imp_mode: 0,
+            eps: EPS_B1,
+            v: V1,
+        },
+        BathCoupling {
+            imp_mode: 1,
+            eps: EPS_B2,
+            v: V2,
+        },
+    ];
+    let ed = EdReference::build(&ham, &hs, &bath, &[], BETA);
+    let dtau = BETA / NTAU as f64;
+    let mut errors: Vec<[f64; 2]> = Vec::new();
+    for order in [1usize, 2] {
+        let (g0, g1) = solve_twoband_ham(&ham, order, 200, V1, V2);
+        let mut err = [0.0f64; 2];
+        for i in 1..NTAU {
+            let tau = dtau * i as f64;
+            err[0] = err[0].max((g0[i] - ed.greens_tau(0, tau)).abs());
+            err[1] = err[1].max((g1[i] - ed.greens_tau(1, tau)).abs());
+        }
+        println!(
+            "kanamori Bz=0.3 order {order}: max |G-Ged| orb1 {:+.6e} orb2 {:+.6e}",
+            err[0], err[1]
+        );
+        errors.push(err);
+    }
+    assert!(
+        errors[0][0] < 2.0e-2 && errors[0][1] < 2.0e-2,
+        "NCA: {errors:?}"
+    );
+    assert!(
+        errors[1][0] < 4.0e-2 && errors[1][1] < 4.0e-2,
+        "OCA: {errors:?}"
+    );
+}
 /// Atomic-limit cross-check: with zero hybridization the solver's
 /// equilibrium G(tau) IS the atomic propagator (up to the Matsubara
 /// Dyson quadrature error) and must equal the ED Lehmann result for

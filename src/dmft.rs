@@ -131,6 +131,10 @@ pub fn run_equilibrium_probe<F>(
 where
     F: FnMut(usize, &ImpuritySolver, &ContourGreen, &ContourGreen, &ContourGreen, &[Vec<Complex>]),
 {
+    assert_eq!(
+        solver.hs.norb, 1,
+        "run_equilibrium*: single-band driver; use run_*_multi for norb > 1"
+    );
     let nt = solver.nt;
     let ntau = solver.ntau;
     let beta = solver.beta;
@@ -148,6 +152,7 @@ where
 
     let verts = get_gf_verts(solver);
 
+    let prog = crate::progress::Progress::new("dmft eq", itermax);
     let mut converged = false;
     for iter in 1..=itermax {
         let pp_ints = get_pp_ints(&delta, &delta_cc, solver);
@@ -166,6 +171,7 @@ where
 
         // -- convergence check against the previous Gloc
         let err = gtmp.distance_at(&gloc, MATSUBARA);
+        prog.step(iter, &format!("err={err:.3e}"));
         for m in 0..=ntau {
             let v = gloc.mat.block(m)[0];
             gtmp.mat.block_mut(m)[0] = v;
@@ -340,6 +346,10 @@ pub fn run_start_window_probe<F>(
 where
     F: FnMut(i64, &ImpuritySolver, &ContourGreen, &ContourGreen),
 {
+    assert_eq!(
+        solver.hs.norb, 1,
+        "run_start_window*: single-band driver; use run_*_multi for norb > 1"
+    );
     solver.set_t0();
     let kt = solver.kt as i64;
     let verts = get_gf_verts(solver);
@@ -356,6 +366,7 @@ where
         Complex::ZERO,
     );
     let mut log = StartLog::default();
+    let prog = crate::progress::Progress::new("dmft start", itermax);
     for iter in 1..=itermax {
         let pp_ints = get_pp_ints(delta, delta_cc, solver);
         solver.pp_step(kt, &pp_ints);
@@ -371,6 +382,7 @@ where
             set_bwd_from_fwd_tstp(n, delta_cc, delta);
         }
         let err = gtmp.distance_at(gloc, kt);
+        prog.step(iter, &format!("err={err:.3e}"));
         let ts = timestep_at(gloc, kt);
         set_timestep_at(&mut gtmp, &ts);
         log.start_lines.push(start_iter_line(iter, err));
@@ -405,9 +417,14 @@ pub fn run_realtime<F>(
 where
     F: FnMut(i64, &ImpuritySolver, &ContourGreen, &ContourGreen),
 {
+    assert_eq!(
+        solver.hs.norb, 1,
+        "run_realtime: single-band driver; use run_realtime_multi for norb > 1"
+    );
     let verts = get_gf_verts(solver);
     let mut tstp_lines = Vec::new();
     let mut obs_lines = Vec::new();
+    let prog = crate::progress::Progress::new("dmft rt", (to - from + 1).max(0) as usize);
     for tstp in from..=to {
         solver.extrapolate_timestep(tstp - 1);
         for _ in 1..=iter_rtime {
@@ -430,6 +447,7 @@ where
             obs.n_dn,
             obs.docc,
         ));
+        prog.step((tstp - from + 1) as usize, "");
     }
     (tstp_lines, obs_lines)
 }
@@ -581,6 +599,25 @@ pub fn get_gf_verts_multi(solver: &ImpuritySolver) -> Vec<GfVertex> {
     out
 }
 
+/// Validate a multi-band bath channel map: exactly `2 * norb`
+/// entries, each a valid channel index.
+fn check_bath_map(solver: &ImpuritySolver, bath_map: &[usize], nchan: usize) {
+    assert_eq!(
+        nchan,
+        2 * solver.hs.norb,
+        "multi driver: expected 2*norb bath channels"
+    );
+    assert_eq!(
+        bath_map.len(),
+        nchan,
+        "bath_map must have 2*norb entries (one per spin-orbital channel)"
+    );
+    assert!(
+        bath_map.iter().all(|&c| c < nchan),
+        "bath_map index out of range (nchan = {nchan})"
+    );
+}
+
 /// Two-band equilibrium (Matsubara) DMFT loop; per-channel linear
 /// mixing of Gloc, convergence measured on channel 0 (blueprint
 /// `distance_norm2(-1, gtmp, Gloc.o1up)`).
@@ -612,6 +649,7 @@ pub fn run_equilibrium_multi(
     );
     let mk = || ContourGreen::new(&contour, Sign::Fermi, Complex::ZERO);
     let nchan = 2 * solver.hs.norb;
+    check_bath_map(solver, bath_map, nchan);
     let mut gloc = (0..nchan).map(|_| mk()).collect::<Vec<_>>();
     let mut delta = (0..nchan).map(|_| mk()).collect::<Vec<_>>();
     let mut delta_cc = (0..nchan).map(|_| mk()).collect::<Vec<_>>();
@@ -624,6 +662,7 @@ pub fn run_equilibrium_multi(
     let verts = get_gf_verts_multi(solver);
     let tsq = Complex::new(tvec[0] * tvec[0], 0.0);
 
+    let prog = crate::progress::Progress::new("dmft eq", itermax);
     let mut converged = false;
     for iter in 1..=itermax {
         let pp_ints = get_pp_ints_multi(&delta, &delta_cc, solver);
@@ -644,6 +683,7 @@ pub fn run_equilibrium_multi(
         let err = (0..nchan)
             .map(|c| gtmps[c].distance_at(&gloc[c], MATSUBARA))
             .fold(0.0f64, f64::max);
+        prog.step(iter, &format!("err={err:.3e} nchan={nchan}"));
         for c in 0..nchan {
             for m in 0..=ntau {
                 let v = gloc[c].mat.block(m)[0];
@@ -693,7 +733,9 @@ pub fn run_start_window_multi(
         Complex::ZERO,
     );
     let nchan = gloc.len();
+    check_bath_map(solver, bath_map, nchan);
     let mut log = StartLog::default();
+    let prog = crate::progress::Progress::new("dmft start", itermax);
     for iter in 1..=itermax {
         let pp_ints = get_pp_ints_multi(delta, delta_cc, solver);
         solver.pp_step(kt, &pp_ints);
@@ -710,6 +752,7 @@ pub fn run_start_window_multi(
             }
         }
         let err = gtmp.distance_at(&gloc[0], kt);
+        prog.step(iter, &format!("err={err:.3e}"));
         let ts = timestep_at(&gloc[0], kt);
         set_timestep_at(&mut gtmp, &ts);
         log.start_lines.push(start_iter_line(iter, err));
@@ -744,8 +787,10 @@ where
 {
     let verts = get_gf_verts_multi(solver);
     let nchan = gloc.len();
+    check_bath_map(solver, bath_map, nchan);
     let mut tstp_lines = Vec::new();
     let mut obs_lines = Vec::new();
+    let prog = crate::progress::Progress::new("dmft rt", (to - from + 1).max(0) as usize);
     for tstp in from..=to {
         solver.extrapolate_timestep(tstp - 1);
         for _ in 1..=iter_rtime {
@@ -811,6 +856,7 @@ where
         probe(tstp, solver);
         tstp_lines.push(tstp_line(tstp as usize));
         obs_lines.push(line);
+        prog.step((tstp - from + 1) as usize, "");
     }
     (tstp_lines, obs_lines)
 }
