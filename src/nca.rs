@@ -426,6 +426,12 @@ pub(crate) fn accumulate_sigma_tstp(
 /// phonon propagator with its backward partner and the diagonal
 /// vertex blocks (e.g. the doublon operator `n_up n_dn` from
 /// [`crate::boson::docc_blocks`]).
+///
+/// For bosons `d0` and `d0_cc` are the same physical line (the
+/// periodic Matsubara flip and the real-time contour mirror).
+/// [`crate::solver::ImpuritySolver::set_boson_bath`] counts the
+/// vertex once by scaling each channel with 1/2, so `g` in
+/// `boson::scale_phonon` is the Hamiltonian coupling `lambda`.
 pub struct BosonBath {
     pub d0: ContourGreen,
     pub d0_cc: ContourGreen,

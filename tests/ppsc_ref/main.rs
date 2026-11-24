@@ -1468,7 +1468,10 @@ fn check_holstein_reference(ref_log: &str, nt: usize, ntau: usize, order: usize)
     use nqist::nca::BosonBath;
 
     let (beta, h, kt, itermax, errmax, iter_rtime) = (5.0, 0.02, 5usize, 100usize, 1e-8, 4usize);
-    let (u0, u1, g, omega) = (4.0f64, 6.0, 0.3, 1.0);
+    // PPSC counts the phonon line twice; the library counts it once,
+    // so the equivalent nQIST coupling is sqrt(2) * g_ppsc.
+    let (u0, u1, g_ppsc, omega) = (4.0f64, 6.0, 0.3, 1.0);
+    let g = g_ppsc * 2.0f64.sqrt();
     // print-resolution budget of the default C++ stream output
     let close = |a: f64, b: f64| (a - b).abs() <= 1e-6 || (a - b).abs() <= 1e-5 * b.abs();
 
@@ -1524,7 +1527,7 @@ fn check_holstein_reference(ref_log: &str, nt: usize, ntau: usize, order: usize)
             eps_do: vec![0.0; nt + 2],
         },
     );
-    // boson bath in the PPSC convention (both boson channels)
+    // boson bath: both channels, coupling sqrt(2) * g_ppsc
     let mut d0 = nqist::boson::green_from_eps_phonon(nt, ntau, beta, h, omega);
     nqist::boson::scale_phonon(&mut d0, &vec![g; nt + 2]);
     let bcontour = Contour::new(nt as i64, ntau as i64, 1, 1, nt as f64 * h, beta);

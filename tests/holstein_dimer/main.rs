@@ -7,21 +7,21 @@
 //           the joint fermion + phonon space (16 Fock states x nph
 //           phonon levels) through the ED module.
 //
-//           Boson-line convention (measured here, see
-//           `holstein_double_line_equals_single_line`): `BosonBath`
-//           feeds the SAME phonon propagator through the forward and
-//           the backward boson channel. For bosons the two channels
-//           are identical (`D(beta - tau) = D(tau)`), so the PPSC
-//           construction counts the phonon line twice and its
-//           effective coupling is `lambda = sqrt(2) g` in
-//           `H_ph = omega0 b^dag b + lambda docc (b + b^dag)`. With a
-//           single boson line the solver Hamiltonian is exactly
-//           `lambda = g`: the X = b + b^dag propagator of
+//           Boson-line convention: `BosonBath` carries the forward and
+//           the backward boson channel, which for bosons are the same
+//           physical line (`D(beta - tau) = D(tau)`). The solver
+//           counts the vertex once (`ImpuritySolver::set_boson_bath`
+//           scales each channel by 1/2), so the bath coupling `g` is
+//           the Hamiltonian coupling `lambda` in
+//           `H_ph = omega0 b^dag b + lambda docc (b + b^dag)`: the
+//           X = b + b^dag propagator of
 //           `boson::green_from_eps_phonon` scaled by g(t) g(t') is
-//           the correlator of `g docc X`. The physical gates below use
-//           the single line; the frequency is chosen != 1 so that a
-//           wrong normalization (g omega0, g / omega0, ...) gives a
-//           visibly different exact reference.
+//           the correlator of `g docc X`. The PPSC Holstein driver
+//           counts the line twice; its coupling maps to
+//           `g = sqrt(2) g_ppsc` here (see tests/ppsc_ref). The
+//           frequency is chosen != 1 so that a wrong normalization
+//           (g omega0, g / omega0, ...) gives a visibly different
+//           exact reference.
 
 use kadanoffbaym::complex::Complex;
 use kadanoffbaym::types::{Contour, ContourGreen, Sign};
@@ -119,26 +119,17 @@ fn k_tau(tau: f64, w: f64) -> f64 {
     -(-w * tau).exp() / (1.0 + (-BETA * w).exp())
 }
 
-/// Boson bath of the coupling series `gvec` (`g(t) g(t')`-scaled
-/// free phonon propagator, doublon vertex). `with_bwd = false` keeps
-/// the backward channel at zero: a single boson line per vertex.
-fn boson_bath_with(
-    hs: &HilbertSpace,
-    nt: usize,
-    ntau: usize,
-    h: f64,
-    gvec: &[f64],
-    with_bwd: bool,
-) -> BosonBath {
+/// Boson bath of the coupling series `gvec`: the `g(t) g(t')`-scaled
+/// free phonon propagator with both boson channels (the solver counts
+/// the vertex once) and the doublon vertex blocks.
+fn boson_bath(hs: &HilbertSpace, nt: usize, ntau: usize, h: f64, gvec: &[f64]) -> BosonBath {
     let mut d0 = nqist::boson::green_from_eps_phonon(nt, ntau, BETA, h, OMEGA);
     nqist::boson::scale_phonon(&mut d0, gvec);
     let bcontour = Contour::new(nt as i64, ntau as i64, 1, 1, nt as f64 * h, BETA);
     let mut d0_cc = ContourGreen::new(&bcontour, Sign::Bose, Complex::ZERO);
-    if with_bwd {
-        nqist::boson::set_bwd_from_fwd_boson_mat(&mut d0_cc, &d0);
-        for tstp in 0..=(nt as i64) {
-            nqist::boson::set_bwd_from_fwd_boson_tstp(tstp, &mut d0_cc, &d0);
-        }
+    nqist::boson::set_bwd_from_fwd_boson_mat(&mut d0_cc, &d0);
+    for tstp in 0..=(nt as i64) {
+        nqist::boson::set_bwd_from_fwd_boson_tstp(tstp, &mut d0_cc, &d0);
     }
     BosonBath {
         d0,
@@ -210,18 +201,16 @@ fn solve_holstein(
     g: f64,
     ntau: usize,
     pp_iters: usize,
-    with_bwd: bool,
 ) -> (Vec<Vec<f64>>, usize) {
     let hs = build(1, SectorClass::SpinResolved);
     let mut solver = ImpuritySolver::new(NT, ntau, BETA, 0.02, 5, order, hs.clone(), ham.clone());
     solver.solve_atomic();
-    solver.set_boson_bath(Some(boson_bath_with(
+    solver.set_boson_bath(Some(boson_bath(
         &hs,
         NT,
         ntau,
         0.02,
         &vec![g; NT + 2],
-        with_bwd,
     )));
 
     let contour = Contour::new(NT as i64, ntau as i64, 1, 1, 0.1, BETA);
@@ -259,9 +248,10 @@ fn solve_holstein(
     (last, iters)
 }
 
-/// Matsubara solution with the physical single boson line.
-fn solve_single(ham: &LocalHamiltonian, order: usize, vscale: f64) -> (Vec<Vec<f64>>, usize) {
-    solve_holstein(ham, order, vscale, G_EP, NTAU, 200, false)
+/// Matsubara solution with the library's single-line convention:
+/// `G_EP` is the Hamiltonian coupling.
+fn solve_matsubara(ham: &LocalHamiltonian, order: usize, vscale: f64) -> (Vec<Vec<f64>>, usize) {
+    solve_holstein(ham, order, vscale, G_EP, NTAU, 200)
 }
 
 fn main() {
@@ -352,30 +342,33 @@ fn holstein_dimer_ed_selfchecks() {
 // boson-line convention of the library
 // ------------------------------------------------------------------
 
-/// The `BosonBath` of the library (forward + backward boson channel)
-/// is equivalent to a single boson line with the coupling scaled by
-/// `sqrt(2)`, at NCA and OCA order (Matsubara axis): both channels
-/// carry the same propagator for bosons.
+/// Library convention gate: the bath coupling `g` is the Hamiltonian
+/// `lambda` (the phonon line is counted once). Near the atomic limit
+/// the NCA error (a few 1e-4) is far below the model difference of
+/// the PPSC doubled convention (`lambda = sqrt(2) g`), so the two
+/// references are clearly separated.
 #[test]
-fn holstein_double_line_equals_single_line() {
+fn holstein_library_counts_single_boson_line() {
     let ham = mk_ham(U_HUB, NT + 2);
-    for order in [1usize, 2] {
-        for vscale in [0.0f64, 1.0] {
-            let (double, _) = solve_holstein(&ham, order, vscale, G_EP, NTAU, 200, true);
-            let (single, _) =
-                solve_holstein(&ham, order, vscale, G_EP * 2.0f64.sqrt(), NTAU, 200, false);
-            let worst = double
-                .iter()
-                .flatten()
-                .zip(single.iter().flatten())
-                .map(|(a, b)| (a - b).abs())
-                .fold(0.0f64, f64::max);
-            println!(
-                "boson-line equivalence order {order} vscale {vscale}: |double(g) - single(sqrt(2) g)| {worst:.3e}"
-            );
-            assert!(worst < 1e-9, "order {order} vscale {vscale}: {worst:.3e}");
+    let vscale = 0.1;
+    let (g, _) = solve_matsubara(&ham, 1, vscale);
+    let error = |lambda: f64| -> f64 {
+        let ed = ed_reference(&ham, lambda, NPH, vscale);
+        let mut err = 0.0f64;
+        for m in 1..NTAU {
+            err = err.max((g[0][m] - ed.greens_tau(0, BETA * m as f64 / NTAU as f64)).abs());
         }
-    }
+        err
+    };
+    let physical = error(G_EP);
+    let ppsc = error(G_EP * 2.0f64.sqrt());
+    println!(
+        "library convention: |G - ED(lambda=g)| {physical:.3e}, |G - ED(lambda=sqrt(2) g)| {ppsc:.3e}"
+    );
+    assert!(
+        physical * 5.0 < ppsc,
+        "the library coupling must be the Hamiltonian lambda: {physical:.3e} vs {ppsc:.3e}"
+    );
 }
 
 // ------------------------------------------------------------------
@@ -385,7 +378,7 @@ fn holstein_double_line_equals_single_line() {
 fn dimer_error(order: usize, vscale: f64) -> f64 {
     let ham = mk_ham(U_HUB, NT + 2);
     let ed = ed_reference(&ham, G_EP, NPH, vscale);
-    let (g, _) = solve_single(&ham, order, vscale);
+    let (g, _) = solve_matsubara(&ham, order, vscale);
     let mut err = 0.0f64;
     for o in 0..2 {
         for m in 1..NTAU {
@@ -395,20 +388,21 @@ fn dimer_error(order: usize, vscale: f64) -> f64 {
     err
 }
 
-/// Coupling-normalization scan: the solver runs the single boson line
-/// `D0 = g D_free g`; the exact reference must use the SAME `lambda =
-/// g` in `H_ph = lambda docc (b + b^dag)`. With omega0 = 0.7 the
-/// candidate normalizations `g omega0`, `g / omega0`, `g omega0^2`,
-/// `g / omega0^2` and the PPSC double line (`sqrt(2) g`) give
-/// different references, and only `lambda = g` agrees with the solver
-/// to the NCA accuracy. Run near the atomic limit (V = 0.04), where
-/// the NCA error (~5e-4) is far below the model change of a wrong
-/// normalization (the phonon effect on G is ~1.7e-2).
+/// Coupling-normalization scan: the solver counts one boson line of
+/// the bath coupling `g`; the exact reference must use the SAME
+/// `lambda = g` in `H_ph = lambda docc (b + b^dag)`. With omega0 = 0.7
+/// the candidate normalizations `g omega0`, `g / omega0`,
+/// `g omega0^2`, `g / omega0^2` and the PPSC doubled convention
+/// (`sqrt(2) g`) give different references, and only `lambda = g`
+/// agrees with the solver to the NCA accuracy. Run near the atomic
+/// limit (V = 0.04), where the NCA error (~5e-4) is far below the
+/// model change of a wrong normalization (the phonon effect on G is
+/// ~1.7e-2).
 #[test]
 fn holstein_coupling_normalization_scan() {
     let ham = mk_ham(U_HUB, NT + 2);
     let vscale = 0.1;
-    let (g, _) = solve_single(&ham, 1, vscale);
+    let (g, _) = solve_matsubara(&ham, 1, vscale);
     let error = |lambda: f64| -> f64 {
         let ed = ed_reference(&ham, lambda, NPH, vscale);
         let mut err = 0.0f64;
@@ -423,7 +417,7 @@ fn holstein_coupling_normalization_scan() {
         ("g / omega0", G_EP / OMEGA),
         ("g omega0^2", G_EP * OMEGA * OMEGA),
         ("g / omega0^2", G_EP / (OMEGA * OMEGA)),
-        ("sqrt(2) g (double line)", G_EP * 2.0f64.sqrt()),
+        ("sqrt(2) g (PPSC convention)", G_EP * 2.0f64.sqrt()),
         ("0", 0.0),
     ]
     .iter()
@@ -465,7 +459,7 @@ fn holstein_dimer_nca_oca_vs_ed() {
     let ed = ed_reference(&ham, G_EP, NPH, 1.0);
     let mut errors = Vec::new();
     for order in [1usize, 2] {
-        let (g, iters) = solve_single(&ham, order, 1.0);
+        let (g, iters) = solve_matsubara(&ham, order, 1.0);
         let mut err = [0.0f64; 2];
         for o in 0..2 {
             for m in 1..NTAU {
@@ -501,7 +495,6 @@ fn run_realtime(
     nt_rt: usize,
     ntau: usize,
     h_rt: f64,
-    with_bwd: bool,
 ) -> RtRun {
     use std::time::Instant;
 
@@ -578,13 +571,12 @@ fn run_realtime(
     let started = Instant::now();
     let mut solver = ImpuritySolver::new(nt_rt, ntau, BETA, h_rt, kt, order, hs.clone(), ham);
     solver.solve_atomic();
-    solver.set_boson_bath(Some(boson_bath_with(
+    solver.set_boson_bath(Some(boson_bath(
         &hs,
         nt_rt,
         ntau,
         h_rt,
         gvec,
-        with_bwd,
     )));
     let zero = || ContourGreen::new(&contour, Sign::Fermi, Complex::ZERO);
     let (delta, delta_cc) = if vscale == 0.0 {
@@ -655,7 +647,7 @@ fn check_holstein_dimer_realtime(order: usize) {
 
     // -- leg 1: no-quench stationarity (TTI), with and without the
     // fermionic bath (the phonon stays coupled in both legs)
-    let mut atomic = run_realtime(order, &gvec_eq, 0.0, nt_rt, ntau, h_rt, false);
+    let mut atomic = run_realtime(order, &gvec_eq, 0.0, nt_rt, ntau, h_rt);
     let drift = obs_drift(&mut atomic, nt_rt);
     println!("realtime TTI drift [holstein m={order}, v=0]: {drift:.3e}");
     assert!(
@@ -663,7 +655,7 @@ fn check_holstein_dimer_realtime(order: usize) {
         "atomic leg must be stationary: {drift:.3e}"
     );
 
-    let mut steady = run_realtime(order, &gvec_eq, 1.0, nt_rt, ntau, h_rt, false);
+    let mut steady = run_realtime(order, &gvec_eq, 1.0, nt_rt, ntau, h_rt);
     let drift = obs_drift(&mut steady, nt_rt);
     println!(
         "realtime TTI drift [holstein m={order}] (n_up, n_dn, docc, e_int): {drift:.3e}"
@@ -678,7 +670,7 @@ fn check_holstein_dimer_realtime(order: usize) {
     let h0 = hamiltonian_at_phonon(&ham, &hs, &bath(), &[], -1, &phonon_series(&gvec_eq));
     let h1 = hamiltonian_at_phonon(&ham, &hs, &bath(), &[], 0, &phonon_series(&gvec_q));
     let ev = EdEvolution::build_quench_with_layout(&h0, &h1, nt_rt, h_rt, BETA, &[0, 1], 4);
-    let quench = run_realtime(order, &gvec_q, 1.0, nt_rt, ntau, h_rt, false);
+    let quench = run_realtime(order, &gvec_q, 1.0, nt_rt, ntau, h_rt);
     let mut w = 0.0f64;
     for mode in [0usize, 1] {
         for (n, j) in [
@@ -729,37 +721,4 @@ fn holstein_dimer_realtime_nca_vs_ed() {
 #[test]
 fn holstein_dimer_realtime_oca_vs_ed() {
     check_holstein_dimer_realtime(2);
-}
-
-/// Boson-line equivalence in real time: the library's double line at
-/// coupling `g` and the single line at `sqrt(2) g` give the same
-/// real-time propagators through a g quench (NCA and OCA).
-#[test]
-fn holstein_double_line_equals_single_line_realtime() {
-    let (nt_rt, ntau, h_rt) = (16usize, 64usize, 0.025f64);
-    let len = nt_rt + 2;
-    let mut gvec_q = vec![0.6f64; len];
-    gvec_q[0] = G_EP;
-    let scaled: Vec<f64> = gvec_q.iter().map(|g| g * 2.0f64.sqrt()).collect();
-    for order in [1usize, 2] {
-        let double = run_realtime(order, &gvec_q, 1.0, nt_rt, ntau, h_rt, true);
-        let single = run_realtime(order, &scaled, 1.0, nt_rt, ntau, h_rt, false);
-        let mut worst = 0.0f64;
-        for mode in [0usize, 1] {
-            for n in 0..=nt_rt as i64 {
-                let a = double.solver.get_spgf(&double.verts, n, &[]);
-                let b = single.solver.get_spgf(&single.verts, n, &[]);
-                for j in 0..=n {
-                    let dr = a[mode].ret.raw_block_at(n, j)[0] - b[mode].ret.raw_block_at(n, j)[0];
-                    let dl =
-                        a[mode].less.raw_block_at(j, n)[0] - b[mode].less.raw_block_at(j, n)[0];
-                    worst = worst.max(dr.abs()).max(dl.abs());
-                }
-            }
-        }
-        println!(
-            "boson-line equivalence (real time) order {order}: |double(g) - single(sqrt(2) g)| {worst:.3e}"
-        );
-        assert!(worst < 1e-8, "order {order}: {worst:.3e}");
-    }
 }

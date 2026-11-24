@@ -137,6 +137,34 @@ pub fn scale_phonon(d0: &mut ContourGreen, gvec: &[f64]) {
     }
 }
 
+/// Scale every stored component of a boson propagator by `s`
+/// (`D -> s D` on the Matsubara, retarded, lesser and tv parts).
+/// [`crate::solver::ImpuritySolver::set_boson_bath`] uses `s = 0.5`
+/// to count the phonon vertex once: the diagram builders feed the
+/// forward `d0` and the backward `d0_cc` channel, which for bosons
+/// are the same physical line.
+pub fn scale_boson_propagator(d0: &mut ContourGreen, s: f64) {
+    let nt = d0.nt;
+    let ntau = d0.ntau;
+    let f = Complex::new(s, 0.0);
+    for m in 0..=ntau {
+        let v = d0.mat.block(m)[0];
+        d0.mat.block_mut(m)[0] = f * v;
+    }
+    for n in 0..=(nt as i64) {
+        for j in 0..=n {
+            let v = d0.ret.raw_block_at(n, j)[0];
+            d0.ret.raw_block_at_mut(n, j)[0] = f * v;
+            let v = d0.less.raw_block_at(j, n)[0];
+            d0.less.raw_block_at_mut(j, n)[0] = f * v;
+        }
+        for m in 0..=(ntau as i64) {
+            let v = d0.lmix.raw_block_at(n, m)[0];
+            d0.lmix.raw_block_at_mut(n, m)[0] = f * v;
+        }
+    }
+}
+
 /// Diagonal blocks of the number operator `n_sigma` in the local
 /// Hilbert space: for each sector, `n_sigma(ss) = (cre . ann)(ss)`
 /// composed from the single-flavor c-operators (zero blocks omitted).
@@ -234,6 +262,31 @@ mod tests {
                 let a = bwd.lmix.raw_block_at(t, ntau as i64 - m)[0];
                 let b = -fwd.lmix.raw_block_at(t, m)[0].conj();
                 assert!((a - b).abs() < 1e-14, "tv at t={t} m={m}");
+            }
+        }
+    }
+
+    /// `scale_boson_propagator` multiplies every stored component.
+    #[test]
+    fn constant_scale_hits_all_components() {
+        let (nt, ntau, beta, h, omega) = (6, 20, 5.0, 0.02, 1.0);
+        let a = green_from_eps_phonon(nt, ntau, beta, h, omega);
+        let mut b = green_from_eps_phonon(nt, ntau, beta, h, omega);
+        scale_boson_propagator(&mut b, 0.5);
+        let half = Complex::new(0.5, 0.0);
+        for m in 0..=ntau {
+            assert!((b.mat.block(m)[0] - a.mat.block(m)[0] * half).abs() < 1e-15);
+        }
+        for n in 0..=(nt as i64) {
+            for j in 0..=n {
+                let dr = b.ret.raw_block_at(n, j)[0] - a.ret.raw_block_at(n, j)[0] * half;
+                assert!(dr.abs() < 1e-15);
+                let dl = b.less.raw_block_at(j, n)[0] - a.less.raw_block_at(j, n)[0] * half;
+                assert!(dl.abs() < 1e-15);
+            }
+            for m in 0..=(ntau as i64) {
+                let d = b.lmix.raw_block_at(n, m)[0] - a.lmix.raw_block_at(n, m)[0] * half;
+                assert!(d.abs() < 1e-15);
             }
         }
     }

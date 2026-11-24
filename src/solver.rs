@@ -199,11 +199,27 @@ impl ImpuritySolver {
     /// additional NCA/OCA/XCA diagrams to the pseudo-particle
     /// self-energies in [`Self::update_sigma`] and to the
     /// equilibrium single-particle Green's function.
+    ///
+    /// The diagram builders feed BOTH the forward `d0` and the
+    /// backward `d0_cc` boson channel of the vertex. For bosons those
+    /// two channels are the same physical line
+    /// (`D(beta - tau) = D(tau)`, and the real-time mirror is the
+    /// contour flip of the same propagator), so counting both would
+    /// double the phonon self-energy and replace the Hamiltonian
+    /// coupling `lambda` with `sqrt(2) lambda`. Each channel is
+    /// therefore scaled by 1/2 on entry: the library convention is
+    /// the physical `H_ph = omega0 b^dag b + lambda docc (b + b^dag)`
+    /// with `lambda = g`. The PPSC Holstein driver counts the line
+    /// twice, so reproducing it requires `g = sqrt(2) g_ppsc`.
     pub fn set_boson_bath(&mut self, bath: Option<crate::nca::BosonBath>) {
         // The real-time order >= 3 gate lives in `update_sigma`
         // (`assert!(order <= 2 || rt_xca_m3)`); the equilibrium
         // Matsubara path carries boson channels at every order.
-        self.boson = bath;
+        self.boson = bath.map(|mut b| {
+            crate::boson::scale_boson_propagator(&mut b.d0, 0.5);
+            crate::boson::scale_boson_propagator(&mut b.d0_cc, 0.5);
+            b
+        });
     }
 
     /// Fill `h_func[s](tstp)` from the local Hamiltonian for all

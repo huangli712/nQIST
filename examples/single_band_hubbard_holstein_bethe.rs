@@ -6,7 +6,10 @@
 //           phonon propagator D0 = g(t) D0_free(t,t') g(t') with its
 //           backward partner couples through the doublon vertex
 //           (boson pseudo-particle diagrams on top of the fermion NCA
-//           hybridization). Equilibrium uses plain iteration (no
+//           hybridization; the solver counts the phonon vertex once,
+//           so `g` is the Hamiltonian coupling `lambda`, and the
+//           PPSC doubled convention maps to sqrt(2) * g_ppsc).
+//           Equilibrium uses plain iteration (no
 //           mixing), the START window and the real-time stage use the
 //           reference print formats.
 
@@ -113,7 +116,9 @@ fn main() {
     );
 
     // boson bath: free phonon propagator, coupling-scaled, with the
-    // bosonic backward channel
+    // bosonic backward channel (the solver counts the vertex once, so
+    // the coupling below is the Hamiltonian lambda; PPSC's doubled
+    // convention maps to sqrt(2) * g_ppsc)
     let mut d0 = nqist::boson::green_from_eps_phonon(cfg.nt, cfg.ntau, cfg.beta, cfg.h, cfg.omega);
     let gvec = vec![cfg.g; cfg.nt + 2];
     nqist::boson::scale_phonon(&mut d0, &gvec);

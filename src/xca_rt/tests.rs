@@ -9602,11 +9602,17 @@ fn rt_m2_holstein_anchor_vs_stock() {
             d0h.ret.raw_block_at(0, 0)[0] - d0h.less.raw_block_at(0, 0)[0].conj();
         let ints_h = mk_ints(&d1h, &d1ch, cua, cuc, cda, cdc);
         let pp_ints_h: &[crate::nca::Hybridization] = &ints_h;
-        let bath_h = crate::nca::BosonBath {
+        let mut bath_h = crate::nca::BosonBath {
             d0: d0h,
             d0_cc: d0cch,
             blocks: crate::boson::docc_blocks(&hs),
         };
+        // the production path counts the phonon vertex once
+        // (`set_boson_bath` scales each channel by 1/2); mirror it here
+        // so the stored "full" bath and this local "half" bath differ
+        // only by the intended coupling scaling
+        crate::boson::scale_boson_propagator(&mut bath_h.d0, 0.5);
+        crate::boson::scale_boson_propagator(&mut bath_h.d0_cc, 0.5);
         let mut fits_h = super::fit_channels_rt_ext(pp_ints_h, H, NT, 4, crate::xca::W_MAX_DEFAULT);
         fits_h.push(super::fit_one_delta_rt(
             &bath_h.d0,
