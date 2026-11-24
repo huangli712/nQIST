@@ -1,0 +1,19 @@
+# Hubbard-Holstein U quench 4.0 -> 6.0, omega0 = 1.0 (nQIST input for
+# data/ppsc/holstein_u46/case.inp). The PPSC driver counts the phonon
+# line twice, so its g_ppsc = 0.3 corresponds to the physical coupling
+# g = sqrt(2) * 0.3 here (one line, lambda = g).
+nt = 30
+ntau = 64
+beta = 5.0
+h = 0.02
+itermax = 100
+order = 1
+errmax = 1e-8
+iter_rtime = 4
+kt = 5
+mu = 0.0
+U0 = 4.0
+U = 6.0
+eps = 0.0
+g = 0.4242640687119285
+omega = 1.0

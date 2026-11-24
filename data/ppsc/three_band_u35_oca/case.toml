@@ -1,0 +1,22 @@
+# Three-band Kanamori U quench 3.0 -> 3.5 at J = 0.4, OCA (mirror of
+# data/ppsc/three_band_u35_oca/case.inp)
+nt = 16
+ntau = 40
+beta = 5.0
+h = 0.02
+itermax = 100
+errmax = 1e-8
+iter_rtime = 4
+kt = 5
+linear_mixing = 0.5
+mu = 0.0
+u0 = 3.0
+u = 3.5
+j0 = 0.4
+j = 0.4
+delta0 = 0.0
+delta = 0.0
+bz0 = 0.0
+bz = 0.0
+t = 1.0
+order = 2

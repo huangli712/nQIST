@@ -1,0 +1,22 @@
+# nQIST benchmark case: single-band Hubbard, Bethe lattice (v* = 1),
+# interaction quench U0 = 3.0 -> U = 3.5 (mirror of the archived
+# PPSC case.inp of data/ppsc/quench_u35).
+nt = 300
+ntau = 250
+beta = 5.0
+h = 0.02
+itermax = 300
+errmax = 1e-8
+iter_rtime = 4
+kt = 5
+order = 1
+nomp = 1
+store_pp = false
+linear_mixing = 0.5
+read_eq_sym = false
+read_rt_sym = false
+read_state_from_file = false
+mu = 0.0
+U0 = 3.0
+U = 3.5
+eps = 0.0

@@ -1,0 +1,25 @@
+# prb96 (arXiv:1704.06101) photodoping pump: two-band Mott insulator
+# U = 15, W = 4 (t0 = 1, Bethe), J/U = 0.04, beta = 1; two-cycle
+# hopping modulation Omega = 2.25 U with a Gaussian envelope (tc =
+# 0.25, sigma = 0.158, amplitude 0.2 in tseries.txt), giving ~1%
+# singlon-triplon photo-doping after the pump (paper Fig. 6 setup).
+nt = 400
+ntau = 200
+beta = 1.0
+h = 0.02
+itermax = 100
+errmax = 1e-8
+iter_rtime = 4
+kt = 5
+linear_mixing = 0.5
+mu = 0.0
+u0 = 15.0
+u = 15.0
+j0 = 0.6
+j = 0.6
+delta0 = 0.0
+delta = 0.0
+bz0 = 0.0
+bz = 0.0
+# hopping time series file (nt + 2 entries, C++ convention)
+t_file = "tseries.txt"

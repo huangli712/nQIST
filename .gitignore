@@ -3,5 +3,12 @@
 .codegraph
 .cortexkit
 target/
-data/
+data/*
+!data/ppsc/
+data/ppsc/*
+!data/ppsc/README.md
+!data/ppsc/*.txt
+!data/ppsc/*.cpp
+!data/ppsc/*/
+data/ppsc/quench_u35_oca/data_ppsc.h5
 PLAN.md

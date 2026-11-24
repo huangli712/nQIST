@@ -1,0 +1,199 @@
+pp_dens, pp_mu = 2.00009, -2.13864
+INIT: n0: (2.26989e-05,-0) INIT: n1: (0.499977,-0) INIT: n2: (0.499977,-0) INIT: n3: (2.26989e-05,-0) 
+iter:  1 err: 7.01382
+n0: (2.26976e-05,-0) n1: (0.499964,-0) n2: (0.499964,-0) n3: (4.83937e-05,-0) 
+iter:  2 err: 0.894052
+n0: (0.0120547,-0) n1: (0.487877,-0) n2: (0.487877,-0) n3: (0.0121911,-0) 
+iter:  3 err: 0.300933
+n0: (0.0321166,-0) n1: (0.46754,-0) n2: (0.46754,-0) n3: (0.0328039,-0) 
+iter:  4 err: 0.0799617
+n0: (0.0344444,-0) n1: (0.464979,-0) n2: (0.464979,-0) n3: (0.0355982,-0) 
+iter:  5 err: 0.0193226
+n0: (0.0349624,-0) n1: (0.464387,-0) n2: (0.464387,-0) n3: (0.0362634,-0) 
+iter:  6 err: 0.00445746
+n0: (0.0350741,-0) n1: (0.464254,-0) n2: (0.464254,-0) n3: (0.036417,-0) 
+iter:  7 err: 0.00100936
+n0: (0.0351002,-0) n1: (0.464223,-0) n2: (0.464223,-0) n3: (0.0364539,-0) 
+iter:  8 err: 0.000224138
+n0: (0.0351058,-0) n1: (0.464216,-0) n2: (0.464216,-0) n3: (0.0364622,-0) 
+iter:  9 err: 4.9174e-05
+n0: (0.035107,-0) n1: (0.464214,-0) n2: (0.464214,-0) n3: (0.0364641,-0) 
+iter:  10 err: 1.06823e-05
+n0: (0.0351073,-0) n1: (0.464214,-0) n2: (0.464214,-0) n3: (0.0364645,-0) 
+iter:  11 err: 2.30643e-06
+n0: (0.0351073,-0) n1: (0.464214,-0) n2: (0.464214,-0) n3: (0.0364645,-0) 
+iter:  12 err: 4.96065e-07
+n0: (0.0351073,-0) n1: (0.464214,-0) n2: (0.464214,-0) n3: (0.0364646,-0) 
+iter:  13 err: 1.06424e-07
+n0: (0.0351073,-0) n1: (0.464214,-0) n2: (0.464214,-0) n3: (0.0364646,-0) 
+iter:  14 err: 2.27792e-08
+n0: (0.0351073,-0) n1: (0.464214,-0) n2: (0.464214,-0) n3: (0.0364646,-0) 
+iter:  15 err: 4.86612e-09
+n0: (0.0351073,-0) n1: (0.464214,-0) n2: (0.464214,-0) n3: (0.0364646,-0) 
+START time: 0 iter:  1 err: 9.67766
+START time: 1 iter:  1 err: 11.17
+START time: 2 iter:  1 err: 12.6436
+START time: 3 iter:  1 err: 14.0945
+START time: 4 iter:  1 err: 15.519
+START time: 5 iter:  1 err: 16.9136
+START time: 0 iter:  2 err: 0
+START time: 1 iter:  2 err: 0.048535
+START time: 2 iter:  2 err: 0.105857
+START time: 3 iter:  2 err: 0.172947
+START time: 4 iter:  2 err: 0.250978
+START time: 5 iter:  2 err: 0.339656
+START time: 0 iter:  3 err: 0
+START time: 1 iter:  3 err: 0.000428987
+START time: 2 iter:  3 err: 0.00206878
+START time: 3 iter:  3 err: 0.00543403
+START time: 4 iter:  3 err: 0.0109867
+START time: 5 iter:  3 err: 0.0191334
+START time: 0 iter:  4 err: 0
+START time: 1 iter:  4 err: 6.77843e-07
+START time: 2 iter:  4 err: 6.29867e-06
+START time: 3 iter:  4 err: 2.44369e-05
+START time: 4 iter:  4 err: 6.61906e-05
+START time: 5 iter:  4 err: 0.000146348
+START time: 0 iter:  5 err: 0
+START time: 1 iter:  5 err: 1.59271e-09
+START time: 2 iter:  5 err: 2.88999e-08
+START time: 3 iter:  5 err: 1.80458e-07
+START time: 4 iter:  5 err: 6.75264e-07
+START time: 5 iter:  5 err: 1.90701e-06
+START time: 0 iter:  6 err: 0
+START time: 1 iter:  6 err: 4.85842e-11
+START time: 2 iter:  6 err: 1.2974e-10
+START time: 3 iter:  6 err: 7.26434e-10
+START time: 4 iter:  6 err: 3.71288e-09
+START time: 5 iter:  6 err: 1.43018e-08
+START time: 0 iter:  7 err: 0
+START time: 1 iter:  7 err: 1.90789e-12
+START time: 2 iter:  7 err: 1.60353e-12
+START time: 3 iter:  7 err: 3.56711e-12
+START time: 4 iter:  7 err: 1.44219e-11
+START time: 5 iter:  7 err: 6.16381e-11
+time: 6 iter  1 err: 18.3585
+time: 6 iter  2 err: 0.0293064
+time: 6 iter  3 err: 0.000135077
+time: 6 iter  4 err: 2.10892e-07
+AT TIME 6 NOT CONVERGED AFTER 4 ITERATIONS 
+time: 7 iter  1 err: 19.7058
+time: 7 iter  2 err: 0.0326008
+time: 7 iter  3 err: 0.000140497
+time: 7 iter  4 err: 2.27845e-07
+AT TIME 7 NOT CONVERGED AFTER 4 ITERATIONS 
+time: 8 iter  1 err: 21.0135
+time: 8 iter  2 err: 0.0360103
+time: 8 iter  3 err: 0.000144203
+time: 8 iter  4 err: 2.43336e-07
+AT TIME 8 NOT CONVERGED AFTER 4 ITERATIONS 
+time: 9 iter  1 err: 22.2779
+time: 9 iter  2 err: 0.0394941
+time: 9 iter  3 err: 0.000146208
+time: 9 iter  4 err: 2.56683e-07
+AT TIME 9 NOT CONVERGED AFTER 4 ITERATIONS 
+time: 10 iter  1 err: 23.4959
+time: 10 iter  2 err: 0.0430686
+time: 10 iter  3 err: 0.000146548
+time: 10 iter  4 err: 2.67845e-07
+AT TIME 10 NOT CONVERGED AFTER 4 ITERATIONS 
+time: 11 iter  1 err: 24.6643
+time: 11 iter  2 err: 0.0467518
+time: 11 iter  3 err: 0.00014614
+time: 11 iter  4 err: 2.76892e-07
+AT TIME 11 NOT CONVERGED AFTER 4 ITERATIONS 
+time: 12 iter  1 err: 25.7802
+time: 12 iter  2 err: 0.0505127
+time: 12 iter  3 err: 0.000146615
+time: 12 iter  4 err: 2.83374e-07
+AT TIME 12 NOT CONVERGED AFTER 4 ITERATIONS 
+time: 13 iter  1 err: 26.8413
+time: 13 iter  2 err: 0.0543073
+time: 13 iter  3 err: 0.000147936
+time: 13 iter  4 err: 2.86749e-07
+AT TIME 13 NOT CONVERGED AFTER 4 ITERATIONS 
+time: 14 iter  1 err: 27.8452
+time: 14 iter  2 err: 0.0581333
+time: 14 iter  3 err: 0.000150109
+time: 14 iter  4 err: 2.87201e-07
+AT TIME 14 NOT CONVERGED AFTER 4 ITERATIONS 
+time: 15 iter  1 err: 28.7903
+time: 15 iter  2 err: 0.062012
+time: 15 iter  3 err: 0.000153257
+time: 15 iter  4 err: 2.84998e-07
+AT TIME 15 NOT CONVERGED AFTER 4 ITERATIONS 
+time: 16 iter  1 err: 29.675
+time: 16 iter  2 err: 0.0659374
+time: 16 iter  3 err: 0.000157399
+time: 16 iter  4 err: 2.82992e-07
+AT TIME 16 NOT CONVERGED AFTER 4 ITERATIONS 
+time: 17 iter  1 err: 30.498
+time: 17 iter  2 err: 0.0698764
+time: 17 iter  3 err: 0.000162355
+time: 17 iter  4 err: 2.8445e-07
+AT TIME 17 NOT CONVERGED AFTER 4 ITERATIONS 
+time: 18 iter  1 err: 31.2587
+time: 18 iter  2 err: 0.0738109
+time: 18 iter  3 err: 0.000168058
+time: 18 iter  4 err: 2.89436e-07
+AT TIME 18 NOT CONVERGED AFTER 4 ITERATIONS 
+time: 19 iter  1 err: 31.9564
+time: 19 iter  2 err: 0.0777491
+time: 19 iter  3 err: 0.000174683
+time: 19 iter  4 err: 2.9778e-07
+AT TIME 19 NOT CONVERGED AFTER 4 ITERATIONS 
+time: 20 iter  1 err: 32.5911
+time: 20 iter  2 err: 0.0816929
+time: 20 iter  3 err: 0.000182217
+time: 20 iter  4 err: 3.09967e-07
+AT TIME 20 NOT CONVERGED AFTER 4 ITERATIONS 
+time: 21 iter  1 err: 33.1628
+time: 21 iter  2 err: 0.0856198
+time: 21 iter  3 err: 0.000190478
+time: 21 iter  4 err: 3.27216e-07
+AT TIME 21 NOT CONVERGED AFTER 4 ITERATIONS 
+time: 22 iter  1 err: 33.6719
+time: 22 iter  2 err: 0.089503
+time: 22 iter  3 err: 0.000199611
+time: 22 iter  4 err: 3.50104e-07
+AT TIME 22 NOT CONVERGED AFTER 4 ITERATIONS 
+time: 23 iter  1 err: 34.1194
+time: 23 iter  2 err: 0.0933316
+time: 23 iter  3 err: 0.000209461
+time: 23 iter  4 err: 3.79829e-07
+AT TIME 23 NOT CONVERGED AFTER 4 ITERATIONS 
+time: 24 iter  1 err: 34.5064
+time: 24 iter  2 err: 0.0971001
+time: 24 iter  3 err: 0.000219986
+time: 24 iter  4 err: 4.17417e-07
+AT TIME 24 NOT CONVERGED AFTER 4 ITERATIONS 
+time: 25 iter  1 err: 34.8467
+time: 25 iter  2 err: 0.10079
+time: 25 iter  3 err: 0.000231232
+time: 25 iter  4 err: 4.61054e-07
+AT TIME 25 NOT CONVERGED AFTER 4 ITERATIONS 
+time: 26 iter  1 err: 35.2303
+time: 26 iter  2 err: 0.104374
+time: 26 iter  3 err: 0.00024289
+time: 26 iter  4 err: 5.09907e-07
+AT TIME 26 NOT CONVERGED AFTER 4 ITERATIONS 
+time: 27 iter  1 err: 35.6613
+time: 27 iter  2 err: 0.107829
+time: 27 iter  3 err: 0.000255046
+time: 27 iter  4 err: 5.63531e-07
+AT TIME 27 NOT CONVERGED AFTER 4 ITERATIONS 
+time: 28 iter  1 err: 36.1384
+time: 28 iter  2 err: 0.111141
+time: 28 iter  3 err: 0.000267352
+time: 28 iter  4 err: 6.22571e-07
+AT TIME 28 NOT CONVERGED AFTER 4 ITERATIONS 
+time: 29 iter  1 err: 36.66
+time: 29 iter  2 err: 0.114296
+time: 29 iter  3 err: 0.000279876
+time: 29 iter  4 err: 6.88451e-07
+AT TIME 29 NOT CONVERGED AFTER 4 ITERATIONS 
+time: 30 iter  1 err: 37.224
+time: 30 iter  2 err: 0.11727
+time: 30 iter  3 err: 0.000292231
+time: 30 iter  4 err: 7.54087e-07
+AT TIME 30 NOT CONVERGED AFTER 4 ITERATIONS 
