@@ -7,11 +7,22 @@ use crate::io::{iter_line, obs_line, start_iter_line, tstp_line};
 use crate::ipt::IptSolver;
 use crate::nca::{GfVertex, Hybridization, adjoint_raw};
 use crate::observable::update_exp_vals;
-use crate::solver::ImpuritySolver;
+use crate::solver::{ImpuritySolver, Solver};
 use kadanoffbaym::storage::{set_timestep_at, timestep_at};
 use kadanoffbaym::complex::Complex;
 use kadanoffbaym::types::{Contour, ContourGreen, GreenTimeStep, MATSUBARA, Sign};
 use kadanoffbaym::weights::Integrator;
+
+/// Tie the XCA hybridization-fit tolerance to the convergence
+/// criterion (blueprint: TRIQS/xca `hyb_tol = 0.1 * tol`): the fit error
+/// must stay well below the tolerance the self-consistency is judged
+/// against, otherwise it acts as noise on the iteration. Order 1 (NCA)
+/// does not use the pole representation.
+fn set_xca_fit_tolerance(solver: &mut ImpuritySolver, errmax: f64) {
+    if solver.solver == Solver::Xca && solver.order >= 2 {
+        solver.xca_fit_tol = 0.1 * errmax;
+    }
+}
 
 /// Bath hybridization channels of the single-band Bethe driver
 /// (blueprint `get_pp_ints`: forward and backward channels for both
@@ -135,6 +146,7 @@ where
         solver.hs.norb, 1,
         "run_equilibrium*: single-band driver; use run_*_multi for norb > 1"
     );
+    set_xca_fit_tolerance(solver, errmax);
     let nt = solver.nt;
     let ntau = solver.ntau;
     let beta = solver.beta;
@@ -350,6 +362,7 @@ where
         solver.hs.norb, 1,
         "run_start_window*: single-band driver; use run_*_multi for norb > 1"
     );
+    set_xca_fit_tolerance(solver, errmax);
     solver.set_t0();
     let kt = solver.kt as i64;
     let verts = get_gf_verts(solver);
@@ -637,6 +650,7 @@ pub fn run_equilibrium_multi(
     Vec<ContourGreen>,
     Vec<ContourGreen>,
 ) {
+    set_xca_fit_tolerance(solver, errmax);
     let nt = solver.nt;
     let ntau = solver.ntau;
     let contour = Contour::new(
@@ -717,6 +731,7 @@ pub fn run_start_window_multi(
     errmax: f64,
     itermax: usize,
 ) -> StartLog {
+    set_xca_fit_tolerance(solver, errmax);
     solver.set_t0();
     let kt = solver.kt as i64;
     let verts = get_gf_verts_multi(solver);

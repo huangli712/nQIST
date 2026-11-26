@@ -345,9 +345,6 @@ pub(crate) fn add_gf_mat_xca<'a>(
         fits.len(),
         "add_gf_mat_xca: one SOE fit per channel"
     );
-    if m >= 2 && fits.iter().any(|f| f.poles.is_empty()) {
-        return;
-    }
     let nch = pp_ints.len();
     let ntau = grids.ntau;
     let dtau = grids.dtau;
@@ -362,75 +359,89 @@ pub(crate) fn add_gf_mat_xca<'a>(
         };
         let mut cs = vec![0usize; m];
         loop {
-            // the external pair carries no channel: only cs[1..m]
-            // are hybridization lines (plain statistics factors; the
-            // circular wrap signs are folded into the reflected-time
-            // evaluation)
-            let mut stat = 1.0f64;
-            for &c in &cs[1..] {
-                if pp_ints[c].fermion && pp_ints[c].backward {
-                    stat *= -1.0;
+            // a line with an empty fit (zero hybridization, e.g. an
+            // uncoupled channel) carries no poles: for orders >= 2
+            // the channel assignments that involve it contribute
+            // nothing
+            if !(m >= 2 && cs[1..].iter().any(|&c| fits[c].poles.is_empty())) {
+                // the external pair carries no channel: only cs[1..m]
+                // are hybridization lines (plain statistics factors; the
+                // circular wrap signs are folded into the reflected-time
+                // evaluation)
+                let mut stat = 1.0f64;
+                for &c in &cs[1..] {
+                    if pp_ints[c].fermion && pp_ints[c].backward {
+                        stat *= -1.0;
+                    }
                 }
-            }
-            // net prefactor (-1)^m * prod(stat) * parity, matching
-            // the self-energy convention (order 1 reproduces the NCA
-            // bubble prefactor -1)
-            let msign = if m.is_multiple_of(2) { 1.0 } else { -1.0 };
-            let base_pref = Complex::new(msign * stat * topo.parity, 0.0);
+                // net prefactor (-1)^m * prod(stat) * parity, matching
+                // the self-energy convention (order 1 reproduces the NCA
+                // bubble prefactor -1)
+                let msign = if m.is_multiple_of(2) { 1.0 } else { -1.0 };
+                let base_pref = Complex::new(msign * stat * topo.parity, 0.0);
 
-            for vx in 0..verts.len() {
-                for s0 in 0..hs.ns() {
-                    let Some(chain) = build_chain(m, &topo.pairs, &cs, pp_ints, hs, verts, vx, s0)
-                    else {
-                        continue;
-                    };
-                    let run = |kern: &Kernels,
-                               pref: Complex,
-                               ws: &mut Workspace,
-                               out: &mut [Vec<Complex>]| {
-                        eval_gf_backbone(
-                            m, btau, &chain, kern, fits, grids, integ, pref, vx, out, ws,
-                        );
-                    };
-                    if m == 1 {
-                        run(
-                            &Kernels {
-                                vertex: vec![None; 2],
-                                edge: vec![Vec::new(); 2],
-                            },
-                            base_pref,
-                            &mut ws,
-                            out,
-                        );
-                    } else {
-                        let mut pole_l = vec![0usize; m - 1];
-                        'poles: loop {
-                            let kern = build_kernels(m, &topo.pairs, &cs, &pole_l, fits);
-                            let mut pref = base_pref;
-                            for li in 1..m {
-                                let l = pole_l[li - 1];
-                                let fit = &fits[cs[li]];
-                                let w = fit.poles[l];
-                                let denom = if w <= 0.0 {
-                                    fit.km0(l)
-                                } else {
-                                    let edges = (topo.pairs[li].1 - topo.pairs[li].0 - 1) as i32;
-                                    fit.kp0(l).powi(edges)
-                                };
-                                pref *= fit.coefs[l] / Complex::new(denom, 0.0);
+                for vx in 0..verts.len() {
+                    for s0 in 0..hs.ns() {
+                        let Some(chain) = build_chain(m, &topo.pairs, &cs, pp_ints, hs, verts, vx, s0)
+                        else {
+                            continue;
+                        };
+                        let run = |kern: &Kernels,
+                                   pref: Complex,
+                                   ws: &mut Workspace,
+                                   out: &mut [Vec<Complex>]| {
+                            let dbg = std::env::var_os("NQIST_XCA_GF_DEBUG").is_some();
+                            let before = if dbg { out[vx][33] } else { Complex::ZERO };
+                            eval_gf_backbone(
+                                m, btau, &chain, kern, fits, grids, integ, pref, vx, out, ws,
+                            );
+                            if dbg {
+                                eprintln!(
+                                    "xca-gf-dbg m={m} cs={cs:?} vx={vx} s0={s0} d={:?}",
+                                    out[vx][33] - before
+                                );
                             }
-                            run(&kern, pref, &mut ws, out);
-                            let mut idx = 0;
-                            loop {
-                                if idx == m - 1 {
-                                    break 'poles;
+                        };
+                        if m == 1 {
+                            run(
+                                &Kernels {
+                                    vertex: vec![None; 2],
+                                    edge: vec![Vec::new(); 2],
+                                },
+                                base_pref,
+                                &mut ws,
+                                out,
+                            );
+                        } else {
+                            let mut pole_l = vec![0usize; m - 1];
+                            'poles: loop {
+                                let kern = build_kernels(m, &topo.pairs, &cs, &pole_l, fits);
+                                let mut pref = base_pref;
+                                for li in 1..m {
+                                    let l = pole_l[li - 1];
+                                    let fit = &fits[cs[li]];
+                                    let w = fit.poles[l];
+                                    let denom = if w <= 0.0 {
+                                        fit.km0(l)
+                                    } else {
+                                        let edges = (topo.pairs[li].1 - topo.pairs[li].0 - 1) as i32;
+                                        fit.kp0(l).powi(edges)
+                                    };
+                                    pref *= fit.coefs[l] / Complex::new(denom, 0.0);
                                 }
-                                pole_l[idx] += 1;
-                                if pole_l[idx] < fits[cs[idx + 1]].len() {
-                                    break;
+                                run(&kern, pref, &mut ws, out);
+                                let mut idx = 0;
+                                loop {
+                                    if idx == m - 1 {
+                                        break 'poles;
+                                    }
+                                    pole_l[idx] += 1;
+                                    if pole_l[idx] < fits[cs[idx + 1]].len() {
+                                        break;
+                                    }
+                                    pole_l[idx] = 0;
+                                    idx += 1;
                                 }
-                                pole_l[idx] = 0;
-                                idx += 1;
                             }
                         }
                     }

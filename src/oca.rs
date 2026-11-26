@@ -570,6 +570,24 @@ pub(crate) struct OcaGfDiagram<'a> {
     pub op4: DenseMat,
     pub lam: &'a ContourGreen,
     pub prefactor: f64,
+    /// Statistics sign of the reflected last-sector propagator,
+    /// `gd_flip(tau) = -gd_sign * G^M_sd(beta - tau)`. For a fermion
+    /// line this is the channel direction (+1 forward, -1 backward):
+    /// the two orderings of a line straddling the vertex carry the
+    /// bath factors `Delta(beta - tau)` and `-Delta(tau)`, which enter
+    /// with the same physical sign, so the flip follows the channel
+    /// and not the particle-number parity of `sd`. The two coincide
+    /// for a single band (each ordering exists for exactly one chain)
+    /// but not for several bands. Boson lines keep the sector sign.
+    pub gd_sign: f64,
+    /// Real-time statistics factor of the diagram, multiplying the
+    /// prefactor in the real-time kernels: the real-time component
+    /// formulas follow the same sector-parity sign, so the `t = 0`
+    /// contact `lmix(0, beta - tau) = -i G^M(tau)` with the corrected
+    /// Matsubara kernel needs `gd_sign * sig_sd` per fermionic diagram
+    /// (+1 for every single-band diagram, i.e. the single-band
+    /// real-time results are unchanged).
+    pub rt_flip: f64,
 }
 
 pub(crate) fn build_gf_diagrams_oca_channels<'a>(
@@ -601,6 +619,19 @@ pub(crate) fn build_gf_diagrams_oca_channels<'a>(
                     continue;
                 }
                 let prefactor = if hyb.fermion { -1.0 } else { 1.0 };
+                let gd_sign = if hyb.fermion {
+                    if hyb.backward { -1.0 } else { 1.0 }
+                } else {
+                    hs.sectors[sd].sig.as_i64() as f64
+                };
+                // real-time factor converting the sector-parity sign
+                // the real-time kernels were written against into the
+                // channel-direction sign: `new / old = gd_sign / sig_sd`
+                let rt_flip = if hyb.fermion {
+                    gd_sign * hs.sectors[sd].sig.as_i64() as f64
+                } else {
+                    1.0
+                };
                 diagrams.push(OcaGfDiagram {
                     vertex: vi,
                     sa,
@@ -613,6 +644,8 @@ pub(crate) fn build_gf_diagrams_oca_channels<'a>(
                     op4: op4.clone(),
                     lam: hyb.delta,
                     prefactor,
+                    gd_sign,
+                    rt_flip,
                 });
             }
         }
@@ -929,7 +962,8 @@ pub(crate) fn add_gf_mat_oca(
     let nmax = pp_g[0].ntau;
     let dtau = beta / nmax as f64;
     let k = kt as usize;
-    let gd_sig = |d: usize| pp_g[d].sign.as_i64() as f64;
+    // gd_flip(tau) = -gd_sign * gd(nmax - tau) in equilibrium,
+    // with the statistics sign carried by the diagram
 
     let mut lam_i = vec![Complex::ZERO; 1];
     let mut scratch = vec![Complex::ZERO; 64];
@@ -944,9 +978,8 @@ pub(crate) fn add_gf_mat_oca(
         let gc = mat_axis_pp(&pp_g[d.sc]);
         let gd = mat_axis_pp(&pp_g[d.sd]);
         let lam = mat_axis_delta(d.lam);
-        // gd_flip(tau) = -sig_gd * gd(nmax - tau) in equilibrium
         let gd_flip =
-            |tau: usize| -> Complex { -Complex::new(gd_sig(d.sd), 0.0) * gd.block(nmax - tau)[0] };
+            |tau: usize| -> Complex { -Complex::new(d.gd_sign, 0.0) * gd.block(nmax - tau)[0] };
         // dimension bookkeeping: the scalar fast path covers the
         // single-band case (all blocks 1x1, P5-gated); multi-band
         // sectors take the matrix path (blueprint
@@ -967,7 +1000,7 @@ pub(crate) fn add_gf_mat_oca(
                     &gd,
                     &lam,
                     d,
-                    gd_sig(d.sd),
+                    d.gd_sign,
                     true,
                     integ,
                     &mut lam_i,
@@ -3339,7 +3372,7 @@ pub(crate) fn add_gf_tstp_oca_matrix(
     let ndc = ddim * cdim;
     let nda = ddim * adim;
     let nba = bdim * adim;
-    let pref = Complex::new(d.prefactor, 0.0);
+    let pref = Complex::new(d.prefactor * d.rt_flip, 0.0);
     let smax = na.max(nb).max(nc).max(nd).max(ndc).max(nda).max(nba);
     let mut scratch = vec![Complex::ZERO; smax];
     let mut gdb = vec![Complex::ZERO; nd];
@@ -3935,7 +3968,7 @@ pub(crate) fn add_gf_tstp_oca(
         d.op3.get(0, 0),
         d.op4.get(0, 0),
     );
-    let pref = Complex::new(d.prefactor, 0.0);
+    let pref = Complex::new(d.prefactor * d.rt_flip, 0.0);
 
     // -- precompute
     let mut data_a = vec![Complex::ZERO; ((n1 + 1) as usize) * ntau_pts];
@@ -4066,5 +4099,175 @@ pub(crate) fn add_gf_tstp_oca(
             poly_integral_scalar(&f_da, (j - i1min) as usize, (n - i1min) as usize, integ);
         let val = pref * Complex::new(h, 0.0) * (integr_da * op4) + g_les[j as usize].conj();
         out.ret.block_mut(out.ret.idx(n, j))[0] += val;
+    }
+}
+
+#[cfg(test)]
+mod rt_mat_contact {
+    use super::*;
+    use crate::dmft::{set_bwd_from_fwd_mat, set_bwd_from_fwd_tstp};
+    use crate::hamilton::LocalHamiltonian::TwoBandKanamori;
+    use crate::hilbert::{SectorClass, build};
+    use crate::nca::{GfVertex, Hybridization};
+    use crate::solver::{ImpuritySolver, Solver};
+    use kadanoffbaym::types::{Contour, ContourGreen, GreenTimeStep, Sign, TimeFunction};
+
+    /// `t = 0` contact of the OCA one-line Green's-function diagram
+    /// on the two-band Kanamori dimer: per hybridization channel, the
+    /// real-time kernel's `lmix(0, beta - tau)` must equal
+    /// `-i * G^M_OCA(tau)` of the Matsubara kernel (the NCA part
+    /// satisfies the same relation). This pins the statistics sign of
+    /// the forward and backward orderings of the straddling line: the
+    /// sector-parity sign of the blueprint reproduces it on one band
+    /// only (see [`OcaGfDiagram::gd_sign`]).
+    #[test]
+    fn oca_gf_realtime_t0_contact_twoband() {
+        let (nt, ntau, kt, h) = (6usize, 96usize, 5usize, 0.02);
+        let beta = 5.0;
+        let hs = build(2, SectorClass::SpinResolved);
+        let ham = TwoBandKanamori {
+            mu: 0.0,
+            u: vec![2.0; nt + 2],
+            j: vec![0.4; nt + 2],
+            delta: vec![0.8; nt + 2],
+            bz: vec![0.0; nt + 2],
+        };
+        let contour = Contour::new(nt as i64, ntau as i64, 1, 1, h * nt as f64, beta);
+        let mk_level = |eps: f64| -> ContourGreen {
+            let mut g = ContourGreen::new(&contour, Sign::Fermi, Complex::ZERO);
+            let sig = ContourGreen::new(&contour, Sign::Fermi, Complex::ZERO);
+            let mut hf = TimeFunction::zeros(nt, 1, 1);
+            for tstp in -1..=(nt as i64) {
+                hf.block_mut(tstp)[0] = Complex::new(eps, 0.0);
+            }
+            kadanoffbaym::dyson::dyson_mat(
+                &mut g,
+                &sig,
+                0.0,
+                &hf,
+                beta,
+                kt as i64,
+                kadanoffbaym::base::MatsubaraMethod::Fixpoint,
+                true,
+                None,
+                1e-12,
+            );
+            kadanoffbaym::dyson::dyson_start(&mut g, 0.0, &hf, &sig, beta, h, kt as i64);
+            for t in (kt + 1)..=nt {
+                kadanoffbaym::dyson::dyson_timestep(
+                    t as i64,
+                    &mut g,
+                    0.0,
+                    &hf,
+                    &sig,
+                    beta,
+                    h,
+                    kt as i64,
+                );
+            }
+            g
+        };
+        let lvl1 = mk_level(0.5);
+        let lvl2 = mk_level(-0.8);
+        let scale_green = |g: &ContourGreen, w: f64| -> ContourGreen {
+            let wc = Complex::new(w, 0.0);
+            let mut out = ContourGreen::new(&contour, Sign::Fermi, Complex::ZERO);
+            for n in 0..=(nt as i64) {
+                for jj in 0..=n {
+                    out.ret.block_mut(out.ret.idx(n, jj))[0] =
+                        g.ret.block(g.ret.idx(n, jj))[0] * wc;
+                    out.less.block_mut(out.less.idx(jj, n))[0] =
+                        g.less.block(g.less.idx(jj, n))[0] * wc;
+                }
+                for m in 0..=(ntau as i64) {
+                    out.lmix.raw_block_at_mut(n, m)[0] = g.lmix.raw_block_at(n, m)[0] * wc;
+                }
+            }
+            for m in 0..=ntau {
+                out.mat.block_mut(m)[0] = g.mat.block(m)[0] * wc;
+            }
+            out
+        };
+        let mk_pair = |lvl: &ContourGreen, v: f64| -> (ContourGreen, ContourGreen) {
+            let fwd = scale_green(lvl, v * v);
+            let mut cc = ContourGreen::new(&contour, Sign::Fermi, Complex::ZERO);
+            set_bwd_from_fwd_mat(&mut cc, &fwd);
+            for t in 0..=(nt as i64) {
+                set_bwd_from_fwd_tstp(t, &mut cc, &fwd);
+            }
+            (fwd, cc)
+        };
+        let (d1, d1c) = mk_pair(&lvl1, 0.3);
+        let (d2, d2c) = mk_pair(&lvl2, 0.35);
+        let c0a = hs.flavor(0, 0, false);
+        let c0c = hs.flavor(0, 0, true);
+        let c1a = hs.flavor(1, 0, false);
+        let c1c = hs.flavor(1, 0, true);
+        let pp_ints = [
+            Hybridization { delta: &d1, op_cre_fl: c0c, op_ann_fl: c0a, fermion: true, backward: false },
+            Hybridization { delta: &d1c, op_cre_fl: c0a, op_ann_fl: c0c, fermion: true, backward: true },
+            Hybridization { delta: &d2, op_cre_fl: c1c, op_ann_fl: c1a, fermion: true, backward: false },
+            Hybridization { delta: &d2c, op_cre_fl: c1a, op_ann_fl: c1c, fermion: true, backward: true },
+        ];
+        let verts = [
+            GfVertex { op_ann_fl: c0a, op_cre_fl: c0c },
+            GfVertex { op_ann_fl: c1a, op_cre_fl: c1c },
+        ];
+        let mut solver =
+            ImpuritySolver::with_solver(nt, ntau, beta, h, kt, Solver::Ppsc, 2, hs.clone(), ham);
+        solver.solve_atomic();
+        for _ in 0..12 {
+            solver.pp_step(-1, &pp_ints);
+        }
+        solver.set_t0();
+        solver.pp_step(0, &pp_ints);
+        let integ = Integrator::new(kt as i64);
+
+        // NCA part: the same contact holds for the bare vertex term
+        let nca_mat = crate::nca::gf_mat(&hs, &solver.pp_g, &verts);
+        let nca_rt = crate::nca::gf_tstp(&contour, 0, &hs, &solver.pp_g, &verts);
+        for v in 0..2 {
+            for m in 0..=ntau {
+                let lm = nca_rt[v].lmix.raw_block_at(0, (ntau - m) as i64)[0];
+                let want = Complex::new(0.0, -nca_mat[v][m].re);
+                assert!(
+                    (lm - want).abs() < 1e-12,
+                    "NCA v{v} m{m}: lmix {lm} vs -i G^M {want}"
+                );
+            }
+        }
+
+        // OCA increment, channel by channel
+        for ci in 0..4 {
+            let hc = &pp_ints[ci];
+            let one = [Hybridization {
+                delta: hc.delta,
+                op_cre_fl: hc.op_cre_fl,
+                op_ann_fl: hc.op_ann_fl,
+                fermion: hc.fermion,
+                backward: hc.backward,
+            }];
+            let mut mat = vec![vec![Complex::ZERO; ntau + 1]; 2];
+            add_gf_mat_oca(&hs, &solver.pp_g, &verts, &one, None, beta, kt as i64, &integ, &mut mat);
+            let channels = channels_with_bath(&one, None);
+            let diagrams = build_gf_diagrams_oca_channels(&hs, &verts, &channels);
+            let mut rt: Vec<GreenTimeStep> = verts
+                .iter()
+                .map(|_| GreenTimeStep::new(&contour, 0, Sign::Fermi, Complex::ZERO))
+                .collect();
+            for d in &diagrams {
+                add_gf_tstp_oca(0, d, &solver.pp_g, beta, h, kt as i64, &integ, &mut rt[d.vertex]);
+            }
+            for v in 0..2 {
+                for m in 0..=ntau {
+                    let lm = rt[v].lmix.raw_block_at(0, (ntau - m) as i64)[0];
+                    let want = Complex::new(0.0, -mat[v][m].re);
+                    assert!(
+                        (lm - want).abs() < 1e-12,
+                        "channel {ci} v{v} m{m}: lmix {lm} vs -i G^M_oca {want}"
+                    );
+                }
+            }
+        }
     }
 }

@@ -482,7 +482,7 @@ pub(crate) fn add_sigma_tstp_xca2m_fam(
                         integ,
                         &mut scratch,
                     );
-                    let ph = phase(fit2.poles[l], n, 0, h);
+                    let ph = phase(fit2.poles[l], 0, n, h);
                     for q in 0..nss {
                         acc[q] += ph * core[q];
                     }

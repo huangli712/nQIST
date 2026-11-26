@@ -27,19 +27,26 @@ pub(crate) mod soe;
 pub(crate) mod topology;
 
 pub(crate) use sigma::add_sigma_mat_xca;
-pub(crate) use soe::{SoeFit, soe_fit};
+pub(crate) use soe::{FIT_TOL_DEFAULT, SoeFit, soe_fit_tol};
 
-/// Default maximum number of SOE poles selected by the greedy fit.
-/// Six poles resolve discrete and moderately structured continuous
-/// baths to ~1e-4; every surviving pole costs `p^(m-1)` in the
-/// diagram sums, so the budget is the main performance knob.
+/// Pole budget of the real-time XCA fits (`rt_xca_*` routes): every
+/// pole costs `poles^m` in the diagram sums, so the budget is the main
+/// performance knob there.
 pub const MAX_POLES_DEFAULT: usize = 6;
+
+/// Upper bound on the number of SOE poles of the equilibrium XCA fit.
+/// The pole count is set by the fit tolerance (blueprint: TRIQS/xca
+/// `max_n_poles`): the fit grows until the tolerance is met or this
+/// bound is reached. Every surviving pole costs `p^(m-1)` in the
+/// diagram sums, so the bound caps the kernel cost on data whose
+/// error floor lies above the tolerance.
+pub const EQ_MAX_POLES_DEFAULT: usize = 32;
 
 /// Default spectral cutoff passed to the SOE fit (`w_max`).
 pub const W_MAX_DEFAULT: f64 = 12.0;
 
-/// Fit every hybridization channel of `pp_ints` on the Matsubara
-/// grid; one `SoeFit` per channel, in order.
+/// Fit every hybridization channel of `pp_ints` on the Matsubara grid
+/// with the default tolerance; one `SoeFit` per channel, in order.
 pub(crate) fn fit_channels(
     channels: &[crate::oca::OcaChannel],
     beta: f64,
@@ -47,14 +54,54 @@ pub(crate) fn fit_channels(
     max_poles: usize,
     w_max: f64,
 ) -> Vec<SoeFit> {
+    fit_channels_tol(channels, beta, ntau, max_poles, w_max, FIT_TOL_DEFAULT)
+}
+
+/// Pole-free fits of `n` channels: order 1 reads the raw hybridization
+/// and never touches the fits, so none is computed for it.
+pub(crate) fn unused_fits(n: usize, beta: f64) -> Vec<SoeFit> {
+    (0..n).map(|_| soe::SoeFit::unused(beta)).collect()
+}
+
+/// `fit_channels` with an explicit tolerance (root-mean-square error of
+/// each channel's SOE on the Matsubara grid). Channels with identical
+/// sample data share one fit.
+pub(crate) fn fit_channels_tol(
+    channels: &[crate::oca::OcaChannel],
+    beta: f64,
+    ntau: usize,
+    max_poles: usize,
+    w_max: f64,
+    tol: f64,
+) -> Vec<SoeFit> {
+    use kadanoffbaym::complex::Complex;
     let dtau = beta / ntau as f64;
-    channels
+    let data: Vec<Vec<Complex>> = channels
         .iter()
-        .map(|c| {
-            let values: Vec<kadanoffbaym::complex::Complex> =
-                (0..=ntau).map(|i| c.delta.mat.block(i)[0]).collect();
-            soe_fit(beta, dtau, &values, w_max, max_poles)
-        })
+        .map(|c| (0..=ntau).map(|i| c.delta.mat.block(i)[0]).collect())
+        .collect();
+    let mut fits: Vec<Option<SoeFit>> = vec![None; channels.len()];
+    for k in 0..channels.len() {
+        if fits[k].is_some() {
+            continue;
+        }
+        let fit = soe_fit_tol(beta, dtau, &data[k], w_max, max_poles, tol);
+        if std::env::var_os("NQIST_FIT_DEBUG").is_some() {
+            eprintln!(
+                "FITDEBUG: ch {k}, {} poles, rms {:.3e}, max-abs {:.3e} (tol {tol:.1e})",
+                fit.len(),
+                (fit.resid_l2 / (ntau + 1) as f64).sqrt(),
+                fit.resid
+            );
+        }
+        for (j, dj) in data.iter().enumerate().skip(k) {
+            if (0..=ntau).all(|i| dj[i].re == data[k][i].re && dj[i].im == data[k][i].im) {
+                fits[j] = Some(fit.clone());
+            }
+        }
+    }
+    fits.into_iter()
+        .map(|f| f.expect("every channel fitted"))
         .collect()
 }
 
@@ -277,12 +324,40 @@ mod tests {
                 let a = want[v][m] - nca_only[v][m];
                 let b = got[v][m] - got1[v][m];
                 dev_at[m] = (a - b).abs() / a.abs().max(1e-6);
+                if m == 25 || m == 33 {
+                    eprintln!(
+                        "gf raw v{v} m{m}: oca_native {a:?} oca_xca {b:?} ratio {:?}",
+                        b / if a.abs() > 1e-30 { a } else { Complex::ONE }
+                    );
+                }
             }
             let mut s = String::new();
             for m in (1..=NTAU).step_by(8) {
                 s.push_str(&format!("{m}:{:.0e} ", dev_at[m]));
             }
             eprintln!("gf probe oca-part v{v}: {s}");
+        }
+        // per-channel native decomposition (the valid reference; the
+        // XCA single-channel calls are not the full's per-channel
+        // terms and are left out so the debug instrumentation below
+        // only sees the full add_gf_mat_xca(2) run)
+        for ix in 0..pp_ints.len() {
+            let mut w1 = nca::gf_mat(&hs, &pp_g, &verts);
+            oca::add_gf_mat_oca(
+                &hs,
+                &pp_g,
+                &verts,
+                &pp_ints[ix..ix + 1],
+                None,
+                BETA,
+                5,
+                &integ,
+                &mut w1,
+            );
+            for v in 0..2 {
+                let a = w1[v][33] - nca_only[v][33];
+                eprintln!("chan {ix} v{v} m33: native {a:?}");
+            }
         }
     }
 
@@ -1107,6 +1182,129 @@ mod tests {
         );
     }
 
+    /// Bath with one Einstein phonon coupled through the docc vertex
+    /// (`g = 0.3`), the bath of the Holstein m = 2 anchors below.
+    fn holstein_bath(fx: &Fixture) -> nca::BosonBath {
+        let mut d0 = crate::boson::green_from_eps_phonon(4, NTAU, BETA, 0.02, 1.0);
+        let gvec = vec![0.3; 4 + 2];
+        crate::boson::scale_phonon(&mut d0, &gvec);
+        let contour = Contour::new(4, NTAU as i64, 1, 1, 0.08, BETA);
+        let mut d0_cc = ContourGreen::new(&contour, Sign::Bose, Complex::ZERO);
+        crate::boson::set_bwd_from_fwd_boson_mat(&mut d0_cc, &d0);
+        nca::BosonBath {
+            d0,
+            d0_cc,
+            blocks: crate::boson::docc_blocks(&fx.hs),
+        }
+    }
+
+    /// m = 2 self-energy of the boson channels only (no fermion
+    /// hybridization: the atomic leg of the Holstein real-time gate),
+    /// XCA(1)+XCA(2) against the native NCA + OCA boson diagrams.
+    #[test]
+    fn xca_holstein_m2_anchor_boson_only() {
+        let fx = Fixture::new();
+        let bath = holstein_bath(&fx);
+        let chans = oca::channels_with_bath(&[], Some(&bath));
+        let fits = fit_channels_tol(
+            &chans,
+            BETA,
+            NTAU,
+            EQ_MAX_POLES_DEFAULT,
+            W_MAX_DEFAULT,
+            FIT_TOL_DEFAULT,
+        );
+        let grids = sigma::Grids {
+            ntau: NTAU,
+            dtau: BETA / NTAU as f64,
+            pp_g: &fx.pp_g,
+        };
+        let integ = Integrator::new(5);
+        let mut want = fx.empty_sigma();
+        nca::add_boson_sigma_mat(&bath, &fx.pp_g, &mut want);
+        let diagrams = oca::build_sigma_diagrams_oca_channels(&fx.hs, &chans);
+        for d in &diagrams {
+            oca::add_sigma_mat_oca(d, &fx.pp_g, BETA, 5, &integ, &mut want);
+        }
+        let mut got = fx.empty_sigma();
+        add_sigma_mat_xca(1, &fx.hs, &chans, &fits, &grids, &integ, &mut got);
+        add_sigma_mat_xca(2, &fx.hs, &chans, &fits, &grids, &integ, &mut got);
+        let max_rel = sigma_rel_gap(&want, &got);
+        eprintln!("[m2 holstein boson-only sigma anchor] max_rel = {max_rel:.3e}");
+        assert!(max_rel < 1.0e-9, "max relative deviation {max_rel}");
+    }
+
+    /// Zero-hybridization fermion channels next to the boson ones must
+    /// not switch the m = 2 diagrams on the other channels off (the
+    /// atomic leg of the Holstein real-time gate passes the zero
+    /// fermion channels on the Matsubara axis). Regression: an empty
+    /// fit used to cancel the whole order >= 2 self-energy.
+    #[test]
+    fn xca_m2_keeps_boson_diagrams_with_zero_fermion_hybridization() {
+        let fx = Fixture::new();
+        let bath = holstein_bath(&fx);
+        let contour = Contour::new(4, NTAU as i64, 1, 1, 0.08, BETA);
+        let zero = ContourGreen::new(&contour, Sign::Fermi, Complex::ZERO);
+        let mut zero_ints = Vec::new();
+        for spin in 0..2 {
+            for backward in [false, true] {
+                zero_ints.push(Hybridization {
+                    delta: &zero,
+                    op_cre_fl: fx.hs.flavor(0, spin, !backward),
+                    op_ann_fl: fx.hs.flavor(0, spin, backward),
+                    fermion: true,
+                    backward,
+                });
+            }
+        }
+        let chans = oca::channels_with_bath(&zero_ints, Some(&bath));
+        let fits = fit_channels_tol(
+            &chans,
+            BETA,
+            NTAU,
+            EQ_MAX_POLES_DEFAULT,
+            W_MAX_DEFAULT,
+            FIT_TOL_DEFAULT,
+        );
+        let grids = sigma::Grids {
+            ntau: NTAU,
+            dtau: BETA / NTAU as f64,
+            pp_g: &fx.pp_g,
+        };
+        let integ = Integrator::new(5);
+        let mut want = fx.empty_sigma();
+        nca::set_sigma_mat(&fx.hs, &fx.pp_g, &zero_ints, &mut want);
+        nca::add_boson_sigma_mat(&bath, &fx.pp_g, &mut want);
+        let diagrams = oca::build_sigma_diagrams_oca_channels(&fx.hs, &chans);
+        for d in &diagrams {
+            oca::add_sigma_mat_oca(d, &fx.pp_g, BETA, 5, &integ, &mut want);
+        }
+        let mut got = fx.empty_sigma();
+        add_sigma_mat_xca(1, &fx.hs, &chans, &fits, &grids, &integ, &mut got);
+        add_sigma_mat_xca(2, &fx.hs, &chans, &fits, &grids, &integ, &mut got);
+        let max_rel = sigma_rel_gap(&want, &got);
+        eprintln!("[m2 holstein zero-fermion sigma anchor] max_rel = {max_rel:.3e}");
+        assert!(
+            max_rel < 1.0e-9,
+            "zero-fermion channels changed the m = 2 self-energy: {max_rel}"
+        );
+    }
+
+    /// Largest relative deviation of the Matsubara self-energies over
+    /// all sectors and grid points.
+    fn sigma_rel_gap(want: &[PseudoGreen], got: &[PseudoGreen]) -> f64 {
+        let mut max_rel = 0.0f64;
+        for s in 0..want.len() {
+            for i in 1..=NTAU {
+                let a = want[s].mat.block(i)[0];
+                let b = got[s].mat.block(i)[0];
+                let scale = a.abs().max(1e-3);
+                max_rel = max_rel.max((a - b).abs() / scale);
+            }
+        }
+        max_rel
+    }
+
     /// m = 2 boson-inclusive GF anchor: XCA(2) with boson channels
     /// vs `nca::gf_mat` + `oca::add_gf_mat_oca` (boson included).
     /// Measured 7.2e-11 relative (OCA-part scale 1.6e2) - the GF
@@ -1469,6 +1667,383 @@ mod probe_test {
                     ratio
                 );
             }
+        }
+    }
+
+        /// Kernel-level diagnostics for the continuous Bethe OCA gap: the
+    /// native NCA+OCA and the XCA(1)+XCA(2) Sigma / G are compared on
+    /// the same converged state at several pole budgets, plus a probe of
+    /// the SOE fit smoothness (the XCA output under a tiny change of
+    /// the hybridization).
+    mod continuous_bethe_diag {
+        use crate::dmft::{get_gf_verts, get_pp_ints, run_equilibrium_probe};
+        use crate::hamilton::LocalHamiltonian::SingleBand;
+        use crate::hilbert::{HilbertSpace, SectorClass, build};
+        use crate::nca::{self, GfVertex, Hybridization};
+        use crate::oca::{self, OcaChannel};
+        use crate::solver::ImpuritySolver;
+        use crate::xca::soe::SoeFit;
+        use crate::xca::{EQ_MAX_POLES_DEFAULT, W_MAX_DEFAULT, fit_channels_tol};
+        use kadanoffbaym::complex::Complex;
+        use kadanoffbaym::types::{Contour, MATSUBARA, PseudoGreen, Sign};
+        use kadanoffbaym::weights::Integrator;
+
+        #[test]
+        fn kernel_gap_continuous_bethe() {
+            kernel_gap(300, 250, 1.0e-9);
+            kernel_gap(300, 250, 1.0e-10);
+        }
+
+
+        /// Tolerance scan of the SOE fit on the converged Bethe
+        /// hybridization: pole count, achieved error and cost vs the
+        /// requested tolerance (the pole count is an output).
+        #[test]
+        fn fit_tolerance_scan_continuous_bethe() {
+            let (nt, ntau, kt, beta, h) = (300usize, 250usize, 5i64, 5.0, 0.02);
+            let hs = build(1, SectorClass::SpinResolved);
+            let mut u = vec![3.5; nt + 2];
+            u[0] = 3.0;
+            let ham = SingleBand {
+                mu: 0.0,
+                u,
+                eps_up: vec![0.0; nt + 2],
+                eps_do: vec![0.0; nt + 2],
+            };
+            let mut solver =
+                ImpuritySolver::new(nt, ntau, beta, h, kt as usize, 1, hs, ham);
+            let (log, _, delta, delta_cc) =
+                run_equilibrium_probe(&mut solver, 0.5, 1e-8, 300, |_, _, _, _, _, _| {});
+            assert!(log.converged, "NCA equilibrium did not converge");
+            let pp_ints = get_pp_ints(&delta, &delta_cc, &solver);
+            let channels = oca::channels_with_bath(&pp_ints, None);
+            let scale = (0..=ntau)
+                .map(|m| delta.mat.block(m)[0].abs())
+                .fold(0.0f64, f64::max);
+            println!("Delta max |value| on grid: {scale:.3e}");
+            for tol in [
+                1.0e-4f64, 1.0e-6, 1.0e-8, 1.0e-9, 1.0e-10, 1.0e-11, 1.0e-12,
+            ] {
+                let t0 = std::time::Instant::now();
+                let fits = fit_channels_tol(
+                    &channels,
+                    beta,
+                    ntau,
+                    EQ_MAX_POLES_DEFAULT,
+                    W_MAX_DEFAULT,
+                    tol,
+                );
+                let dt = t0.elapsed().as_secs_f64();
+                let n: Vec<usize> = fits.iter().map(|f| f.poles.len()).collect();
+                let max_resid = fits.iter().map(|f| f.resid).fold(0.0f64, f64::max);
+                let rms = (fits.iter().map(|f| f.resid_l2).fold(0.0f64, f64::max)
+                    / (ntau + 1) as f64)
+                    .sqrt();
+                println!(
+                    "tol={tol:.0e}: poles {n:?}, max-abs err {max_resid:.3e}, rms {rms:.3e}, {dt:.3}s"
+                );
+            }
+        }
+
+        fn zero_ppgf(nt: usize, ntau: usize, beta: f64, dim: usize, sig: Sign) -> PseudoGreen {
+            let c = Contour::new(
+                nt as i64,
+                ntau as i64,
+                dim as i64,
+                dim as i64,
+                nt as f64 * 0.02,
+                beta,
+            );
+            PseudoGreen::new(&c, sig, Complex::ZERO)
+        }
+
+        /// XCA Sigma = sum_{m=1..=order} add_sigma_mat_xca(m) on zero.
+        fn xca_sigma_sum(
+            order: usize,
+            nt: usize,
+            ntau: usize,
+            beta: f64,
+            kt: i64,
+            hs: &HilbertSpace,
+            channels: &[OcaChannel],
+            fits: &[SoeFit],
+            pp_g: &[PseudoGreen],
+        ) -> Vec<PseudoGreen> {
+            let integ = Integrator::new(kt);
+            let grids = crate::xca::sigma::Grids {
+                ntau,
+                dtau: beta / ntau as f64,
+                pp_g,
+            };
+            let mut out: Vec<PseudoGreen> = hs
+                .sectors
+                .iter()
+                .map(|s| zero_ppgf(nt, ntau, beta, s.dim, s.sig))
+                .collect();
+            for m in 1..=order {
+                crate::xca::sigma::add_sigma_mat_xca(
+                    m,
+                    hs,
+                    channels,
+                    fits,
+                    &grids,
+                    &integ,
+                    &mut out,
+                );
+            }
+            out
+        }
+
+        /// XCA G = sum_{m=1..=order} add_gf_mat_xca(m) on zero.
+        fn xca_gf_sum(
+            order: usize,
+            ntau: usize,
+            beta: f64,
+            kt: i64,
+            hs: &HilbertSpace,
+            channels: &[OcaChannel],
+            fits: &[SoeFit],
+            verts: &[GfVertex],
+            pp_g: &[PseudoGreen],
+        ) -> Vec<Vec<Complex>> {
+            let integ = Integrator::new(kt);
+            let grids = crate::xca::gf::Grids {
+                ntau,
+                dtau: beta / ntau as f64,
+                pp_g,
+            };
+            let mut out = vec![vec![Complex::ZERO; ntau + 1]; verts.len()];
+            for m in 1..=order {
+                crate::xca::gf::add_gf_mat_xca(
+                    m,
+                    hs,
+                    channels,
+                    fits,
+                    verts,
+                    &grids,
+                    &integ,
+                    &mut out,
+                );
+            }
+            out
+        }
+
+        /// Native order-2 G (NCA + OCA vertex diagrams): the
+        /// `Solver::Ppsc` order-2 branch of `ImpuritySolver::get_spgf_mat`.
+        fn native_gf_order2(
+            hs: &HilbertSpace,
+            pp_g: &[PseudoGreen],
+            verts: &[GfVertex],
+            pp_ints: &[Hybridization],
+            beta: f64,
+            kt: i64,
+        ) -> Vec<Vec<Complex>> {
+            let mut out = nca::gf_mat(hs, pp_g, verts);
+            let integ = Integrator::new(kt);
+            let mut oca_part = vec![vec![Complex::ZERO; out[0].len()]; verts.len()];
+            oca::add_gf_mat_oca(
+                hs,
+                pp_g,
+                verts,
+                pp_ints,
+                None,
+                beta,
+                kt,
+                &integ,
+                &mut oca_part,
+            );
+            for (o, add) in out.iter_mut().zip(&oca_part) {
+                for q in 0..o.len() {
+                    o[q] += add[q];
+                }
+            }
+            out
+        }
+
+        fn is_warmup(m: usize, ntau: usize) -> bool {
+            m < 8 || m + 8 > ntau
+        }
+
+        /// (worst, warmup-rows worst, scale = max |a|)
+        fn sigma_gap(a: &[PseudoGreen], b: &[PseudoGreen]) -> (f64, f64, f64) {
+            let ntau = a[0].ntau;
+            let (mut worst, mut warm, mut scale) = (0.0f64, 0.0f64, 0.0f64);
+            for (x, y) in a.iter().zip(b) {
+                for m in 0..=ntau {
+                    let d = (x.mat.block(m)[0] - y.mat.block(m)[0]).abs();
+                    worst = worst.max(d);
+                    if is_warmup(m, ntau) {
+                        warm = warm.max(d);
+                    }
+                    scale = scale.max(x.mat.block(m)[0].abs());
+                }
+            }
+            (worst, warm, scale)
+        }
+
+        /// (worst, warmup-rows worst, scale = max |a|, argmax m)
+        fn gf_gap(a: &[Vec<Complex>], b: &[Vec<Complex>]) -> (f64, f64, f64, usize) {
+            let ntau = a[0].len() - 1;
+            let (mut worst, mut warm, mut scale, mut worst_m) = (0.0f64, 0.0f64, 0.0f64, 0usize);
+            for (x, y) in a.iter().zip(b) {
+                for m in 0..=ntau {
+                    let d = (x[m] - y[m]).abs();
+                    if d > worst {
+                        worst = d;
+                        worst_m = m;
+                    }
+                    if is_warmup(m, ntau) {
+                        warm = warm.max(d);
+                    }
+                    scale = scale.max(x[m].abs());
+                }
+            }
+            (worst, warm, scale, worst_m)
+        }
+
+        fn kernel_gap(nt: usize, ntau: usize, tol: f64) {
+            let kt: i64 = 5;
+            let beta = 5.0;
+            let h = 0.02;
+            let hs = build(1, SectorClass::SpinResolved);
+            let mut u = vec![3.5; nt + 2];
+            u[0] = 3.0;
+            let ham = SingleBand {
+                mu: 0.0,
+                u,
+                eps_up: vec![0.0; nt + 2],
+                eps_do: vec![0.0; nt + 2],
+            };
+            let mut solver =
+                ImpuritySolver::new(nt, ntau, beta, h, kt as usize, 1, hs.clone(), ham);
+            let (log, _, mut delta, mut delta_cc) =
+                run_equilibrium_probe(&mut solver, 0.5, 1e-8, 300, |_, _, _, _, _, _| {});
+            assert!(log.converged, "NCA equilibrium did not converge");
+            let verts = get_gf_verts(&solver);
+            let integ = Integrator::new(kt);
+
+            // native order-2 state consistent with the returned Delta
+            let pp_ints = get_pp_ints(&delta, &delta_cc, &solver);
+            let channels = oca::channels_with_bath(&pp_ints, None);
+            solver.pp_step(MATSUBARA, &pp_ints);
+            let diagrams = oca::build_sigma_diagrams_oca_channels(&hs, &channels);
+            for d in &diagrams {
+                oca::add_sigma_mat_oca(d, &solver.pp_g, beta, kt, &integ, &mut solver.pp_sigma);
+            }
+            solver.solve_dyson(MATSUBARA);
+            // re-evaluate the native NCA + OCA Sigma on the same final
+            // pp_g the XCA Sigma is evaluated on (apples to apples)
+            nca::set_sigma_mat(&hs, &solver.pp_g, &pp_ints, &mut solver.pp_sigma);
+            for d in &diagrams {
+                oca::add_sigma_mat_oca(d, &solver.pp_g, beta, kt, &integ, &mut solver.pp_sigma);
+            }
+
+            let fits = fit_channels_tol(
+                &channels,
+                beta,
+                ntau,
+                EQ_MAX_POLES_DEFAULT,
+                W_MAX_DEFAULT,
+                tol,
+            );
+            let resid = |fs: &[SoeFit]| {
+                fs.iter()
+                    .map(|f| f.resid)
+                    .fold(0.0f64, f64::max)
+            };
+            let npoles = |fs: &[SoeFit]| -> Vec<usize> {
+                fs.iter().map(|f| f.poles.len()).collect()
+            };
+            let sig_xca = xca_sigma_sum(
+                2,
+                nt,
+                ntau,
+                beta,
+                kt,
+                &hs,
+                &channels,
+                &fits,
+                &solver.pp_g,
+            );
+            let (sg, sg_warm, sg_scale) = sigma_gap(&solver.pp_sigma, &sig_xca);
+            let g_nat = native_gf_order2(&hs, &solver.pp_g, &verts, &pp_ints, beta, kt);
+            let g_xca = xca_gf_sum(
+                2,
+                ntau,
+                beta,
+                kt,
+                &hs,
+                &channels,
+                &fits,
+                &verts,
+                &solver.pp_g,
+            );
+            let (gg, gg_warm, gg_scale, gg_m) = gf_gap(&g_nat, &g_xca);
+            println!(
+                "[ntau={ntau} tol={tol:.0e}] fit resid max {:.3e}, poles used {:?}",
+                resid(&fits),
+                npoles(&fits)
+            );
+            println!(
+                "  Sigma gap {sg:.3e} (warmup rows {sg_warm:.3e}), scale {sg_scale:.3e}"
+            );
+            println!(
+                "  G gap    {gg:.3e} (warmup rows {gg_warm:.3e}) at m={gg_m}, scale {gg_scale:.3e}"
+            );
+
+            // smoothness scan: relative noise on the forward
+            // hybridization, from far below the 1e-8 DMFT tolerance up
+            // to the change between stalled DMFT iterations (~1e-5)
+            let orig: Vec<Complex> = (0..=ntau).map(|m| delta.mat.block(m)[0]).collect();
+            for (k, eps) in [1e-10f64, 1e-8, 1e-7, 1e-6, 1e-5, 1e-4].into_iter().enumerate() {
+                for (m, v) in orig.iter().enumerate() {
+                    let n = (((m + 7 * k) as f64 * 0.618_033_988_749_894_9f64).fract() - 0.5) * 2.0;
+                    delta.mat.block_mut(m)[0] = *v * Complex::new(1.0 + eps * n, 0.0);
+                }
+                let pp_ints_p = get_pp_ints(&delta, &delta_cc, &solver);
+                let channels_p = oca::channels_with_bath(&pp_ints_p, None);
+                let fits_p = fit_channels_tol(
+                    &channels_p,
+                    beta,
+                    ntau,
+                    EQ_MAX_POLES_DEFAULT,
+                    W_MAX_DEFAULT,
+                    tol,
+                );
+                let same_poles = fits_p.iter().zip(&fits).all(|(a, b)| a.poles == b.poles);
+                let sig_xca_p = xca_sigma_sum(
+                    2,
+                    nt,
+                    ntau,
+                    beta,
+                    kt,
+                    &hs,
+                    &channels_p,
+                    &fits_p,
+                    &solver.pp_g,
+                );
+                let g_xca_p = xca_gf_sum(
+                    2,
+                    ntau,
+                    beta,
+                    kt,
+                    &hs,
+                    &channels_p,
+                    &fits_p,
+                    &verts,
+                    &solver.pp_g,
+                );
+                let g_nat_p = native_gf_order2(&hs, &solver.pp_g, &verts, &pp_ints_p, beta, kt);
+                let (ds, _, _) = sigma_gap(&sig_xca, &sig_xca_p);
+                let (dg, _, _, _) = gf_gap(&g_xca, &g_xca_p);
+                let (dg_nat, _, _, _) = gf_gap(&g_nat, &g_nat_p);
+                println!(
+                    "  noise {eps:.0e}: same pole set = {same_poles}, poles {:?}, resid {:.3e}, dSigma xca {ds:.3e}, dG xca {dg:.3e}, dG native {dg_nat:.3e}",
+                    npoles(&fits_p),
+                    resid(&fits_p)
+                );
+            }
+            assert!(sg < 1e-1 && gg < 1e-1, "sanity: kernels disagree");
         }
     }
 }

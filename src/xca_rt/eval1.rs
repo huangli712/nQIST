@@ -9,7 +9,7 @@
 //           pole basis; the equal-time contact combinations keep raw
 //           point reads (separation is irrelevant at a point).
 
-use super::fit::{CsoeFit, csoe_coeffs};
+use super::fit::{CsoeFit, CsoeSolver};
 use super::{gtr, les_pp, tv_pp};
 use crate::nca::{Hybridization, SigmaDiagram};
 use kadanoffbaym::complex::Complex;
@@ -21,11 +21,17 @@ fn phase(w: f64, a: i64, b: i64, h: f64) -> Complex {
 }
 
 /// Pole-separated view of the single NCA line: greater from the fit;
-/// les/tv projected onto the same basis per anchor.
+/// les on the reflected poles (one projection per line), tv projected
+/// per anchor.
 pub(crate) struct Line1<'a> {
     pub lam: &'a dyn LamRead,
     pub fit: &'a CsoeFit,
     pub h: f64,
+    /// solvers of the tv projections (fit poles) and of the les
+    /// projection (reflected poles), built on first use for the window
+    /// of the step
+    tv_solver: std::cell::RefCell<Option<CsoeSolver>>,
+    les_solver: std::cell::RefCell<Option<CsoeSolver>>,
 }
 
 /// Point reads the evaluator needs from the line object, mirroring
@@ -54,7 +60,13 @@ impl LamRead for kadanoffbaym::types::ContourGreen {
 
 impl<'a> Line1<'a> {
     pub fn new(lam: &'a dyn LamRead, fit: &'a CsoeFit, h: f64) -> Self {
-        Line1 { lam, fit, h }
+        Line1 {
+            lam,
+            fit,
+            h,
+            tv_solver: std::cell::RefCell::new(None),
+            les_solver: std::cell::RefCell::new(None),
+        }
     }
 
     pub fn gtr(&self, n: i64, j: i64) -> Complex {
@@ -65,26 +77,57 @@ impl<'a> Line1<'a> {
         acc
     }
 
-    pub fn les(&self, j: i64, n: i64, nsamp: usize) -> Complex {
-        // project the les component (function of n at anchor j)
-        let values: Vec<Complex> = (0..=nsamp as i64).map(|t| self.lam.les(j, t)).collect();
-        let coefs = csoe_coeffs(&self.fit.poles, self.h, &values);
+    /// Coefficients of the les component on the reflected poles
+    /// `-w_l` (see [`reflected_poles`]). The projection reads the
+    /// lower-triangle row at anchor 0 over `t = 0..=n`: for the
+    /// time-translation invariant baths the real-time route is defined
+    /// for, the coefficients do not depend on the anchor, and one
+    /// projection per line serves every `j`.
+    pub fn les_coefs(&self, n: i64) -> Vec<Complex> {
+        let ns = n as usize + 1;
+        if self.les_solver.borrow().as_ref().map_or(true, |s| s.ns() != ns) {
+            let poles = reflected_poles(&self.fit.poles);
+            *self.les_solver.borrow_mut() = Some(CsoeSolver::new(&poles, self.h, ns));
+        }
+        let values: Vec<Complex> = (0..=n).map(|t| self.lam.les(0, t)).collect();
+        self.les_solver.borrow().as_ref().unwrap().apply(&values)
+    }
+
+    /// Les at `(j, n)`, `j <= n`, from the coefficients of
+    /// [`Self::les_coefs`].
+    pub fn les(&self, coefs: &[Complex], j: i64, n: i64) -> Complex {
         let mut acc = Complex::ZERO;
         for (l, &c) in coefs.iter().enumerate() {
-            acc += c * phase(self.fit.poles[l], n, 0, self.h);
+            // exp(+i w_l h (n - j))
+            acc += c * phase(self.fit.poles[l], j, n, self.h);
         }
         acc
     }
 
     pub fn tv(&self, n: i64, m: i64, nsamp: usize) -> Complex {
+        let ns = nsamp + 1;
+        if self.tv_solver.borrow().as_ref().map_or(true, |s| s.ns() != ns) {
+            *self.tv_solver.borrow_mut() = Some(CsoeSolver::new(&self.fit.poles, self.h, ns));
+        }
         let values: Vec<Complex> = (0..=nsamp as i64).map(|t| self.lam.tv(t, m)).collect();
-        let coefs = csoe_coeffs(&self.fit.poles, self.h, &values);
+        let coefs = self.tv_solver.borrow().as_ref().unwrap().apply(&values);
         let mut acc = Complex::ZERO;
         for (l, &c) in coefs.iter().enumerate() {
             acc += c * phase(self.fit.poles[l], n, 0, self.h);
         }
         acc
     }
+}
+
+/// Projection basis of the conjugated components (les, vt) of a
+/// hybridization line: the reflections `-w_l` of the fit poles. The fit
+/// samples the greater `ret - les*` of the bath; the les data itself
+/// and the conjugated lmix (`vt_c`) therefore rotate opposite to it on
+/// a bath stored by KadanoffBaym (the single-band dimer bath: a 1-pole
+/// fit reconstructs les/vt to 1e-11 on the reflected poles, 1e-3 on
+/// the fit poles).
+pub(crate) fn reflected_poles(poles: &[f64]) -> Vec<f64> {
+    poles.iter().map(|w| -w).collect()
 }
 
 /// Order-1 separated evaluator; mirrors `accumulate_sigma_tstp` with
@@ -113,13 +156,14 @@ pub(crate) fn add_sigma_tstp_xca1(
     let line = Line1::new(d.delta, fit, h);
     let (op1, op2) = (d.op1.get(0, 0), d.op2.get(0, 0));
     // non-equal-time ret (greater) and lesser
+    let les_coefs = line.les_coefs(n);
     for j in 0..n {
         let l = line.gtr(n, j);
         let prod = op1 * gtr(ga, n, j) * op2;
         let add = d.prefactor * l * prod;
         let idx = pp_sigma[d.out].ret.idx(n, j);
         pp_sigma[d.out].ret.block_mut(idx)[0] += add;
-        let l = line.les(j, n, n as usize);
+        let l = line.les(&les_coefs, j, n);
         let prod = op1 * les_pp(ga, j, n) * op2;
         let add = d.prefactor * l * prod;
         pp_sigma[d.out]
@@ -180,6 +224,7 @@ fn add_sigma_tstp_xca1_matrix(
     let ga = &pp_g[d.sa];
     let line = Line1::new(d.delta, fit, h);
     // non-equal-time ret (greater) and lesser
+    let les_coefs = line.les_coefs(n);
     for j in 0..n {
         let l = line.gtr(n, j);
         let prod = d.op1.mat_mul(&pp_greater(ga, n, j)).mat_mul(&d.op2);
@@ -190,7 +235,7 @@ fn add_sigma_tstp_xca1_matrix(
                     d.prefactor * l * prod.get(i, k);
             }
         }
-        let l = line.les(j, n, n as usize);
+        let l = line.les(&les_coefs, j, n);
         let prod = d.op1.mat_mul(&pp_les(ga, j, n)).mat_mul(&d.op2);
         let idx = pp_sigma[d.out].less.idx(j, n);
         for i in 0..dim_out {

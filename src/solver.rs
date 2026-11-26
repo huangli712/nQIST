@@ -71,16 +71,43 @@ fn extrapolation_weights(integ: &Integrator) -> Vec<f64> {
 /// loops, but their `herm_matrix_matrix_ref` view reports `ntau() =
 /// ntau + 1` (the number of POINTS), which resolves those expressions
 /// to the clean grid.
+/// Solver family for the strong-coupling impurity engine. The user
+/// selects the family first and then the expansion `order` of that
+/// family ([`ImpuritySolver::with_solver`]).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Solver {
+    /// PPSC-like native kernels (the C++ PPSC port): `order = 1` is
+    /// NCA, `order = 2` is NCA + native OCA. No crossing topologies.
+    Ppsc,
+    /// XCA backbone: the sum of crossing orders `m = 1..=order`
+    /// evaluated by the SOE-separated skeleton diagrams. Order 1
+    /// reproduces NCA and order 2 reproduces OCA up to the fit and
+    /// Gregory-warmup residual; orders >= 3 add the crossing
+    /// topologies.
+    Xca,
+    /// IPT (weak-coupling second-order sunset on the Bethe lattice).
+    /// Select it through [`crate::ipt::IptSolver`], not through
+    /// [`ImpuritySolver`]; only `order = 2` is implemented today.
+    Ipt,
+}
+
 pub struct ImpuritySolver {
+    /// Solver-family selection; the meaning of `order` depends on it.
+    pub solver: Solver,
     /// Route the real-time order-2 self-energy through the XCA
     /// backbones (`xca_rt::eval2`, the calibrated equivalent of the
     /// OCA kernel). Plumbing/verification switch; default false.
     pub rt_xca_m2: bool,
-    /// m=1 real-time Sigma through the rt-XCA machinery (eval1) for
-    /// BOTH the fermion NCA diagrams AND the Holstein boson
-    /// diagrams - the m=1 anchor is machine-calibrated (eval1 ==
-    /// NCA at 1.2e-6); makes order=1+Holstein independent of
-    /// nca::set_sigma_tstp / add_boson_sigma_tstp.
+    /// m=1 real-time Sigma through the real-time XCA route (`eval1`)
+    /// for both the fermion NCA diagrams and the Holstein boson
+    /// diagrams (anchored at machine precision against the native
+    /// kernels). Opt-in: the route reconstructs the hybridization
+    /// from its column `t' = 0` through an exponential sum in the time
+    /// difference, i.e. it assumes a time-translation invariant bath
+    /// (a static bath; gated by the dimer real-time tests).
+    /// Self-consistent non-equilibrium DMFT breaks the premise (the
+    /// U-quench Bethe bath deviates from time translation invariance
+    /// by 8e-3), so orders 1 and 2 default to the native kernels.
     pub rt_xca_m1: bool,
     /// Enable real-time XCA orders >= 3 through the validated
     /// block-cut component families (xca_rt::evalfam2). Fermion and
@@ -101,9 +128,25 @@ pub struct ImpuritySolver {
     ///   walk - ED-ADJUDICATED. XCA_M3_REV=1 selects the reversed
     ///   variant for comparison studies.
     pub rt_xca_m3: bool,
-    /// Pole budget for the real-time XCA fits (cost knob: every
-    /// pole costs poles^m in the diagram sums).
+    /// Pole budget for the real-time XCA fits of orders >= 3 (cost
+    /// knob: every pole costs poles^m in the diagram sums).
     pub rt_xca_poles: usize,
+    /// Real-time XCA hybridization fit (orders 1 and 2): root-mean-
+    /// square error tolerance of each channel's complex-exponential
+    /// fit of the greater component on the real-time grid. The pole
+    /// count grows until the tolerance is met, up to `xca_max_poles`
+    /// inside the pole window `xca_w_max` (`xca_rt::fit::csoe_fit_tol`).
+    pub rt_xca_fit_tol: f64,
+    /// Equilibrium XCA hybridization fit (`Solver::Xca`, orders >= 2):
+    /// root-mean-square error tolerance of each channel's SOE on the
+    /// Matsubara grid, the pole-count upper bound, and the spectral
+    /// cutoff. The pole count grows until the tolerance is met (up to
+    /// the bound). The DMFT drivers tie `xca_fit_tol` to their
+    /// convergence criterion (0.1 x errmax; blueprint TRIQS/xca
+    /// `hyb_tol = 0.1 * tol`).
+    pub xca_fit_tol: f64,
+    pub xca_max_poles: usize,
+    pub xca_w_max: f64,
     pub nt: usize,
     pub ntau: usize,
     pub beta: f64,
@@ -111,9 +154,11 @@ pub struct ImpuritySolver {
     /// Gregory quadrature order / start-up window length (blueprint
     /// `kt`).
     pub kt: usize,
-    /// Order of the strong-coupling expansion: 1 = NCA, 2 = OCA,
-    /// >= 3 = XCA (the real-time path additionally needs
-    /// [`Self::rt_xca_m3`]).
+    /// Expansion order, interpreted by the selected [`Solver`]:
+    /// [`Solver::Ppsc`] accepts 1 (NCA) and 2 (OCA); [`Solver::Xca`]
+    /// accepts any order >= 1 (1 = XCA(1), the NCA equivalent, 2 =
+    /// XCA(1)+XCA(2), the OCA equivalent, >= 3 = with the crossing
+    /// topologies).
     pub order: usize,
     pub hs: HilbertSpace,
     pub ham: LocalHamiltonian,
@@ -139,6 +184,12 @@ impl ImpuritySolver {
     /// Allocate the solver and fill the Hamiltonian time functions
     /// from `ham` for all `tstp = -1..=nt` (blueprint constructor +
     /// `update_hamiltonian`).
+    ///
+    /// Convenience entry point: `order <= 2` maps to
+    /// [`Solver::Ppsc`] (1 = NCA, 2 = OCA), `order >= 3` maps to
+    /// [`Solver::Xca`] (the pure XCA series). Use
+    /// [`Self::with_solver`] to choose the family and the order
+    /// explicitly.
     pub fn new(
         nt: usize,
         ntau: usize,
@@ -151,6 +202,11 @@ impl ImpuritySolver {
     ) -> Self {
         assert!(ntau >= 2, "ntau must be >= 2");
         assert!(beta > 0.0, "beta must be positive");
+        let solver = if order <= 2 {
+            Solver::Ppsc
+        } else {
+            Solver::Xca
+        };
         let tmax = nt as f64 * h;
         let ns = hs.ns();
         let make_ppgf = |dim: usize, sig: Sign| {
@@ -174,6 +230,11 @@ impl ImpuritySolver {
             rt_xca_m1: false,
             rt_xca_m3: false,
             rt_xca_poles: crate::xca::MAX_POLES_DEFAULT,
+            rt_xca_fit_tol: crate::xca::FIT_TOL_DEFAULT,
+            xca_fit_tol: crate::xca::FIT_TOL_DEFAULT,
+            xca_max_poles: crate::xca::EQ_MAX_POLES_DEFAULT,
+            xca_w_max: crate::xca::W_MAX_DEFAULT,
+            solver,
             nt,
             ntau,
             beta,
@@ -191,6 +252,60 @@ impl ImpuritySolver {
         };
         solver.update_hamiltonian();
         solver
+    }
+
+    /// Build the solver with an explicit solver-family/order selection.
+    ///
+    /// - `Solver::Ppsc` (PPSC-like native kernels): `order` 1 = NCA,
+    ///   2 = NCA + OCA.
+    /// - `Solver::Xca`: `order` 1 = XCA(1) (NCA equivalent), 2 =
+    ///   XCA(1)+XCA(2) (OCA equivalent), >= 3 = the full XCA series
+    ///   truncated at `order`. Orders 1 and 2 take the native NCA/OCA
+    ///   real-time kernels: the real-time XCA routes
+    ///   ([`Self::rt_xca_m1`], [`Self::rt_xca_m2`]) assume a
+    ///   time-translation invariant bath and are opt-in. Orders >= 3
+    ///   need the real-time XCA route
+    ///   ([`Self::rt_xca_m3`], enabled here) with the same premise.
+    pub fn with_solver(
+        nt: usize,
+        ntau: usize,
+        beta: f64,
+        h: f64,
+        kt: usize,
+        solver: Solver,
+        order: usize,
+        hs: HilbertSpace,
+        ham: LocalHamiltonian,
+    ) -> Self {
+        match solver {
+            Solver::Ppsc => assert!(
+                order == 1 || order == 2,
+                "PPSC solver supports order 1 (NCA) and 2 (OCA)"
+            ),
+            Solver::Xca => assert!(order >= 1, "XCA solver needs order >= 1"),
+            Solver::Ipt => panic!(
+                "the IPT solver is a separate type: use ipt::IptSolver::with_solver"
+            ),
+        }
+        let mut s = Self::new(nt, ntau, beta, h, kt, order, hs, ham);
+        s.solver = solver;
+        if solver == Solver::Xca {
+            s.rt_xca_m3 = order >= 3;
+        }
+        s
+    }
+
+    /// Zero the Matsubara pseudo-particle self-energies before the XCA
+    /// backbone accumulates its order sum (the native `set_sigma_mat`
+    /// writes, the XCA evaluators add).
+    fn zero_sigma(&mut self) {
+        for g in &mut self.pp_sigma {
+            for i in 0..=self.ntau {
+                for z in g.mat.block_mut(i) {
+                    *z = Complex::ZERO;
+                }
+            }
+        }
     }
 
     /// Attach (or detach) a static boson bath for Holstein/Hirsch
@@ -419,46 +534,56 @@ impl ImpuritySolver {
     /// real-time kernels, dispatched on `tstp`.
     pub fn update_sigma(&mut self, tstp: i64, pp_ints: &[Hybridization]) {
         if tstp == MATSUBARA {
-            nca::set_sigma_mat(&self.hs, &self.pp_g, pp_ints, &mut self.pp_sigma);
-            if let Some(bath) = &self.boson {
-                nca::add_boson_sigma_mat(bath, &self.pp_g, &mut self.pp_sigma);
-            }
-            // native OCA at order 2 for every band count (the kernels
-            // are dimension-generic; the scalar fast path covers the
-            // single-band sectors); XCA crossing topologies add orders
-            // 3..=order on top
-            if self.order >= 2 {
-                self.add_sigma_mat_oca(pp_ints);
-            }
-            let xca_lo = 3;
-            if self.order >= xca_lo {
-                // XCA crossing topologies of orders 3..=order
-                // (SOE-separated backbones on the Matsubara grid)
-                let xca_channels = oca::channels_with_bath(pp_ints, self.boson.as_ref());
-                let fits = xca::fit_channels(
-                    &xca_channels,
-                    self.beta,
-                    self.ntau,
-                    xca::MAX_POLES_DEFAULT,
-                    xca::W_MAX_DEFAULT,
-                );
-                let integ = Integrator::new(self.kt as i64);
-                let grids = xca::sigma::Grids {
-                    ntau: self.ntau,
-                    dtau: self.beta / self.ntau as f64,
-                    pp_g: &self.pp_g,
-                };
-                for m in xca_lo..=self.order {
-                    xca::add_sigma_mat_xca(
-                        m,
-                        &self.hs,
-                        &xca_channels,
-                        &fits,
-                        &grids,
-                        &integ,
-                        &mut self.pp_sigma,
+            match self.solver {
+                Solver::Ppsc => {
+                    assert!(
+                        self.order == 1 || self.order == 2,
+                        "PPSC solver supports order 1 (NCA) and 2 (OCA)"
                     );
+                    nca::set_sigma_mat(&self.hs, &self.pp_g, pp_ints, &mut self.pp_sigma);
+                    if let Some(bath) = &self.boson {
+                        nca::add_boson_sigma_mat(bath, &self.pp_g, &mut self.pp_sigma);
+                    }
+                    if self.order == 2 {
+                        self.add_sigma_mat_oca(pp_ints);
+                    }
                 }
+                Solver::Xca => {
+                    assert!(self.order >= 1, "XCA solver needs order >= 1");
+                    self.zero_sigma();
+                    let xca_channels = oca::channels_with_bath(pp_ints, self.boson.as_ref());
+                    let fits = if self.order == 1 {
+                        // order 1 reads the raw hybridization: no fit
+                        xca::unused_fits(xca_channels.len(), self.beta)
+                    } else {
+                        xca::fit_channels_tol(
+                            &xca_channels,
+                            self.beta,
+                            self.ntau,
+                            self.xca_max_poles,
+                            self.xca_w_max,
+                            self.xca_fit_tol,
+                        )
+                    };
+                    let integ = Integrator::new(self.kt as i64);
+                    let grids = xca::sigma::Grids {
+                        ntau: self.ntau,
+                        dtau: self.beta / self.ntau as f64,
+                        pp_g: &self.pp_g,
+                    };
+                    for m in 1..=self.order {
+                        xca::add_sigma_mat_xca(
+                            m,
+                            &self.hs,
+                            &xca_channels,
+                            &fits,
+                            &grids,
+                            &integ,
+                            &mut self.pp_sigma,
+                        );
+                    }
+                }
+                Solver::Ipt => panic!("ImpuritySolver cannot run the IPT solver"),
             }
         } else {
             assert!(
@@ -491,12 +616,13 @@ impl ImpuritySolver {
                 }
 
                 let diagrams = nca::build_sigma_diagrams(&self.hs, pp_ints);
-                let fits = xca_rt::fit_channels_rt(
+                let fits = xca_rt::fit_channels_rt_tol(
                     pp_ints,
                     self.h,
-                    self.nt,
-                    xca::MAX_POLES_DEFAULT,
-                    xca::W_MAX_DEFAULT,
+                    tstp.max(self.kt as i64) as usize,
+                    self.xca_max_poles,
+                    self.xca_w_max,
+                    self.rt_xca_fit_tol,
                 );
                 let pp_g = &self.pp_g;
                 let h = self.h;
@@ -523,12 +649,13 @@ impl ImpuritySolver {
                     d0_cc.less.block_mut(d0_cc.less.idx(0, 0))[0] = bath.d0.ret.raw_block_at(0, 0)
                         [0]
                         - bath.d0.less.raw_block_at(0, 0)[0].conj();
-                    let d0fit = xca_rt::fit_one_delta_rt(
+                    let d0fit = xca_rt::fit_one_delta_tol(
                         &bath.d0,
                         self.h,
-                        self.nt,
-                        xca::MAX_POLES_DEFAULT,
-                        xca::W_MAX_DEFAULT,
+                        tstp.max(self.kt as i64) as usize,
+                        self.xca_max_poles,
+                        self.xca_w_max,
+                        self.rt_xca_fit_tol,
                     );
                     // the boson diagrams reference the ORIGINAL
                     // bath deltas; eval1 reads through the fit only,
@@ -579,12 +706,13 @@ impl ImpuritySolver {
                     // constructor - is filled locally per the same
                     // convention (bwd^tv(0, N-m) = -fwd(0,m)^dag, the
                     // (0,0) contact).
-                    let mut fits = xca_rt::fit_channels_rt(
+                    let mut fits = xca_rt::fit_channels_rt_tol(
                         pp_ints,
                         self.h,
-                        self.nt,
-                        xca::MAX_POLES_DEFAULT,
-                        xca::W_MAX_DEFAULT,
+                        tstp.max(self.kt as i64) as usize,
+                        self.xca_max_poles,
+                        self.xca_w_max,
+                        self.rt_xca_fit_tol,
                     );
                     if let Some(bath) = &self.boson {
                         let mut d0_cc = bath.d0_cc.clone();
@@ -595,12 +723,13 @@ impl ImpuritySolver {
                         d0_cc.less.block_mut(d0_cc.less.idx(0, 0))[0] =
                             bath.d0.ret.raw_block_at(0, 0)[0]
                                 - bath.d0.less.raw_block_at(0, 0)[0].conj();
-                        let bfit = xca_rt::fit_one_delta_rt(
+                        let bfit = xca_rt::fit_one_delta_tol(
                             &bath.d0,
                             self.h,
-                            self.nt,
-                            xca::MAX_POLES_DEFAULT,
-                            xca::W_MAX_DEFAULT,
+                            tstp.max(self.kt as i64) as usize,
+                            self.xca_max_poles,
+                            self.xca_w_max,
+                            self.rt_xca_fit_tol,
                         );
                         fits.push(bfit.clone());
                         fits.push(bfit);
@@ -926,69 +1055,74 @@ impl ImpuritySolver {
     /// functions per GF vertex (blueprint `get_spgf` at `tstp = -1`).
     pub fn get_spgf_mat(&self, verts: &[GfVertex], pp_ints: &[Hybridization]) -> Vec<Vec<Complex>> {
         let _timed = crate::progress::Timed::new("solver", "get_spgf_mat");
-        let mut out = nca::gf_mat(&self.hs, &self.pp_g, verts);
-        let xca_lo = if self.order >= 2 {
-            {
-                let integ = Integrator::new(self.kt as i64);
-                let mut oca_part = vec![vec![Complex::ZERO; self.ntau + 1]; verts.len()];
-                oca::add_gf_mat_oca(
-                    &self.hs,
-                    &self.pp_g,
-                    verts,
-                    pp_ints,
-                    self.boson.as_ref(),
-                    self.beta,
-                    self.kt as i64,
-                    &integ,
-                    &mut oca_part,
+        match self.solver {
+            Solver::Ppsc => {
+                assert!(
+                    self.order == 1 || self.order == 2,
+                    "PPSC solver supports order 1 (NCA) and 2 (OCA)"
                 );
-                for (o, add) in out.iter_mut().zip(&oca_part) {
-                    for q in 0..o.len() {
-                        o[q] += add[q];
+                let mut out = nca::gf_mat(&self.hs, &self.pp_g, verts);
+                if self.order == 2 {
+                    let integ = Integrator::new(self.kt as i64);
+                    let mut oca_part = vec![vec![Complex::ZERO; self.ntau + 1]; verts.len()];
+                    oca::add_gf_mat_oca(
+                        &self.hs,
+                        &self.pp_g,
+                        verts,
+                        pp_ints,
+                        self.boson.as_ref(),
+                        self.beta,
+                        self.kt as i64,
+                        &integ,
+                        &mut oca_part,
+                    );
+                    for (o, add) in out.iter_mut().zip(&oca_part) {
+                        for q in 0..o.len() {
+                            o[q] += add[q];
+                        }
                     }
                 }
-                3
+                out
             }
-        } else if self.order >= 1 {
-            3
-        } else {
-            1
-        };
-        if self.order >= xca_lo {
-            let xca_channels = oca::channels_with_bath(pp_ints, self.boson.as_ref());
-            let fits = xca::fit_channels(
-                &xca_channels,
-                self.beta,
-                self.ntau,
-                xca::MAX_POLES_DEFAULT,
-                xca::W_MAX_DEFAULT,
-            );
-            let integ = Integrator::new(self.kt as i64);
-            let grids = xca::gf::Grids {
-                ntau: self.ntau,
-                dtau: self.beta / self.ntau as f64,
-                pp_g: &self.pp_g,
-            };
-            let mut xca_part = vec![vec![Complex::ZERO; self.ntau + 1]; verts.len()];
-            for m in xca_lo..=self.order {
-                xca::gf::add_gf_mat_xca(
-                    m,
-                    &self.hs,
-                    &xca_channels,
-                    &fits,
-                    verts,
-                    &grids,
-                    &integ,
-                    &mut xca_part,
-                );
-            }
-            for (o, add) in out.iter_mut().zip(&xca_part) {
-                for q in 0..o.len() {
-                    o[q] += add[q];
+            Solver::Xca => {
+                assert!(self.order >= 1, "XCA solver needs order >= 1");
+                let mut out = vec![vec![Complex::ZERO; self.ntau + 1]; verts.len()];
+                let xca_channels = oca::channels_with_bath(pp_ints, self.boson.as_ref());
+                let fits = if self.order == 1 {
+                    // order 1 reads the raw hybridization: no fit
+                    xca::unused_fits(xca_channels.len(), self.beta)
+                } else {
+                    xca::fit_channels_tol(
+                        &xca_channels,
+                        self.beta,
+                        self.ntau,
+                        self.xca_max_poles,
+                        self.xca_w_max,
+                        self.xca_fit_tol,
+                    )
+                };
+                let integ = Integrator::new(self.kt as i64);
+                let grids = xca::gf::Grids {
+                    ntau: self.ntau,
+                    dtau: self.beta / self.ntau as f64,
+                    pp_g: &self.pp_g,
+                };
+                for m in 1..=self.order {
+                    xca::gf::add_gf_mat_xca(
+                        m,
+                        &self.hs,
+                        &xca_channels,
+                        &fits,
+                        verts,
+                        &grids,
+                        &integ,
+                        &mut out,
+                    );
                 }
+                out
             }
+            Solver::Ipt => panic!("ImpuritySolver cannot run the IPT solver"),
         }
-        out
     }
 
     /// NCA single-particle Green's functions per GF vertex at
@@ -1037,6 +1171,34 @@ impl ImpuritySolver {
             }
         }
         out
+    }
+
+    /// Full two-time single-particle Green's function on the real-time
+    /// grid: evaluates the per-time row kernels and fills every retarded
+    /// row and lesser column. The closure is the same as
+    /// [`Self::get_spgf`] (NCA, plus OCA when `order >= 2`). Cost is
+    /// O(nt) row evaluations; use [`Self::get_spgf`] for a single time.
+    pub fn get_spgf_full(
+        &self,
+        verts: &[GfVertex],
+        pp_ints: &[Hybridization],
+        t_end: i64,
+    ) -> Vec<GreenTimeStep> {
+        assert!(
+            t_end >= 0 && t_end <= self.nt as i64,
+            "get_spgf_full: t_end out of range"
+        );
+        let mut full = self.get_spgf(verts, t_end, pp_ints);
+        for n in 0..=t_end {
+            let row = self.get_spgf(verts, n, pp_ints);
+            for (f, r) in full.iter_mut().zip(&row) {
+                for j in 0..=n {
+                    f.ret.raw_block_at_mut(n, j)[0] = r.ret.raw_block_at(n, j)[0];
+                    f.less.raw_block_at_mut(j, n)[0] = r.less.raw_block_at(j, n)[0];
+                }
+            }
+        }
+        full
     }
 
     /// k-th order polynomial extrapolation of the pseudo-particle

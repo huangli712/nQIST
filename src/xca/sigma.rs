@@ -339,11 +339,6 @@ pub(crate) fn add_sigma_mat_xca(
         fits.len(),
         "add_sigma_mat_xca: one SOE fit per channel"
     );
-    // an empty fit (e.g. the all-zero hybridization of the first DMFT
-    // iteration) carries no poles: orders >= 2 contribute nothing
-    if m >= 2 && fits.iter().any(|f| f.poles.is_empty()) {
-        return;
-    }
     let nch = pp_ints.len();
 
     for topo in connected_pairings(m) {
@@ -351,91 +346,97 @@ pub(crate) fn add_sigma_mat_xca(
         let mut ws = Workspace::new();
         let mut cs = vec![0usize; m];
         loop {
-            let mut stat = 1.0f64;
-            for &c in &cs {
-                if pp_ints[c].fermion && pp_ints[c].backward {
-                    stat *= -1.0;
+            // a line with an empty fit (zero hybridization, e.g. an
+            // uncoupled channel) carries no poles: for orders >= 2
+            // the channel assignments that involve it contribute
+            // nothing
+            if !(m >= 2 && cs.iter().any(|&c| fits[c].poles.is_empty())) {
+                let mut stat = 1.0f64;
+                for &c in &cs {
+                    if pp_ints[c].fermion && pp_ints[c].backward {
+                        stat *= -1.0;
+                    }
                 }
-            }
-            // net prefactor (-1)^m * prod(stat) * parity: reproduces
-            // the NCA (i*stat x kernel i) and OCA (i^2 x stat x
-            // crossing x debug -1) totals of the calibrated kernels
-            let msign = if m.is_multiple_of(2) { 1.0 } else { -1.0 };
-            // The calibrated OCA pair prefactor carries the two-line
-            // fermion-loop sign: -1 for a fermion-fermion pair, +1
-            // for every other pair. The m = 2 backbone already
-            // carries that loop sign inside `eval_into`, so the
-            // prefactor must cancel it for non-fermion pairs -
-            // without this the boson-boson diagrams enter with the
-            // opposite sign (measured ratio -1.0000000 against the
-            // OCA reference; the fermion-fermion ratio is +1).
-            // Orders >= 3 with boson lines remain uncalibrated.
-            let pair_loop_sign = if m == 2 && !cs.iter().all(|&c| pp_ints[c].fermion) {
-                -1.0
-            } else {
-                1.0
-            };
-            let base_pref =
-                Complex::new(msign * stat * topo.parity * pair_loop_sign, 0.0);
-
-            for s0 in 0..hs.ns() {
-                let Some(chain) = build_chain(m, &topo.pairs, &cs, pp_ints, hs, s0) else {
-                    continue;
-                };
-                let empty_kern = || Kernels {
-                    vertex: vec![None; 2 * m],
-                    edge: vec![Vec::new(); 2 * m - 1],
-                };
-                if m == 1 {
-                    eval_into(
-                        m,
-                        b0,
-                        &cs,
-                        &chain,
-                        &empty_kern(),
-                        fits,
-                        pp_ints,
-                        grids,
-                        integ,
-                        base_pref,
-                        s0,
-                        pp_sigma,
-                        &mut ws,
-                    );
+                // net prefactor (-1)^m * prod(stat) * parity: reproduces
+                // the NCA (i*stat x kernel i) and OCA (i^2 x stat x
+                // crossing x debug -1) totals of the calibrated kernels
+                let msign = if m.is_multiple_of(2) { 1.0 } else { -1.0 };
+                // The calibrated OCA pair prefactor carries the two-line
+                // fermion-loop sign: -1 for a fermion-fermion pair, +1
+                // for every other pair. The m = 2 backbone already
+                // carries that loop sign inside `eval_into`, so the
+                // prefactor must cancel it for non-fermion pairs -
+                // without this the boson-boson diagrams enter with the
+                // opposite sign (measured ratio -1.0000000 against the
+                // OCA reference; the fermion-fermion ratio is +1).
+                // Orders >= 3 with boson lines remain uncalibrated.
+                let pair_loop_sign = if m == 2 && !cs.iter().all(|&c| pp_ints[c].fermion) {
+                    -1.0
                 } else {
-                    let mut pole_l = vec![0usize; m - 1];
-                    'poles: loop {
-                        let kern = build_kernels(m, &topo.pairs, &cs, &pole_l, fits);
-                        let mut pref = base_pref;
-                        for li in 1..m {
-                            let l = pole_l[li - 1];
-                            let fit = &fits[cs[li]];
-                            let w = fit.poles[l];
-                            let denom = if w <= 0.0 {
-                                fit.km0(l)
-                            } else {
-                                let edges = (topo.pairs[li].1 - topo.pairs[li].0 - 1) as i32;
-                                fit.kp0(l).powi(edges)
-                            };
-                            pref *= fit.coefs[l] / Complex::new(denom, 0.0);
-                        }
+                    1.0
+                };
+                let base_pref =
+                    Complex::new(msign * stat * topo.parity * pair_loop_sign, 0.0);
+
+                for s0 in 0..hs.ns() {
+                    let Some(chain) = build_chain(m, &topo.pairs, &cs, pp_ints, hs, s0) else {
+                        continue;
+                    };
+                    let empty_kern = || Kernels {
+                        vertex: vec![None; 2 * m],
+                        edge: vec![Vec::new(); 2 * m - 1],
+                    };
+                    if m == 1 {
                         eval_into(
-                            m, b0, &cs, &chain, &kern, fits, pp_ints, grids, integ, pref, s0,
-                            pp_sigma, &mut ws,
+                            m,
+                            b0,
+                            &cs,
+                            &chain,
+                            &empty_kern(),
+                            fits,
+                            pp_ints,
+                            grids,
+                            integ,
+                            base_pref,
+                            s0,
+                            pp_sigma,
+                            &mut ws,
                         );
-                        // pole odometer over lines 1..m-1 (bound:
-                        // the pole count of the channel on that line)
-                        let mut idx = 0;
-                        loop {
-                            if idx == m - 1 {
-                                break 'poles;
+                    } else {
+                        let mut pole_l = vec![0usize; m - 1];
+                        'poles: loop {
+                            let kern = build_kernels(m, &topo.pairs, &cs, &pole_l, fits);
+                            let mut pref = base_pref;
+                            for li in 1..m {
+                                let l = pole_l[li - 1];
+                                let fit = &fits[cs[li]];
+                                let w = fit.poles[l];
+                                let denom = if w <= 0.0 {
+                                    fit.km0(l)
+                                } else {
+                                    let edges = (topo.pairs[li].1 - topo.pairs[li].0 - 1) as i32;
+                                    fit.kp0(l).powi(edges)
+                                };
+                                pref *= fit.coefs[l] / Complex::new(denom, 0.0);
                             }
-                            pole_l[idx] += 1;
-                            if pole_l[idx] < fits[cs[idx + 1]].len() {
-                                break;
+                            eval_into(
+                                m, b0, &cs, &chain, &kern, fits, pp_ints, grids, integ, pref, s0,
+                                pp_sigma, &mut ws,
+                            );
+                            // pole odometer over lines 1..m-1 (bound:
+                            // the pole count of the channel on that line)
+                            let mut idx = 0;
+                            loop {
+                                if idx == m - 1 {
+                                    break 'poles;
+                                }
+                                pole_l[idx] += 1;
+                                if pole_l[idx] < fits[cs[idx + 1]].len() {
+                                    break;
+                                }
+                                pole_l[idx] = 0;
+                                idx += 1;
                             }
-                            pole_l[idx] = 0;
-                            idx += 1;
                         }
                     }
                 }

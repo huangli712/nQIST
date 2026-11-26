@@ -15,7 +15,8 @@
 //
 //           Prototype scope: scalar (1x1) blocks, steady input.
 
-use super::fit::{CsoeFit, csoe_coeffs};
+use super::eval1::reflected_poles;
+use super::fit::{CsoeFit, CsoeSolver};
 use super::quad::{conv2b_scalar, gregory_scalar, lowside_scalar, poly_integral_scalar};
 use super::{gtr, les_c, les_pp, tv_c, tv_pp, vt_c, vt_pp};
 use crate::oca::OcaSigmaDiagram;
@@ -36,16 +37,22 @@ fn cz(z: Complex) -> String {
 
 /// Pole-separated view of one hybridization line: the greater
 /// coefficients come from the direct fit; the vt/les components are
-/// projected onto the same basis per anchor, lazily.
+/// projected onto the reflected poles (`eval1::reflected_poles`),
+/// lazily.
 pub(crate) struct LineSep<'a> {
     pub lam: &'a ContourGreen,
     pub fit: &'a CsoeFit,
     pub h: f64,
+    /// projection basis of the conjugated components (les, vt)
+    reflected: Vec<f64>,
     /// cached vt coefficients per Matsubara anchor: `sum_l
-    /// vt_coef[m][l] e^{-i w_l t h} = svt(lam, m, t)`
+    /// vt_coef[m][l] e^{+i w_l t h} = svt(lam, m, t)`
     vt_coef: std::cell::RefCell<Vec<Option<Vec<Complex>>>>,
-    /// cached les coefficients per real-time anchor
+    /// cached les coefficients (lower-triangle row at anchor 0)
     les_coef: std::cell::RefCell<Vec<Option<Vec<Complex>>>>,
+    /// solver of the per-anchor vt projections on the reflected poles,
+    /// built on first use for the window of the step
+    vt_solver: std::cell::RefCell<Option<CsoeSolver>>,
 }
 
 impl<'a> LineSep<'a> {
@@ -55,8 +62,10 @@ impl<'a> LineSep<'a> {
             lam,
             fit,
             h,
+            reflected: reflected_poles(&fit.poles),
             vt_coef: std::cell::RefCell::new(vec![None; nm]),
-            les_coef: std::cell::RefCell::new(vec![None; nm.max(1)]),
+            les_coef: std::cell::RefCell::new(vec![None; 1]),
+            vt_solver: std::cell::RefCell::new(None),
         }
     }
 
@@ -102,33 +111,44 @@ impl<'a> LineSep<'a> {
             self.vt_coef.borrow_mut().resize(midx + 1, None);
         }
         if self.vt_coef.borrow()[midx].is_none() {
-            let values: Vec<Complex> = (0..=nsamp as i64).map(|t| vt_c(self.lam, m, t)).collect();
-            let coefs = csoe_coeffs(&self.fit.poles, self.h, &values);
+            let ns = nsamp + 1;
+            if self.vt_solver.borrow().as_ref().map_or(true, |s| s.ns() != ns) {
+                let reflected = self.reflected.clone();
+                *self.vt_solver.borrow_mut() = Some(CsoeSolver::new(&reflected, self.h, ns));
+            }
+            let values: Vec<Complex> = (0..=nsamp as i64).map(|tt| vt_c(self.lam, m, tt)).collect();
+            let coefs = self.vt_solver.borrow().as_ref().unwrap().apply(&values);
             self.vt_coef.borrow_mut()[midx] = Some(coefs);
         }
         let coefs = self.vt_coef.borrow()[midx].clone().unwrap();
         let mut acc = Complex::ZERO;
         for (l, &c) in coefs.iter().enumerate() {
-            acc += c * phase(self.fit.poles[l], t, 0, self.h);
+            // exp(+i w_l h t)
+            acc += c * phase(self.fit.poles[l], 0, t, self.h);
         }
         acc
     }
 
     /// les read `les_c(lam, j, t)` through the projected pole basis.
+    /// Lower triangle (`j <= t`): one projection of the row at anchor 0
+    /// over `t = 0..=nsamp` serves every anchor; out of it, the
+    /// hermitian fallback of `les_c` (`-les(t, j)^*`) of the
+    /// reconstructed in-triangle value.
     pub fn les(&self, j: i64, t: i64, nsamp: usize) -> Complex {
-        let jidx = j as usize;
-        if self.les_coef.borrow().len() <= jidx {
-            self.les_coef.borrow_mut().resize(jidx + 1, None);
+        if j > t {
+            return -self.les(t, j, nsamp).conj();
         }
-        if self.les_coef.borrow()[jidx].is_none() {
-            let values: Vec<Complex> = (0..=nsamp as i64).map(|t| les_c(self.lam, j, t)).collect();
-            let coefs = csoe_coeffs(&self.fit.poles, self.h, &values);
-            self.les_coef.borrow_mut()[jidx] = Some(coefs);
+        if self.les_coef.borrow()[0].is_none() {
+            let values: Vec<Complex> =
+                (0..=nsamp as i64).map(|tt| les_c(self.lam, 0, tt)).collect();
+            let coefs = CsoeSolver::new(&self.reflected, self.h, nsamp + 1).apply(&values);
+            self.les_coef.borrow_mut()[0] = Some(coefs);
         }
-        let coefs = self.les_coef.borrow()[jidx].clone().unwrap();
+        let coefs = self.les_coef.borrow()[0].clone().unwrap();
         let mut acc = Complex::ZERO;
         for (l, &c) in coefs.iter().enumerate() {
-            acc += c * phase(self.fit.poles[l], t, 0, self.h);
+            // exp(+i w_l h (t - j))
+            acc += c * phase(self.fit.poles[l], j, t, self.h);
         }
         acc
     }
@@ -473,7 +493,7 @@ pub(crate) fn add_sigma_tstp_xca2_fam(
                         integ,
                         op1 * op2 * op3 * op4,
                     );
-                    acc += phase(fit2.poles[l], n, 0, h) * core;
+                    acc += phase(fit2.poles[l], 0, n, h) * core;
                 }
                 let val = pref * Complex::new(0.0, -sig * dtau * dtau) * acc.conj();
                 out.lmix.block_mut(out.lmix.idx(n, mmax - m))[0] += val;

@@ -31,12 +31,20 @@ pub(crate) mod evalfam2;
 pub(crate) mod evalfam2m;
 pub(crate) mod evalm;
 pub(crate) mod fit;
+#[allow(dead_code)]
+pub(crate) mod line;
+#[allow(dead_code)]
+pub(crate) mod twotime;
 pub(crate) mod quad;
 #[cfg(test)]
 mod tests;
 
 pub(crate) use eval2::add_sigma_tstp_xca2;
 pub(crate) use fit::{CsoeFit, csoe_fit};
+use std::cell::RefCell;
+use std::collections::hash_map::DefaultHasher;
+use std::collections::HashMap;
+use std::hash::{Hash, Hasher};
 
 /// Greater-component fits of every channel on the full real-time
 /// grid (the fit window must cover the evaluation window).
@@ -63,6 +71,138 @@ pub(crate) fn fit_channels_rt(
     pp_ints
         .iter()
         .map(|hyb| fit_one_delta_rt(hyb.delta, h, nt, max_poles, w_max))
+        .collect()
+}
+
+/// Greater-component fits of every channel for the order 1 and 2
+/// real-time routes: tolerance-driven (`fit_one_delta_tol`), the pole
+/// count is an output of `tol`.
+pub(crate) fn fit_channels_rt_tol(
+    pp_ints: &[crate::nca::Hybridization],
+    h: f64,
+    nt: usize,
+    max_poles: usize,
+    w_max: f64,
+    tol: f64,
+) -> Vec<CsoeFit> {
+    pp_ints
+        .iter()
+        .map(|hyb| fit_one_delta_tol(hyb.delta, h, nt, max_poles, w_max, tol))
+        .collect()
+}
+
+/// Tolerance-driven greater-component fit of a single delta (fermion
+/// or boson) on the full real-time grid (`fit::csoe_fit_tol`). The fit
+/// of a given sample row is cached per thread: a static bath is
+/// refitted at every real-time step otherwise. If the tolerance is
+/// not reached, the best fit is used and a notice goes to stderr (once
+/// per process; on every fit with `NQIST_FIT_DEBUG`).
+pub(crate) fn fit_one_delta_tol(
+    g: &kadanoffbaym::types::ContourGreen,
+    h: f64,
+    nt: usize,
+    max_poles: usize,
+    w_max: f64,
+    tol: f64,
+) -> CsoeFit {
+    let v_gtr = greater_row(g, nt);
+    let mut key = DefaultHasher::new();
+    h.to_bits().hash(&mut key);
+    (nt as u64).hash(&mut key);
+    (max_poles as u64).hash(&mut key);
+    w_max.to_bits().hash(&mut key);
+    tol.to_bits().hash(&mut key);
+    for v in &v_gtr {
+        v.re.to_bits().hash(&mut key);
+        v.im.to_bits().hash(&mut key);
+    }
+    let key = key.finish();
+    thread_local! {
+        static CACHE: RefCell<HashMap<u64, CsoeFit>> = RefCell::new(HashMap::new());
+    }
+    CACHE.with(|c| {
+        if let Some(fit) = c.borrow().get(&key) {
+            return fit.clone();
+        }
+        // warm start: the hybridization of a DMFT iteration differs
+        // slightly from the previous one, so the previous poles of this
+        // object usually stay within tolerance
+        thread_local! {
+            static LAST: RefCell<HashMap<usize, CsoeFit>> = RefCell::new(HashMap::new());
+        }
+        if let Some(prev) = LAST.with(|c| c.borrow().get(&(g as *const _ as usize)).cloned()) {
+            if prev.poles.len() <= max_poles {
+                if let Some(fit) = fit::csoe_fit_warm(&prev.poles, h, &v_gtr, w_max, tol) {
+                    if std::env::var_os("NQIST_FIT_DEBUG").is_some() {
+                        eprintln!(
+                            "RTFIT warm: delta@{:p} window 0..={nt}, {} poles {:?}",
+                            g,
+                            fit.poles.len(),
+                            fit.poles
+                        );
+                    }
+                    return fit;
+                }
+            }
+        }
+        let fit = fit::csoe_fit_tol(h, &v_gtr, w_max, max_poles, tol);
+        LAST.with(|c| {
+            let mut c = c.borrow_mut();
+            if c.len() >= 64 {
+                c.clear();
+            }
+            c.insert(g as *const _ as usize, fit.clone());
+        });
+        let rms = (fit::csoe_l2(&fit.poles, &fit.coefs, h, &v_gtr) / v_gtr.len() as f64).sqrt();
+        if std::env::var_os("NQIST_FIT_DEBUG").is_some() {
+            eprintln!(
+                "RTFIT full: delta@{:p} window 0..={nt}, {} poles {:?}, rms {rms:.3e}",
+                g,
+                fit.poles.len(),
+                fit.poles
+            );
+        }
+        if rms > tol {
+            report_unmet_rt_tol(rms, tol, fit.poles.len(), fit.resid);
+        }
+        let mut c = c.borrow_mut();
+        if c.len() >= 64 {
+            c.clear();
+        }
+        c.insert(key, fit.clone());
+        fit
+    })
+}
+
+/// Report a real-time fit that did not reach its tolerance (once per
+/// process on stderr unless `NQIST_FIT_DEBUG` is set, then on every
+/// fit); the best fit is used either way.
+fn report_unmet_rt_tol(rms: f64, tol: f64, poles: usize, resid: f64) {
+    use std::sync::Once;
+    static ONCE: Once = Once::new();
+    let msg = format!(
+        "nQIST: real-time XCA hybridization fit did not reach its tolerance: rms error \
+         {rms:.3e} > tol {tol:.3e} ({poles} poles, max-abs error {resid:.3e}); using the best \
+         fit. Raise the pole bound, widen the pole window, or lengthen the fit window."
+    );
+    if std::env::var_os("NQIST_FIT_DEBUG").is_some() {
+        eprintln!("{msg}");
+    } else {
+        ONCE.call_once(|| eprintln!("{msg}"));
+    }
+}
+
+/// The greater row `v_i = Delta^>(t_i, 0)`, `i = 0..=nt` (the sample
+/// row of the real-time fits).
+fn greater_row(g: &kadanoffbaym::types::ContourGreen, nt: usize) -> Vec<Complex> {
+    (0..=nt as i64)
+        .map(|i| {
+            if i == 0 {
+                g.ret.raw_block_at(0, 0)[0] + g.less.raw_block_at(0, 0)[0]
+            } else {
+                g.ret.raw_block_at(i, 0)[0] - g.less.raw_block_at(0, i)[0].conj()
+            }
+        })
         .collect()
 }
 

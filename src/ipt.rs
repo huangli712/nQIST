@@ -9,6 +9,7 @@ use kadanoffbaym::base::MatsubaraMethod;
 use kadanoffbaym::dyson::{dyson_mat, dyson_start, dyson_timestep};
 use kadanoffbaym::types::{Contour, ContourGreen, MATSUBARA, Sign, TimeFunction};
 use kadanoffbaym::weights::Integrator;
+use crate::solver::Solver;
 
 /// IPT impurity solver (single-band Hubbard impurity on the Bethe
 /// lattice, `Delta_sigma = v*^2 G_sigma_bar`, scalar 1x1 blocks).
@@ -33,6 +34,10 @@ pub struct IptSolver {
     pub nt: usize,
     pub ntau: usize,
     pub kt: usize,
+    /// Weak-coupling expansion order of this solver; only `order = 2`
+    /// (the bare sunset) is implemented today. Reserved for future
+    /// higher-order IPT kernels.
+    pub order: usize,
     pub beta: f64,
     /// real-time step `dt`
     pub h: f64,
@@ -94,6 +99,7 @@ impl IptSolver {
             nt,
             ntau,
             kt,
+            order: 2,
             beta,
             h,
             mu,
@@ -114,6 +120,27 @@ impl IptSolver {
             w_dn: ContourGreen::new(&contour, Sign::Bose, Complex::ZERO),
             bare_tadpole: false,
         }
+    }
+
+    /// Build the IPT solver with an explicit solver/order selection.
+    /// The only implemented IPT order is 2 (the bare sunset); higher
+    /// orders are rejected until their kernels exist.
+    #[allow(clippy::too_many_arguments)]
+    pub fn with_solver(
+        nt: usize,
+        ntau: usize,
+        beta: f64,
+        h: f64,
+        kt: usize,
+        solver: Solver,
+        order: usize,
+        mu: f64,
+        u: Vec<f64>,
+        alpha: (f64, f64),
+    ) -> IptSolver {
+        assert_eq!(solver, Solver::Ipt, "IptSolver: solver must be Solver::Ipt");
+        assert_eq!(order, 2, "IptSolver: only order 2 is implemented");
+        Self::new(nt, ntau, beta, h, kt, mu, u, alpha)
     }
 
     /// Interaction at real-time step `tstp >= 0` (`u[tstp + 1]`).
@@ -704,5 +731,59 @@ mod tests {
             let got = s.sigma_up.lmix.raw_block_at(2, m)[0];
             assert!((got - want).abs() < 1e-15, "{m}: {got:?} vs {want:?}");
         }
+    }
+}
+
+#[cfg(test)]
+mod solver_selection_tests {
+    use super::IptSolver;
+    use crate::solver::Solver;
+
+    fn build(solver: Solver, order: usize) -> IptSolver {
+        IptSolver::with_solver(
+            4,
+            32,
+            5.0,
+            0.05,
+            5,
+            solver,
+            order,
+            0.0,
+            vec![2.0; 6],
+            (0.5, 0.5),
+        )
+    }
+
+    /// The only implemented IPT order is 2, and the IPT solver takes
+    /// no other solver selection.
+    #[test]
+    fn solver_selection_accepts_only_ipt_order_2() {
+        let s = build(Solver::Ipt, 2);
+        assert_eq!(s.nt, 4);
+        assert_eq!(s.ntau, 32);
+    }
+
+    #[test]
+    #[should_panic = "only order 2 is implemented"]
+    fn solver_selection_rejects_order_1() {
+        build(Solver::Ipt, 1);
+    }
+
+    #[test]
+    #[should_panic = "only order 2 is implemented"]
+    fn solver_selection_rejects_order_3() {
+        build(Solver::Ipt, 3);
+    }
+
+    #[test]
+    #[should_panic = "solver must be Solver::Ipt"]
+    fn solver_selection_rejects_ppsc() {
+        build(Solver::Ppsc, 2);
+    }
+
+    #[test]
+    #[should_panic = "solver must be Solver::Ipt"]
+    fn solver_selection_rejects_xca() {
+        build(Solver::Xca, 2);
     }
 }

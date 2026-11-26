@@ -4,6 +4,7 @@
 //           components (prototype-validated; see mod.rs).
 
 use super::gtr_c;
+use crate::xca::soe::{dk_roots, hankel_order, prony_annihilator};
 use crate::xca::soe::jacobi_eigh;
 use kadanoffbaym::complex::Complex;
 
@@ -375,100 +376,99 @@ fn pole_candidates(w_max: f64, n_half: usize) -> Vec<f64> {
     v
 }
 
-/// Least-squares coefficients of `values` on the pole basis
-/// `exp(-i w_l t_i)` (stacked real system through the Jacobi
-/// eigensolver); used both by the greedy fit and by the vt/les
-/// projections of `eval2`.
-/// Equilibrated least squares over the given real pole positions,
-/// solved as a stacked real system through the Jacobi eigensolver.
-/// Least-squares coefficients of `values` on the pole basis
-/// `exp(-i w_l t_i)` (stacked real system through the Jacobi
-/// eigensolver); used by the greedy fit and by the vt/les
-/// projections of the evaluators.
-pub(crate) fn csoe_coeffs(poles: &[f64], h: f64, values: &[Complex]) -> Vec<Complex> {
-    let ns = values.len();
-    let p = poles.len();
-    // design A[i][l] = exp(-i w_l t_i); stack [Re A; Im A] x [c_re;
-    // c_im] = [Re v; Im v]
-    let dim = 2 * p;
-    let mut m = vec![0.0f64; dim * dim];
-    let mut rhs = vec![0.0f64; dim];
-    let mut scale = vec![0.0f64; dim];
-    for l in 0..p {
-        let mut nr = 0.0f64;
-        let mut ni = 0.0f64;
+/// Solver of the stacked real least squares on a fixed pole basis and
+/// window: `A[i][l] = exp(-i w_l t_i)`, `t_i = h i`, `i = 0..ns-1`,
+/// `[Re A; Im A] [c_re; c_im] = [Re v; Im v]`. The design matrix is
+/// decomposed once per basis by a one-sided Jacobi SVD; `apply` solves
+/// for new sample values through the truncated pseudo-inverse (the
+/// small singular values stay accurate, which the normal equations do
+/// not give). The per-anchor projections of the evaluators (one solve
+/// per Matsubara point) share one solver.
+pub(crate) struct CsoeSolver {
+    p: usize,
+    ns: usize,
+    /// columns `2 * ns` rows of the rotated design `A V` (its column
+    /// `k` is `sigma_k u_k`), row-major
+    ar: Vec<f64>,
+    sigma: Vec<f64>,
+    /// right singular vectors, column-major
+    v: Vec<f64>,
+    /// largest singular value
+    smax: f64,
+}
+
+impl CsoeSolver {
+    pub(crate) fn new(poles: &[f64], h: f64, ns: usize) -> Self {
+        let p = poles.len();
+        let dim = 2 * p;
+        // stacked design matrix [Re A, -Im A; Im A, Re A], row-major
+        let mut a = vec![0.0f64; 2 * ns * dim];
         for i in 0..ns {
-            let ph = (-Complex::I * poles[l] * h * i as f64).exp();
-            nr += ph.re * ph.re;
-            ni += ph.im * ph.im;
-        }
-        let sc = (nr + ni).sqrt().max(1e-300);
-        scale[l] = sc;
-        scale[l + p] = sc;
-    }
-    // stacked real system [Ar, -Ai; Ai, Ar] [cr; ci] = [vr; vi]:
-    // row factor of index a and column factor of index b
-    let row = |a: usize, ph: Complex| -> (f64, f64) {
-        if a < p {
-            (ph.re, ph.im)
-        } else {
-            (-ph.im, ph.re)
-        }
-    };
-    let col = |b: usize, ph: Complex| -> (f64, f64) {
-        if b < p {
-            (ph.re, ph.im)
-        } else {
-            (-ph.im, ph.re)
-        }
-    };
-    for a in 0..dim {
-        for b in 0..dim {
-            let mut acc = 0.0;
-            for i in 0..ns {
-                let pa = (-Complex::I * poles[a % p] * h * i as f64).exp();
-                let pb = (-Complex::I * poles[b % p] * h * i as f64).exp();
-                let (are, aim) = row(a, pa);
-                let (bre, bim) = col(b, pb);
-                acc += are * bre + aim * bim;
+            let t = h * i as f64;
+            for (l, &w) in poles.iter().enumerate() {
+                let ph = (-Complex::I * w * t).exp();
+                a[i * dim + l] = ph.re;
+                a[i * dim + p + l] = -ph.im;
+                a[(ns + i) * dim + l] = ph.im;
+                a[(ns + i) * dim + p + l] = ph.re;
             }
-            m[a * dim + b] = acc / (scale[a] * scale[b]);
+        }
+        let (ar, sigma, v) = crate::xca::soe::jacobi_svd(a, 2 * ns, dim);
+        let smax = sigma.iter().cloned().fold(0.0f64, f64::max);
+        CsoeSolver {
+            p,
+            ns,
+            ar,
+            sigma,
+            v,
+            smax,
         }
     }
-    for a in 0..dim {
-        let mut acc = 0.0;
-        for i in 0..ns {
-            let pa = (-Complex::I * poles[a % p] * h * i as f64).exp();
-            let (are, aim) = row(a, pa);
-            acc += are * values[i].re + aim * values[i].im;
-        }
-        rhs[a] = acc / scale[a];
+
+    /// Number of samples the solver is built for.
+    pub(crate) fn ns(&self) -> usize {
+        self.ns
     }
-    // solve (M + ridge) x = rhs via the Jacobi eigendecomposition
-    let (w, q) = crate::xca::soe::jacobi_eigh(m, dim);
-    let wmax = w.iter().fold(0.0f64, |x, y| x.max(*y)).max(1e-300);
-    let ridge = 1.0e-13 * wmax;
-    let mut x = vec![0.0f64; dim];
-    for k in 0..dim {
-        let mut dot = 0.0;
-        for a in 0..dim {
-            dot += q[a * dim + k] * rhs[a];
-        }
-        let lam = w[k] + ridge;
-        if lam.abs() > 1e-14 * wmax {
-            let ck = dot / lam;
+
+    /// Least-squares coefficients of `values` (length `ns`) on the
+    /// basis: `x = V sigma^+ U^T b` with the singular values below
+    /// `1e-13 sigma_max` treated as null.
+    pub(crate) fn apply(&self, values: &[Complex]) -> Vec<Complex> {
+        let (p, ns) = (self.p, self.ns);
+        let dim = 2 * p;
+        let b: Vec<f64> = values
+            .iter()
+            .map(|z| z.re)
+            .chain(values.iter().map(|z| z.im))
+            .collect();
+        let mut x = vec![0.0f64; dim];
+        for k in 0..dim {
+            if self.sigma[k] <= 1.0e-13 * self.smax {
+                continue;
+            }
+            let mut proj = 0.0;
+            for r in 0..2 * ns {
+                proj += self.ar[r * dim + k] * b[r];
+            }
+            // (U^T b)_k / sigma_k = (sigma_k u_k . b) / sigma_k^2
+            let ck = proj / (self.sigma[k] * self.sigma[k]);
             for a in 0..dim {
-                x[a] += q[a * dim + k] * ck;
+                x[a] += self.v[a * dim + k] * ck;
             }
         }
+        let mut coefs = Vec::with_capacity(p);
+        for l in 0..p {
+            coefs.push(Complex::new(x[l], x[l + p]));
+        }
+        coefs
     }
-    let mut coefs = Vec::with_capacity(p);
-    for l in 0..p {
-        let cr = x[l] / scale[l];
-        let ci = x[l + p] / scale[l + p];
-        coefs.push(Complex::new(cr, ci));
-    }
-    coefs
+}
+
+/// Least-squares coefficients of `values` on the pole basis
+/// `exp(-i w_l t_i)` (a one-shot `CsoeSolver`); reuse a
+/// [`CsoeSolver`] for many value vectors on the same basis and window.
+pub(crate) fn csoe_coeffs(poles: &[f64], h: f64, values: &[Complex]) -> Vec<Complex> {
+    CsoeSolver::new(poles, h, values.len()).apply(values)
 }
 
 /// Fit summary (coefficients plus max residual) over given poles.
@@ -602,3 +602,411 @@ pub(crate) fn csoe_fit(h: f64, values: &[Complex], w_max: f64, max_poles: usize)
     }
     best
 }
+
+// ------------------------------------------------------------------
+// tolerance-driven fit
+// ------------------------------------------------------------------
+
+/// Squared L2 error of `sum_l coefs[l] exp(-i poles[l] t_i)` on the
+/// sample grid.
+pub(crate) fn csoe_l2(poles: &[f64], coefs: &[Complex], h: f64, values: &[Complex]) -> f64 {
+    let mut s = 0.0f64;
+    for (i, &v) in values.iter().enumerate() {
+        let t = h * i as f64;
+        let mut acc = Complex::ZERO;
+        for (l, &c) in coefs.iter().enumerate() {
+            acc += c * (-Complex::I * poles[l] * t).exp();
+        }
+        let d = acc - v;
+        s += d.re * d.re + d.im * d.im;
+    }
+    s
+}
+
+/// Pole polish by Levenberg-Marquardt on the squared L2 residual,
+/// with the residues solved by least squares at every step (variable
+/// projection). The Jacobian is the derivative of the projected
+/// residual (forward differences, one least-squares solve per pole),
+/// so the step is the full Gauss-Newton one.
+fn polish_csoe(
+    mut poles: Vec<f64>,
+    h: f64,
+    values: &[Complex],
+    w_max: f64,
+    target: f64,
+) -> CsoeFit {
+    let p = poles.len();
+    if p == 0 {
+        return solve_csoe_lsq(&poles, h, values);
+    }
+    let ns = values.len();
+    // residual of the projected model
+    let residual = |poles: &[f64]| -> Vec<Complex> {
+        let coefs = csoe_coeffs(poles, h, values);
+        (0..ns)
+            .map(|i| {
+                let t = h * i as f64;
+                let mut acc = Complex::ZERO;
+                for (l, &c) in coefs.iter().enumerate() {
+                    acc += c * (-Complex::I * poles[l] * t).exp();
+                }
+                acc - values[i]
+            })
+            .collect()
+    };
+    let norm2 = |r: &[Complex]| -> f64 {
+        r.iter().map(|d| d.re * d.re + d.im * d.im).sum()
+    };
+    let mut r = residual(&poles);
+    let mut f = norm2(&r);
+    // stop as soon as the squared residual is below the target
+    if f <= target {
+        return solve_csoe_lsq(&poles, h, values);
+    }
+    let mut lambda = 1.0e-3f64;
+    for _ in 0..200 {
+        // full Jacobian of the projected residual by forward differences
+        let mut jac = vec![Complex::ZERO; ns * p];
+        for l in 0..p {
+            let eps = 1.0e-7 * poles[l].abs().max(1.0);
+            let mut up = poles.clone();
+            up[l] += eps;
+            let r_up = residual(&up);
+            for i in 0..ns {
+                jac[i * p + l] = (r_up[i] - r[i]) / eps;
+            }
+        }
+        let mut jtj = vec![0.0f64; p * p];
+        let mut jtr = vec![0.0f64; p];
+        for i in 0..ns {
+            for a in 0..p {
+                let ja = jac[i * p + a];
+                jtr[a] += ja.re * r[i].re + ja.im * r[i].im;
+                for b in 0..=a {
+                    let jb = jac[i * p + b];
+                    jtj[a * p + b] += ja.re * jb.re + ja.im * jb.im;
+                }
+            }
+        }
+        for a in 0..p {
+            for b in 0..a {
+                jtj[b * p + a] = jtj[a * p + b];
+            }
+        }
+        let diag: Vec<f64> = (0..p).map(|a| jtj[a * p + a]).collect();
+        let mut accepted = false;
+        for _ in 0..40 {
+            // (J^T J + lambda diag) step
+            let mut m = jtj.clone();
+            for a in 0..p {
+                m[a * p + a] += lambda * diag[a] + 1.0e-300;
+            }
+            let (eig, vec) = crate::xca::soe::jacobi_eigh(m, p);
+            let emax = eig
+                .iter()
+                .cloned()
+                .fold(0.0f64, f64::max)
+                .max(1.0e-300);
+            let mut delta = vec![0.0f64; p];
+            for k in 0..p {
+                if eig[k] > 1.0e-14 * emax {
+                    let mut dot = 0.0;
+                    for a in 0..p {
+                        dot += vec[a * p + k] * jtr[a];
+                    }
+                    let ck = -dot / eig[k];
+                    for a in 0..p {
+                        delta[a] += vec[a * p + k] * ck;
+                    }
+                }
+            }
+            let trial: Vec<f64> = poles
+                .iter()
+                .zip(&delta)
+                .map(|(x, d)| (x + d).clamp(-w_max, w_max))
+                .collect();
+            let r_t = residual(&trial);
+            let f_t = norm2(&r_t);
+            if f_t < f {
+                let rel = (f - f_t) / f.max(1.0e-300);
+                poles = trial;
+                r = r_t;
+                f = f_t;
+                lambda = (lambda / 3.0).max(1.0e-15);
+                accepted = true;
+                if f <= target || rel < 1.0e-13 {
+                    return solve_csoe_lsq(&poles, h, values);
+                }
+                break;
+            }
+            lambda *= 4.0;
+            if lambda > 1.0e15 {
+                return solve_csoe_lsq(&poles, h, values);
+            }
+        }
+        if !accepted {
+            break;
+        }
+    }
+    solve_csoe_lsq(&poles, h, values)
+}
+
+/// Drop poles whose residue is below `1e-12` of the largest one (the
+/// spurious roots of a Prony filter of an order above the true one)
+/// and solve the residues again.
+fn prune_negligible_csoe(fit: CsoeFit, h: f64, values: &[Complex]) -> CsoeFit {
+    let cmax = fit.coefs.iter().map(|c| c.abs()).fold(0.0f64, f64::max);
+    let keep: Vec<usize> = (0..fit.poles.len())
+        .filter(|&l| fit.coefs[l].abs() > 1.0e-12 * cmax)
+        .collect();
+    if keep.is_empty() || keep.len() == fit.poles.len() {
+        return fit;
+    }
+    let poles: Vec<f64> = keep.iter().map(|&l| fit.poles[l]).collect();
+    solve_csoe_lsq(&poles, h, values)
+}
+
+/// Warm-started refit: residues on `poles`, a pole polish if needed;
+/// `Some(fit)` when the tolerance is met (the hybridization of a DMFT
+/// iteration differs slightly from the previous one, so the previous
+/// poles usually stay within tolerance), `None` otherwise.
+pub(crate) fn csoe_fit_warm(
+    poles: &[f64],
+    h: f64,
+    values: &[Complex],
+    w_max: f64,
+    tol: f64,
+) -> Option<CsoeFit> {
+    if poles.is_empty() || poles.len() > values.len() {
+        return None;
+    }
+    let fit = solve_csoe_lsq(poles, h, values);
+    let target = tol * tol * values.len() as f64;
+    if csoe_l2(&fit.poles, &fit.coefs, h, values) <= target {
+        return Some(fit);
+    }
+    let fit = polish_csoe(poles.to_vec(), h, values, w_max, target);
+    if csoe_l2(&fit.poles, &fit.coefs, h, values) <= target {
+        return Some(fit);
+    }
+    None
+}
+
+/// Tolerance-driven complex-exponential fit, the real-time
+/// counterpart of `xca::soe::soe_fit_tol`: the pole count is an output
+/// of the tolerance `tol` (root-mean-square error on the sample grid)
+/// rather than an input.
+///
+/// 1. order: the exponential order starts from the numerical rank of
+///    the Hankel matrix of the samples and grows until the fit meets
+///    `tol` (up to `max_poles`),
+/// 2. poles: Prony's method - the angles inside `[-w_max, w_max]` of
+///    the roots of the annihilating filter of the current order,
+/// 3. residues: linear least squares on the samples, a pole polish
+///    (Levenberg-Marquardt on the squared residual) whenever the
+///    Prony poles are not exact, and the pruning of negligible poles.
+///
+/// A window of at most nine samples that Prony's method cannot resolve
+/// (the first real-time steps) is interpolated exactly by evenly
+/// phased frequencies. If the tolerance is still not reached the best
+/// fit is returned.
+pub(crate) fn csoe_fit_tol(
+    h: f64,
+    values: &[Complex],
+    w_max: f64,
+    max_poles: usize,
+    tol: f64,
+) -> CsoeFit {
+    assert!(!values.is_empty(), "csoe_fit_tol: need at least one sample");
+    assert!(w_max > 0.0, "csoe_fit_tol: w_max must be positive");
+    assert!(max_poles >= 1, "csoe_fit_tol: max_poles must be >= 1");
+    assert!(tol > 0.0, "csoe_fit_tol: tol must be positive");
+    // a single sample is a fit of its own (zero frequency)
+    if values.len() == 1 {
+        return CsoeFit {
+            poles: vec![0.0],
+            coefs: vec![values[0]],
+            resid: 0.0,
+        };
+    }
+    let ns = values.len();
+    let n = ns - 1;
+    let rms = |l2: f64| (l2 / ns as f64).sqrt();
+    let base_l2: f64 = values.iter().map(|v| v.re * v.re + v.im * v.im).sum();
+    let mut best = CsoeFit {
+        poles: Vec::new(),
+        coefs: Vec::new(),
+        resid: values.iter().map(|v| v.abs()).fold(0.0f64, f64::max),
+    };
+    let mut best_l2 = base_l2;
+    if rms(base_l2) <= tol {
+        return best;
+    }
+    let pmax = max_poles.min(n.saturating_sub(1)).max(1);
+    for p in hankel_order(values, pmax)..=pmax {
+        let Some(a) = prony_annihilator(values, p) else {
+            break;
+        };
+        // the roots of an exact exponential sum sit on the unit circle
+        // (real frequencies); a continuous spectrum truncates to roots
+        // scattered around it - either way the angle is the pole
+        let mut poles: Vec<f64> = dk_roots(&a)
+            .iter()
+            .filter_map(|z| {
+                if !(0.5..=2.0).contains(&z.abs()) {
+                    return None;
+                }
+                let w = -z.im.atan2(z.re) / h;
+                (w.abs() <= w_max).then_some(w)
+            })
+            .collect();
+        poles.sort_by(|x, y| x.partial_cmp(y).unwrap());
+        let mut merged: Vec<f64> = Vec::with_capacity(poles.len());
+        for &w in &poles {
+            let dup = merged
+                .last()
+                .map_or(false, |l| (w - l).abs() <= 1.0e-9 * (1.0 + w.abs()));
+            if !dup {
+                merged.push(w);
+            }
+        }
+        if merged.is_empty() {
+            continue;
+        }
+        let mut fit = solve_csoe_lsq(&merged, h, values);
+        if rms(csoe_l2(&fit.poles, &fit.coefs, h, values)) > 1.0e-14 * rms(base_l2) {
+            fit = polish_csoe(fit.poles.clone(), h, values, w_max, tol * tol * ns as f64);
+        }
+        fit = prune_negligible_csoe(fit, h, values);
+        let l2 = csoe_l2(&fit.poles, &fit.coefs, h, values);
+        if l2 < best_l2 {
+            best_l2 = l2;
+            best = fit;
+        }
+        if rms(best_l2) <= tol {
+            return best;
+        }
+    }
+    // Prony's method needs an oscillation resolved by several samples;
+    // a short window (the first real-time steps) is interpolated
+    // exactly by as many evenly phased frequencies as there are samples
+    // (a Vandermonde system in exp(-i w h) with distinct nodes)
+    if rms(best_l2) > tol && n <= 8 {
+        let p = n + 1;
+        let poles: Vec<f64> = (0..p)
+            .map(|j| {
+                std::f64::consts::PI * ((2 * j + 1) as f64 / p as f64 - 1.0) / h
+            })
+            .collect();
+        let fit = solve_csoe_lsq(&poles, h, values);
+        let l2 = csoe_l2(&fit.poles, &fit.coefs, h, values);
+        if l2 < best_l2 {
+            best = fit;
+        }
+    }
+    best
+}
+
+#[cfg(test)]
+mod tol_tests {
+    use super::{csoe_fit_tol, csoe_l2};
+    use kadanoffbaym::complex::Complex;
+
+    fn series(h: f64, n: usize, terms: &[(f64, Complex)]) -> Vec<Complex> {
+        (0..=n)
+            .map(|i| {
+                let t = h * i as f64;
+                terms
+                    .iter()
+                    .fold(Complex::ZERO, |acc, &(w, c)| {
+                        acc + c * (-Complex::I * w * t).exp()
+                    })
+            })
+            .collect()
+    }
+
+    #[test]
+    fn two_frequencies_recovered_exactly() {
+        let (h, n) = (0.025, 24usize);
+        let terms = [
+            (0.5, Complex::new(0.0, -0.16)),
+            (-0.3, Complex::new(0.0, -0.1)),
+        ];
+        let values = series(h, n, &terms);
+        let fit = csoe_fit_tol(h, &values, 12.0, 24, 1.0e-9);
+        let rms = (csoe_l2(&fit.poles, &fit.coefs, h, &values) / values.len() as f64).sqrt();
+        assert_eq!(fit.poles.len(), 2, "{:?}", fit.poles);
+        assert!((fit.poles[0] + 0.3).abs() < 1.0e-9, "{:?}", fit.poles);
+        assert!((fit.poles[1] - 0.5).abs() < 1.0e-9, "{:?}", fit.poles);
+        assert!(rms < 1.0e-13, "rms {rms:.3e}");
+    }
+
+    /// The phonon propagator of the Holstein dimer: two frequencies
+    /// `+-omega0` with the thermal weights `n_B + 1` and `n_B`.
+    #[test]
+    fn phonon_propagator_two_poles() {
+        let (h, n, w0, beta) = (0.025, 24usize, 0.7f64, 5.0f64);
+        let nb = 1.0 / ((beta * w0).exp() - 1.0);
+        let terms = [
+            (w0, Complex::new(0.0, -(nb + 1.0))),
+            (-w0, Complex::new(0.0, -nb)),
+        ];
+        let values = series(h, n, &terms);
+        let fit = csoe_fit_tol(h, &values, 12.0, 24, 1.0e-9);
+        let rms = (csoe_l2(&fit.poles, &fit.coefs, h, &values) / values.len() as f64).sqrt();
+        assert_eq!(fit.poles.len(), 2, "{:?}", fit.poles);
+        assert!((fit.poles[0] + w0).abs() < 1.0e-9, "{:?}", fit.poles);
+        assert!((fit.poles[1] - w0).abs() < 1.0e-9, "{:?}", fit.poles);
+        assert!((fit.coefs[0].im + nb).abs() < 1.0e-12, "{:?}", fit.coefs);
+        assert!(rms < 1.0e-13, "rms {rms:.3e}");
+    }
+
+    /// Displaced poles converge to the exact ones under the polish.
+    #[test]
+    fn polish_recovers_displaced_poles() {
+        let (h, n) = (0.1, 40usize);
+        let values = series(
+            h,
+            n,
+            &[
+                (0.5, Complex::new(0.0, -0.16)),
+                (-0.8, Complex::new(0.0, -0.12)),
+            ],
+        );
+        let fit = super::polish_csoe(vec![0.48, -0.75, 1.3], h, &values, 12.0, 1.0e-22);
+        let mut got = fit.poles.clone();
+        got.sort_by(|a, b| a.partial_cmp(b).unwrap());
+        assert!((got[0] + 0.8).abs() < 1.0e-9, "{got:?}");
+        assert!((got[1] - 0.5).abs() < 1.0e-9, "{got:?}");
+        let rms = (csoe_l2(&fit.poles, &fit.coefs, h, &values) / values.len() as f64).sqrt();
+        eprintln!("polish: poles {got:?}, rms {rms:.3e}");
+        assert!(rms < 1.0e-12, "rms {rms:.3e}");
+    }
+
+    /// A continuous spectrum (semicircle, Bethe lattice) is a sum of
+    /// infinitely many exponentials: the pole count is an output of
+    /// the tolerance.
+    #[test]
+    fn semicircle_reaches_tolerance_with_moderate_pole_count() {
+        let (h, n) = (0.02, 300usize);
+        let nq = 512;
+        let mut values = vec![Complex::ZERO; n + 1];
+        for q in 0..nq {
+            let th = std::f64::consts::PI * (q as f64 + 0.5) / nq as f64;
+            let x = 2.0 * th.cos();
+            let wt = (2.0 / std::f64::consts::PI) * th.sin().powi(2)
+                * (std::f64::consts::PI / nq as f64);
+            let f = 1.0 / (1.0 + (5.0 * x).exp());
+            for (i, v) in values.iter_mut().enumerate() {
+                *v += wt * f * (-Complex::I * x * h * i as f64).exp();
+            }
+        }
+        for tol in [1.0e-6, 1.0e-9] {
+            let fit = csoe_fit_tol(h, &values, 12.0, 40, tol);
+            let rms = (csoe_l2(&fit.poles, &fit.coefs, h, &values) / values.len() as f64).sqrt();
+            eprintln!("semicircle tol {tol:.0e}: {} poles, rms {rms:.3e}", fit.poles.len());
+            assert!(rms <= tol, "{tol:.0e}: {} poles, rms {rms:.3e}", fit.poles.len());
+        }
+    }
+}
+
