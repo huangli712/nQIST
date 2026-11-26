@@ -694,9 +694,10 @@ pub fn run_equilibrium_multi(
             }
             set_bwd_from_fwd_mat(&mut delta_cc[c], &delta[c]);
         }
-        let err = (0..nchan)
-            .map(|c| gtmps[c].distance_at(&gloc[c], MATSUBARA))
-            .fold(0.0f64, f64::max);
+        // blueprint `distance_norm2(-1, gtmp, Gloc.o1up)`: the channel-0
+        // distance only, the same criterion as the START window below
+        // (the channels differ once Bz or delta lifts the degeneracy)
+        let err = gtmps[0].distance_at(&gloc[0], MATSUBARA);
         prog.step(iter, &format!("err={err:.3e} nchan={nchan}"));
         for c in 0..nchan {
             for m in 0..=ntau {

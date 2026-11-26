@@ -714,7 +714,7 @@ fn obs_drift(run: &mut RtRun, nt_rt: usize) -> f64 {
     drift
 }
 
-fn check_holstein_dimer_realtime(solver_kind: Solver, order: usize) {
+fn check_holstein_dimer_realtime(solver_kind: Solver, order: usize, with_scaling: bool) {
     use nqist::ed::{EdEvolution, hamiltonian_at_phonon};
 
     let h_rt = std::env::var("NQIST_H")
@@ -752,42 +752,48 @@ fn check_holstein_dimer_realtime(solver_kind: Solver, order: usize) {
     );
 
     // -- leg 2: phonon-coupling quench g0 -> g1 vs the exact unitary
-    // evolution of the fermion + phonon space
-    let h0 = hamiltonian_at_phonon(&ham, &hs, &bath(), &[], -1, &phonon_series(&gvec_eq));
-    let h1 = hamiltonian_at_phonon(&ham, &hs, &bath(), &[], 0, &phonon_series(&gvec_q));
-    let ev = EdEvolution::build_quench_with_layout(&h0, &h1, nt_rt, h_rt, BETA, &[0, 1], 4);
-    let quench = run_realtime(solver_kind, order, &gvec_q, 1.0, nt_rt, ntau, h_rt);
-    let q_ints = spin_ints(&hs, &quench.bath.0, &quench.bath.1);
-    let mut w = 0.0f64;
-    for mode in [0usize, 1] {
-        for (n, j) in [
-            (5usize, 0usize),
-            (nt_rt / 2, 0),
-            (nt_rt / 2, nt_rt / 4),
-            (nt_rt, 0),
-            (nt_rt, nt_rt - 1),
-        ] {
-            let gf = quench.solver.get_spgf(&quench.verts, n as i64, &q_ints);
-            for (tag, a, b) in [
-                (
-                    "ret",
-                    gf[mode].ret.raw_block_at(n as i64, j as i64)[0],
-                    ev.greens_ret(mode, n, j),
-                ),
-                (
-                    "les",
-                    gf[mode].less.raw_block_at(j as i64, n as i64)[0],
-                    ev.greens_les(mode, j, n),
-                ),
+    // evolution of the fermion + phonon space, at the hybridization
+    // scale `vscale` of the fermionic bath couplings (1.0: the gate;
+    // 0.5: the OCA V/2 point)
+    let quench_error = |vscale: f64, tag: &str| -> f64 {
+        let h0 = hamiltonian_at_phonon(&ham, &hs, &bath_scaled(vscale), &[], -1, &phonon_series(&gvec_eq));
+        let h1 = hamiltonian_at_phonon(&ham, &hs, &bath_scaled(vscale), &[], 0, &phonon_series(&gvec_q));
+        let ev = EdEvolution::build_quench_with_layout(&h0, &h1, nt_rt, h_rt, BETA, &[0, 1], 4);
+        let quench = run_realtime(solver_kind, order, &gvec_q, vscale, nt_rt, ntau, h_rt);
+        let q_ints = spin_ints(&hs, &quench.bath.0, &quench.bath.1);
+        let mut w = 0.0f64;
+        for mode in [0usize, 1] {
+            for (n, j) in [
+                (5usize, 0usize),
+                (nt_rt / 2, 0),
+                (nt_rt / 2, nt_rt / 4),
+                (nt_rt, 0),
+                (nt_rt, nt_rt - 1),
             ] {
-                let d = (a - b).abs();
-                w = w.max(d);
-                println!(
-                    "g quench [holstein m={order}] mode {mode} {tag} ({n},{j}): {d:.3e}"
-                );
+                let gf = quench.solver.get_spgf(&quench.verts, n as i64, &q_ints);
+                for (tag, a, b) in [
+                    (
+                        "ret",
+                        gf[mode].ret.raw_block_at(n as i64, j as i64)[0],
+                        ev.greens_ret(mode, n, j),
+                    ),
+                    (
+                        "les",
+                        gf[mode].less.raw_block_at(j as i64, n as i64)[0],
+                        ev.greens_les(mode, j, n),
+                    ),
+                ] {
+                    let d = (a - b).abs();
+                    w = w.max(d);
+                    println!(
+                        "g quench [holstein m={order}, hybridization {tag}] mode {mode} {tag} ({n},{j}): {d:.3e}"
+                    );
+                }
             }
         }
-    }
+        w
+    };
+    let w = quench_error(1.0, "V");
     println!(
         "realtime g-quench order {order} [holstein]: worst |G - G_ed| {w:.3e}"
     );
@@ -799,19 +805,38 @@ fn check_holstein_dimer_realtime(solver_kind: Solver, order: usize) {
         w < budget,
         "quench error {w:.3e} exceeds the Holstein budget"
     );
+
+    // -- leg 3: the V/2 point of the OCA quench error, at a FIXED
+    // electron-phonon coupling (only the fermionic bath couplings are
+    // halved). Measured 8.651e-3 at V and 1.148e-3 at V/2 (ratio
+    // 0.13, near the V^4 of the Hubbard dimers). The leg pins the V/2
+    // point and requires the error to shrink faster than the V^2 of
+    // NCA.
+    if with_scaling {
+        let w_half = quench_error(0.5, "V/2");
+        println!(
+            "realtime OCA hybridization scaling [holstein]: V {w:.3e}, V/2 {w_half:.3e}, ratio {:.3e}",
+            w_half / w
+        );
+        assert!(
+            w_half < w / 4.0,
+            "OCA quench error must shrink faster than V^2: V {w:.3e}, V/2 {w_half:.3e}"
+        );
+    }
 }
 
 /// Tier 2 gate: Holstein real-time NCA (stationarity + g quench vs
 /// EdEvolution on the fermion + phonon space, single boson line).
 #[test]
 fn holstein_dimer_realtime_nca_vs_ed() {
-    check_holstein_dimer_realtime(Solver::Ppsc, 1);
+    check_holstein_dimer_realtime(Solver::Ppsc, 1, false);
 }
 
-/// Tier 2 gate: Holstein real-time OCA.
+/// Tier 2 gate: Holstein real-time OCA, plus the V/2 point of the
+/// quench error at a fixed electron-phonon coupling.
 #[test]
 fn holstein_dimer_realtime_oca_vs_ed() {
-    check_holstein_dimer_realtime(Solver::Ppsc, 2);
+    check_holstein_dimer_realtime(Solver::Ppsc, 2, true);
 }
 
 /// Solver-selection parity: XCA order 1 through the real-time XCA
@@ -819,7 +844,7 @@ fn holstein_dimer_realtime_oca_vs_ed() {
 /// gates as the native NCA gate.
 #[test]
 fn holstein_dimer_realtime_xca_nca_vs_ed() {
-    check_holstein_dimer_realtime(Solver::Xca, 1);
+    check_holstein_dimer_realtime(Solver::Xca, 1, false);
 }
 
 /// Solver-selection parity: XCA order 2 through the real-time XCA
@@ -827,5 +852,5 @@ fn holstein_dimer_realtime_xca_nca_vs_ed() {
 /// gate.
 #[test]
 fn holstein_dimer_realtime_xca_oca_vs_ed() {
-    check_holstein_dimer_realtime(Solver::Xca, 2);
+    check_holstein_dimer_realtime(Solver::Xca, 2, false);
 }

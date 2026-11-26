@@ -392,6 +392,64 @@ fn threeband_dimer_nca_scaling() {
     }
 }
 
+/// Regression gate of the OCA Green's-function statistics sign on the
+/// three-band density dimer (the three-band counterpart of
+/// `xca_twoband_dimer::kanamori_dimer_order2_gf_spread_scaling`): the
+/// OCA error against ED must shrink as V^4 - at least a factor 8 per
+/// halving of the hybridization, where NCA only gives 4 - and stay
+/// below the NCA error at every scale. Three points V, V/2, V/4 give
+/// two ratios; a V^2 contamination (the statistics-sign defect gave
+/// 0.25) shows up in both. Measured OCA-ED on the NTAU = 64 grid:
+/// 4.32e-4 / 6.33e-4 / 8.59e-4 at V, 2.28e-5 / 3.55e-5 / 5.47e-5 at
+/// V/2 and 2.47e-6 / 2.20e-6 / 3.51e-6 at V/4, i.e. ratios
+/// 0.053 / 0.056 / 0.064 and 0.109 / 0.062 / 0.064. The 0.109 of
+/// orbital 0 at V/4 is the Matsubara quadrature floor of the NTAU = 64
+/// grid, not a subleading term: the V^4 extrapolation of its V/2 error
+/// is 1.42e-6, and the same point gives 1.37e-6 on NTAU = 96 and
+/// 1.3e-5 on NTAU = 48 (all three orbitals). HEAVY: three OCA solves
+/// of the 512-state dimer (~145 s each).
+#[test]
+#[ignore = "heavy (~8 min); run via scripts/heavy_gates.sh"]
+fn threeband_dimer_oca_hybridization_scaling() {
+    let ham = density_ham();
+    let scales = [1.0f64, 0.5, 0.25];
+    let mut oca = Vec::new();
+    let mut nca = Vec::new();
+    for &vscale in &scales {
+        let o = dimer_errors(&ham, Solver::Ppsc, 2, vscale);
+        let n = dimer_errors(&ham, Solver::Ppsc, 1, vscale);
+        println!("scaling [three-band] hybridization x{vscale}: OCA err {o:?}, NCA err {n:?}");
+        oca.push(o);
+        nca.push(n);
+    }
+    for (s, &vscale) in scales.iter().enumerate() {
+        for o in 0..3 {
+            assert!(
+                oca[s][o] < nca[s][o],
+                "hybridization x{vscale}, orbital {o}: OCA error {:.3e} must stay below NCA {:.3e}",
+                oca[s][o],
+                nca[s][o]
+            );
+        }
+    }
+    for s in 1..scales.len() {
+        for o in 0..3 {
+            let ratio = oca[s][o] / oca[s - 1][o];
+            println!(
+                "scaling [three-band] hybridization x{} -> x{}, orbital {o}: OCA ratio {ratio:.4}",
+                scales[s - 1],
+                scales[s]
+            );
+            assert!(
+                ratio <= 0.125,
+                "hybridization x{} -> x{}, orbital {o}: OCA error must shrink as V^4 (ratio <= 1/8), got {ratio:.4}",
+                scales[s - 1],
+                scales[s]
+            );
+        }
+    }
+}
+
 fn density_ham() -> LocalHamiltonian {
     mk_ham(U_HUB, J_HUND, CRYSTAL, NT + 2)
 }
@@ -565,6 +623,31 @@ fn check_threeband_dimer_realtime_sel(
     with_stationarity: bool,
     kanamori: bool,
     quench: RtQuench,
+) {
+    check_threeband_dimer_realtime_full(
+        sel,
+        order,
+        nt_rt,
+        ntau,
+        with_stationarity,
+        kanamori,
+        quench,
+        false,
+    );
+}
+
+/// [`check_threeband_dimer_realtime_sel`], plus the optional V/2
+/// hybridization-scaling leg of the OCA quench error.
+#[allow(clippy::too_many_arguments)]
+fn check_threeband_dimer_realtime_full(
+    sel: Solver,
+    order: usize,
+    nt_rt: usize,
+    ntau: usize,
+    with_stationarity: bool,
+    kanamori: bool,
+    quench: RtQuench,
+    with_scaling: bool,
 ) {
     use std::time::Instant;
 
@@ -801,77 +884,89 @@ fn check_threeband_dimer_realtime_sel(
         );
     }
 
-    // -- leg 2: J quench vs the exact unitary evolution
-    let ed_start = Instant::now();
-    eprintln!("[threeband m={order}] building 512-state ED quench reference");
-    let h0 = hamiltonian_at(&ham_q, &hs, &bath(), &[], -1);
-    let h1 = hamiltonian_at(&ham_q, &hs, &bath(), &[], 0);
-    let ev = EdEvolution::build_quench(&h0, &h1, nt_rt, h_rt, BETA, &[0, 1, 2]);
-    eprintln!(
-        "[threeband m={order}] ED reference ready in {:.2?}",
-        ed_start.elapsed()
-    );
+    // -- leg 2: the quench vs the exact unitary evolution, at
+    // hybridization scale `vscale` of the bath couplings (1.0: the
+    // gate; 0.5: the OCA scaling leg)
     let quench_tag = match quench {
         RtQuench::J => "J",
         RtQuench::Bz => "Bz",
         RtQuench::Delta => "delta",
     };
-    // hybridization list of the quench leg: the OCA vertex diagrams
-    // of the real-time G are built from the channels (an empty list
-    // silently evaluates the bare NCA closure)
-    let q_pairs: Vec<(ContourGreen, ContourGreen)> =
-        (0..3).map(|o| mk_pair(&lvl[o], V[o])).collect();
-    let mut q_ints = Vec::new();
-    for o in 0..3 {
-        q_ints.push(Hybridization {
-            delta: &q_pairs[o].0,
-            op_cre_fl: hs.flavor(o, 0, true),
-            op_ann_fl: hs.flavor(o, 0, false),
-            fermion: true,
-            backward: false,
-        });
-        q_ints.push(Hybridization {
-            delta: &q_pairs[o].1,
-            op_cre_fl: hs.flavor(o, 0, false),
-            op_ann_fl: hs.flavor(o, 0, true),
-            fermion: true,
-            backward: true,
-        });
-    }
-    let solver = run(&format!("{quench_tag} quench"), &ham_q, 1.0);
-    let points: Vec<(usize, usize)> = if nt_rt <= 12 {
-        vec![(5, 0), (nt_rt, 0), (nt_rt, nt_rt / 2), (nt_rt, nt_rt - 1)]
-    } else {
-        vec![
-            (5, 0),
-            (nt_rt / 2, 0),
-            (nt_rt / 2, nt_rt / 4),
-            (nt_rt, 0),
-            (nt_rt, nt_rt / 2),
-            (nt_rt, nt_rt - 1),
-        ]
-    };
-    let mut w = 0.0f64;
-    for mode in [0usize, 1, 2] {
-        let points_mode = points.clone();
-        for (n, j) in points_mode {
-            let gf = solver.get_spgf(&verts, n as i64, &q_ints);
-            let g_ret = gf[mode].ret.raw_block_at(n as i64, j as i64)[0];
-            let g_les = gf[mode].less.raw_block_at(j as i64, n as i64)[0];
-            for (tag, a, b) in [
-                ("ret", g_ret, ev.greens_ret(mode, n, j)),
-                ("les", g_les, ev.greens_les(mode, j, n)),
-            ] {
-                let d = (a - b).abs();
-                if d > w {
-                    println!(
-                        "quench [threeband m={order}] worst so far: mode {mode} {tag} ({n},{j}): {d:.3e}"
-                    );
+    let quench_error = |vscale: f64| -> f64 {
+        let ed_start = Instant::now();
+        eprintln!(
+            "[threeband m={order}] building 512-state ED quench reference (hybridization x{vscale})"
+        );
+        let h0 = hamiltonian_at(&ham_q, &hs, &bath_scaled(vscale), &[], -1);
+        let h1 = hamiltonian_at(&ham_q, &hs, &bath_scaled(vscale), &[], 0);
+        let ev = EdEvolution::build_quench(&h0, &h1, nt_rt, h_rt, BETA, &[0, 1, 2]);
+        eprintln!(
+            "[threeband m={order}] ED reference ready in {:.2?}",
+            ed_start.elapsed()
+        );
+        // hybridization list of the quench leg: the OCA vertex diagrams
+        // of the real-time G are built from the channels (an empty list
+        // silently evaluates the bare NCA closure)
+        let q_pairs: Vec<(ContourGreen, ContourGreen)> =
+            (0..3).map(|o| mk_pair(&lvl[o], V[o] * vscale)).collect();
+        let mut q_ints = Vec::new();
+        for o in 0..3 {
+            q_ints.push(Hybridization {
+                delta: &q_pairs[o].0,
+                op_cre_fl: hs.flavor(o, 0, true),
+                op_ann_fl: hs.flavor(o, 0, false),
+                fermion: true,
+                backward: false,
+            });
+            q_ints.push(Hybridization {
+                delta: &q_pairs[o].1,
+                op_cre_fl: hs.flavor(o, 0, false),
+                op_ann_fl: hs.flavor(o, 0, true),
+                fermion: true,
+                backward: true,
+            });
+        }
+        let solver = run(
+            &format!("{quench_tag} quench, hybridization x{vscale}"),
+            &ham_q,
+            vscale,
+        );
+        let points: Vec<(usize, usize)> = if nt_rt <= 12 {
+            vec![(5, 0), (nt_rt, 0), (nt_rt, nt_rt / 2), (nt_rt, nt_rt - 1)]
+        } else {
+            vec![
+                (5, 0),
+                (nt_rt / 2, 0),
+                (nt_rt / 2, nt_rt / 4),
+                (nt_rt, 0),
+                (nt_rt, nt_rt / 2),
+                (nt_rt, nt_rt - 1),
+            ]
+        };
+        let mut w = 0.0f64;
+        for mode in [0usize, 1, 2] {
+            let points_mode = points.clone();
+            for (n, j) in points_mode {
+                let gf = solver.get_spgf(&verts, n as i64, &q_ints);
+                let g_ret = gf[mode].ret.raw_block_at(n as i64, j as i64)[0];
+                let g_les = gf[mode].less.raw_block_at(j as i64, n as i64)[0];
+                for (tag, a, b) in [
+                    ("ret", g_ret, ev.greens_ret(mode, n, j)),
+                    ("les", g_les, ev.greens_les(mode, j, n)),
+                ] {
+                    let d = (a - b).abs();
+                    if d > w {
+                        println!(
+                            "quench [threeband m={order}, hybridization x{vscale}] worst so far: mode {mode} {tag} ({n},{j}): {d:.3e}"
+                        );
+                    }
+                    w = w.max(d);
                 }
-                w = w.max(d);
             }
         }
-    }
+        w
+    };
+    let w = quench_error(1.0);
     println!(
         "realtime {quench_tag}-quench order {order} [three-band{}]: worst |G - G_ed| {w:.3e}",
         if kanamori { " full Kanamori" } else { "" }
@@ -893,6 +988,23 @@ fn check_threeband_dimer_realtime_sel(
         w < budget,
         "quench error {w:.3e} exceeds the three-band budget {budget:.1e}"
     );
+
+    // -- leg 3: hybridization scaling of the OCA quench error. OCA is
+    // fourth order in the hybridization (about 16 per halving; NCA
+    // would only give 4), so halving the couplings must shrink the
+    // error by at least a factor 8.
+    if with_scaling {
+        let w_half = quench_error(0.5);
+        println!(
+            "realtime OCA hybridization scaling [three-band{}]: V {w:.3e}, V/2 {w_half:.3e}, ratio {:.3e}",
+            if kanamori { " full Kanamori" } else { "" },
+            w_half / w
+        );
+        assert!(
+            w_half < w / 8.0,
+            "OCA quench error must scale as V^4 (ratio ~1/16): V {w:.3e}, V/2 {w_half:.3e}"
+        );
+    }
 }
 
 /// Tier 2 gate: three-band real-time NCA with the full dimer. Two
@@ -926,14 +1038,17 @@ fn threeband_dimer_realtime_xca_nca_vs_ed() {
 /// (stationarity + J quench vs EdEvolution). Runs on the ntau = 64
 /// grid with the OCA steady-state gate of 5e-6 (see the gate note in
 /// `check_threeband_dimer_realtime`); the atomic leg is that of the
-/// NCA gate, the quench budget 5e-3 (measured 1.575e-3). HEAVY (measured 55m46s:
+/// NCA gate, the quench budget 5e-3 (measured 1.575e-3), plus the V/2
+/// hybridization-scaling leg of the quench error (OCA ~ V^4: measured
+/// 9.388e-5 at V/2, ratio 0.060). HEAVY
+/// (measured 55m46s before the scaling leg:
 /// ~80 s per real-time step in the OCA matrix kernels at ntau = 64)
 /// - ignored for the default suite; run with
 /// `cargo test --release --test threeband_dimer -- --ignored`.
 #[test]
 #[ignore = "heavy: three-band OCA real-time dimer (~1 h); run manually"]
 fn threeband_dimer_realtime_oca_vs_ed() {
-    check_threeband_dimer_realtime(2, 24, 64, true, false, RtQuench::J);
+    check_threeband_dimer_realtime_full(Solver::Ppsc, 2, 24, 64, true, false, RtQuench::J, true);
 }
 
 /// Solver-selection parity: XCA order 2 on the same gates as
@@ -986,12 +1101,36 @@ fn threeband_kanamori_realtime_delta_quench_xca_nca_vs_ed() {
     check_threeband_dimer_realtime_sel(Solver::Xca, 1, 24, 128, true, true, RtQuench::Delta);
 }
 
-/// Full-Kanamori real-time OCA (J quench). HEAVY - ignored for the
-/// default suite; run with `-- --ignored`.
+/// Full-Kanamori real-time OCA (J quench), plus the V/2
+/// hybridization-scaling leg of the quench error (OCA ~ V^4: measured
+/// 1.190e-3 at V and 7.224e-5 at V/2, ratio 0.061). HEAVY - ignored
+/// for the default suite; run with `-- --ignored`.
 #[test]
 #[ignore = "heavy: three-band full-Kanamori OCA real-time dimer (~80 min); run manually"]
 fn threeband_kanamori_realtime_oca_vs_ed() {
-    check_threeband_dimer_realtime(2, 24, 64, true, true, RtQuench::J);
+    check_threeband_dimer_realtime_full(Solver::Ppsc, 2, 24, 64, true, true, RtQuench::J, true);
+}
+
+/// Tier 2 gate: the field quench Bz 0.2 -> 0.5 at OCA on the
+/// full-Kanamori dimer (the OCA twin of
+/// `threeband_kanamori_realtime_bz_quench_nca_vs_ed`). The
+/// stationarity legs are those of `threeband_kanamori_realtime_oca_vs_ed`
+/// (the same equilibrium Hamiltonian), so this gate runs the quench
+/// leg only. Measured 1.173e-3 against the budget 5.0e-3.
+#[test]
+#[ignore = "heavy: three-band full-Kanamori OCA real-time dimer; run via scripts/heavy_gates.sh"]
+fn threeband_kanamori_realtime_bz_quench_oca_vs_ed() {
+    check_threeband_dimer_realtime(2, 24, 64, false, true, RtQuench::Bz);
+}
+
+/// Tier 2 gate: the crystal-field quench 0.8 -> 1.0 at OCA on the
+/// full-Kanamori dimer (the OCA twin of
+/// `threeband_kanamori_realtime_delta_quench_nca_vs_ed`); the quench
+/// leg only. Measured 1.203e-3 against the budget 5.0e-3.
+#[test]
+#[ignore = "heavy: three-band full-Kanamori OCA real-time dimer; run via scripts/heavy_gates.sh"]
+fn threeband_kanamori_realtime_delta_quench_oca_vs_ed() {
+    check_threeband_dimer_realtime(2, 24, 64, false, true, RtQuench::Delta);
 }
 
 /// Solver-selection parity: XCA order 2 on the same gates as

@@ -277,7 +277,10 @@ fn kanamori_dimer_realtime_xca_nca_vs_ed() {
 /// Tier 2 gate: real-time OCA (order = 2) with the full dimer on the
 /// NCA grid - the same two legs as the NCA gate (no-quench
 /// stationarity for the density and the full-Kanamori variant, then
-/// the J quench against the exact unitary evolution). The short-grid
+/// the J quench against the exact unitary evolution), plus the V/2
+/// hybridization-scaling leg of the quench error (OCA ~ V^4: measured
+/// 3.853e-3 / 5.568e-3 at V and 2.456e-4 / 3.601e-4 at V/2, ratios
+/// 0.064 / 0.065). The short-grid
 /// diagnostics below fail their 1e-6 stationarity gate by Matsubara
 /// quadrature error (drift 5.2e-6 at ntau = 24 vs 1.3e-7 at ntau =
 /// 48, ~ntau^-5), so the gate runs at the production resolution
@@ -286,7 +289,7 @@ fn kanamori_dimer_realtime_xca_nca_vs_ed() {
 #[test]
 #[ignore = "heavy: two-band OCA real-time dimer; run manually"]
 fn kanamori_dimer_realtime_oca_vs_ed() {
-    check_kanamori_dimer_realtime(2, 40, NTAU, RealtimeChecks::StationarityAndQuench);
+    check_kanamori_dimer_realtime(2, 40, NTAU, RealtimeChecks::StationarityQuenchScaling);
 }
 
 /// Solver-selection parity: XCA order 2 on the same real-time gates as
@@ -301,6 +304,64 @@ fn kanamori_dimer_realtime_xca_oca_vs_ed() {
         40,
         NTAU,
         RealtimeChecks::StationarityAndQuench,
+    );
+}
+
+/// Field quench Bz 0 -> 0.3 vs the exact unitary evolution at NCA,
+/// both variants (density, full Kanamori). The stationarity legs are
+/// those of `kanamori_dimer_realtime_nca_vs_ed` (the same equilibrium
+/// Hamiltonian), so this gate runs the quench leg only.
+#[test]
+fn kanamori_dimer_realtime_bz_quench_nca_vs_ed() {
+    check_kanamori_dimer_realtime_quench(
+        Solver::Ppsc,
+        1,
+        40,
+        NTAU,
+        RealtimeChecks::Quench,
+        RtQuench::Bz,
+    );
+}
+
+/// Tier 2 gate: the field quench at OCA.
+#[test]
+#[ignore = "heavy: two-band OCA real-time dimer; run via scripts/heavy_gates.sh"]
+fn kanamori_dimer_realtime_bz_quench_oca_vs_ed() {
+    check_kanamori_dimer_realtime_quench(
+        Solver::Ppsc,
+        2,
+        40,
+        NTAU,
+        RealtimeChecks::Quench,
+        RtQuench::Bz,
+    );
+}
+
+/// Crystal-field quench 0.8 -> 1.0 vs the exact unitary evolution at
+/// NCA, both variants; the quench leg only (see the Bz gate above).
+#[test]
+fn kanamori_dimer_realtime_delta_quench_nca_vs_ed() {
+    check_kanamori_dimer_realtime_quench(
+        Solver::Ppsc,
+        1,
+        40,
+        NTAU,
+        RealtimeChecks::Quench,
+        RtQuench::Delta,
+    );
+}
+
+/// Tier 2 gate: the crystal-field quench at OCA.
+#[test]
+#[ignore = "heavy: two-band OCA real-time dimer; run via scripts/heavy_gates.sh"]
+fn kanamori_dimer_realtime_delta_quench_oca_vs_ed() {
+    check_kanamori_dimer_realtime_quench(
+        Solver::Ppsc,
+        2,
+        40,
+        NTAU,
+        RealtimeChecks::Quench,
+        RtQuench::Delta,
     );
 }
 
@@ -353,8 +414,34 @@ fn kanamori_dimer_realtime_oca_stationarity_fine_grid() {
 enum RealtimeChecks {
     Quench,
     StationarityAndQuench,
+    /// `StationarityAndQuench` plus the V/2 hybridization-scaling leg
+    /// of the OCA quench error
+    StationarityQuenchScaling,
     Stationarity,
     KanamoriStationarity,
+}
+
+/// Which parameter is quenched after the START window of the real-time
+/// dimer: the equilibrium value in row 0 of the series (tstp = -1) and
+/// the quenched value afterwards.
+#[derive(Clone, Copy, PartialEq)]
+enum RtQuench {
+    /// Hund coupling J 0.4 -> 0.55
+    J,
+    /// field Bz 0 -> 0.3
+    Bz,
+    /// crystal field 0.8 -> 1.0
+    Delta,
+}
+
+/// Series of length `len`: `value_eq` in row 0 (tstp = -1) and
+/// `value_q` afterwards.
+fn quench_series(value_eq: f64, value_q: f64, len: usize) -> Vec<f64> {
+    let mut v = vec![value_eq; len];
+    for x in v.iter_mut().skip(1) {
+        *x = value_q;
+    }
+    v
 }
 
 fn check_kanamori_dimer_realtime(order: usize, nt_rt: usize, ntau: usize, checks: RealtimeChecks) {
@@ -364,13 +451,26 @@ fn check_kanamori_dimer_realtime(order: usize, nt_rt: usize, ntau: usize, checks
     check_kanamori_dimer_realtime_sel(sel, order, nt_rt, ntau, checks);
 }
 
-/// The real-time dimer gates for a solver selection.
+/// The real-time dimer gates for a solver selection (J quench).
 fn check_kanamori_dimer_realtime_sel(
     sel: Solver,
     order: usize,
     nt_rt: usize,
     ntau: usize,
     checks: RealtimeChecks,
+) {
+    check_kanamori_dimer_realtime_quench(sel, order, nt_rt, ntau, checks, RtQuench::J);
+}
+
+/// The real-time dimer gates for a solver selection and a choice of
+/// the quenched parameter.
+fn check_kanamori_dimer_realtime_quench(
+    sel: Solver,
+    order: usize,
+    nt_rt: usize,
+    ntau: usize,
+    checks: RealtimeChecks,
+    quench: RtQuench,
 ) {
     use std::time::Instant;
 
@@ -388,23 +488,46 @@ fn check_kanamori_dimer_realtime_sel(
     } else {
         nt_rt
     };
-    let j0 = 0.4f64;
-    let j1 = 0.55f64;
-    let hs = build(2, SectorClass::SpinResolved);
-    let mut j_eq = vec![j0; nt_rt + 2];
-    let mut j_q = vec![j0; nt_rt + 2];
-    for k in 1..j_q.len() {
-        j_q[k] = j1;
-    }
-    let mk = |j: Vec<f64>| TwoBandKanamori {
-        mu: 0.0,
-        u: vec![U_HUB; nt_rt + 2],
-        j,
-        delta: vec![CRYSTAL; nt_rt + 2],
-        bz: vec![0.0; nt_rt + 2],
+    let (j0, j1) = (0.4f64, 0.55f64);
+    let (d1, b1) = (CRYSTAL * 1.25, 0.3f64);
+    let j_q = if quench == RtQuench::J { j1 } else { j0 };
+    let delta_q = if quench == RtQuench::Delta {
+        d1
+    } else {
+        CRYSTAL
     };
-    let ham_eq = mk(j_eq);
-    let ham_q = mk(j_q);
+    let bz_q = if quench == RtQuench::Bz { b1 } else { 0.0 };
+    let quench_tag = match quench {
+        RtQuench::J => "J",
+        RtQuench::Bz => "Bz",
+        RtQuench::Delta => "delta",
+    };
+    let len = nt_rt + 2;
+    let hs = build(2, SectorClass::SpinResolved);
+    let mk_kanamori = |j: Vec<f64>, delta: Vec<f64>, bz: Vec<f64>| TwoBandKanamori {
+        mu: 0.0,
+        u: vec![U_HUB; len],
+        j,
+        delta,
+        bz,
+    };
+    let mk_density = |j: Vec<f64>, delta: Vec<f64>, bz: Vec<f64>| {
+        let h = nqist::hamilton::LocalHamiltonian::TwoBand {
+            mu: 0.0,
+            u: vec![U_HUB; len],
+            j,
+            delta,
+            bz,
+        };
+        h
+    };
+    // equilibrium (unquenched) Hamiltonians of both variants
+    let density = mk_density(vec![j0; len], vec![CRYSTAL; len], vec![0.0; len]);
+    let ham_eq = mk_kanamori(vec![j0; len], vec![CRYSTAL; len], vec![0.0; len]);
+    // quenched Hamiltonians (the equilibrium values in row 0)
+    let series = |eq: f64, q: f64| quench_series(eq, q, len);
+    let density_q = mk_density(series(j0, j_q), series(CRYSTAL, delta_q), series(0.0, bz_q));
+    let ham_q = mk_kanamori(series(j0, j_q), series(CRYSTAL, delta_q), series(0.0, bz_q));
 
     // static analytic two-level up-only bath on the full contour
     // (rt-XCA-validated pole fill conventions: the ret slot of the
@@ -1012,13 +1135,6 @@ fn check_kanamori_dimer_realtime_sel(
 
     // -- leg 1: no-quench stationarity (TTI) pre-gate, both variants
     if !matches!(checks, RealtimeChecks::Quench) {
-        let density = nqist::hamilton::LocalHamiltonian::TwoBand {
-            mu: 0.0,
-            u: vec![U_HUB; nt_rt + 2],
-            j: vec![j0; nt_rt + 2],
-            delta: vec![CRYSTAL; nt_rt + 2],
-            bz: vec![0.0; nt_rt + 2],
-        };
         // v = 0 bisect: the atomic leg must be exactly stationary
         if !matches!(checks, RealtimeChecks::KanamoriStationarity) {
             let solver = run("density atomic", &density, 0.0);
@@ -1070,58 +1186,61 @@ fn check_kanamori_dimer_realtime_sel(
                 "TTI stationarity broken [{tag}]: {drift:.3e} (gate {tti_gate:.0e})"
             );
         }
-        if !matches!(checks, RealtimeChecks::StationarityAndQuench) {
+        if !matches!(
+            checks,
+            RealtimeChecks::StationarityAndQuench | RealtimeChecks::StationarityQuenchScaling
+        ) {
             return;
         }
     }
 
-    // -- leg 2: J quench vs exact unitary evolution, both variants
-    let bath = [
-        BathCoupling {
-            imp_mode: 0,
-            eps: EPS_B1,
-            v: V1,
-        },
-        BathCoupling {
-            imp_mode: 1,
-            eps: EPS_B2,
-            v: V2,
-        },
-    ];
-    let ed_start = Instant::now();
-    eprintln!("[dimer m={order}] building 64-state ED quench references");
-    let h0 = hamiltonian_at(&ham_q, &hs, &bath, &[], -1);
-    let h1 = hamiltonian_at(&ham_q, &hs, &bath, &[], 0);
-    let ev_k = EdEvolution::build_quench(&h0, &h1, nt_rt, H_RT, BETA, &[0, 1]);
-    let density_q = nqist::hamilton::LocalHamiltonian::TwoBand {
-        mu: 0.0,
-        u: vec![U_HUB; nt_rt + 2],
-        j: {
-            let mut j = vec![j0; nt_rt + 2];
-            for k in 1..j.len() {
-                j[k] = j1;
-            }
-            j
-        },
-        delta: vec![CRYSTAL; nt_rt + 2],
-        bz: vec![0.0; nt_rt + 2],
+    // -- leg 2: the quench vs exact unitary evolution, both variants,
+    // at hybridization scale `vscale` of the bath couplings (1.0: the
+    // gate; 0.5: the OCA scaling leg)
+    let bath_of = |vscale: f64| -> [BathCoupling; 2] {
+        [
+            BathCoupling {
+                imp_mode: 0,
+                eps: EPS_B1,
+                v: V1 * vscale,
+            },
+            BathCoupling {
+                imp_mode: 1,
+                eps: EPS_B2,
+                v: V2 * vscale,
+            },
+        ]
     };
-    let h0d = hamiltonian_at(&density_q, &hs, &bath, &[], -1);
-    let h1d = hamiltonian_at(&density_q, &hs, &bath, &[], 0);
-    let ev_d = EdEvolution::build_quench(&h0d, &h1d, nt_rt, H_RT, BETA, &[0, 1]);
-    eprintln!("[dimer m={order}] ED references ready in {:.2?}", ed_start.elapsed());
-    let mut worst = [0.0f64; 2];
-    for (vi, (case, h, ev)) in [("density quench", &density_q, &ev_d), ("kanamori quench", &ham_q, &ev_k)]
-        .into_iter()
-        .enumerate()
-    {
-        let solver = run(case, h, 1.0);
-        eprintln!("[dimer m={order} {case}] comparing retarded and lesser Green's functions against ED");
+    let ed_reference = |h: &nqist::hamilton::LocalHamiltonian, vscale: f64| -> EdEvolution {
+        let ed_start = Instant::now();
+        eprintln!(
+            "[dimer m={order}] building 64-state ED quench reference (hybridization x{vscale})"
+        );
+        let bath = bath_of(vscale);
+        let h0 = hamiltonian_at(h, &hs, &bath, &[], -1);
+        let h1 = hamiltonian_at(h, &hs, &bath, &[], 0);
+        let ev = EdEvolution::build_quench(&h0, &h1, nt_rt, H_RT, BETA, &[0, 1]);
+        eprintln!(
+            "[dimer m={order}] ED reference ready in {:.2?}",
+            ed_start.elapsed()
+        );
+        ev
+    };
+    let quench_error = |vi: usize,
+                        case: &str,
+                        h: &nqist::hamilton::LocalHamiltonian,
+                        ev: &EdEvolution,
+                        vscale: f64|
+     -> f64 {
+        let solver = run(case, h, vscale);
+        eprintln!(
+            "[dimer m={order} {case}] comparing retarded and lesser Green's functions against ED"
+        );
         // the hybridization list must be passed: the OCA vertex
         // diagrams of the real-time G are built from its channels
         // (an empty list silently evaluates the bare NCA closure)
-        let (q1, q1c) = mk_pair(&lvl1, V1);
-        let (q2, q2c) = mk_pair(&lvl2, V2);
+        let (q1, q1c) = mk_pair(&lvl1, V1 * vscale);
+        let (q2, q2c) = mk_pair(&lvl2, V2 * vscale);
         let q_ints = mk_ints(&q1, &q1c, &q2, &q2c, c0a, c0c, c1a, c1c);
         let mut w = 0.0f64;
         for mode in [0usize, 1] {
@@ -1144,17 +1263,23 @@ fn check_kanamori_dimer_realtime_sel(
                     let d = (a - b).abs();
                     if d > w {
                         println!(
-                            "quench [variant {vi}] worst so far: mode {mode} {tag} ({n},{j}): {d:.3e}"
+                            "quench [variant {vi}, hybridization x{vscale}] worst so far: mode {mode} {tag} ({n},{j}): {d:.3e}"
                         );
                     }
                     w = w.max(d);
                 }
             }
         }
-        worst[vi] = w;
+        w
+    };
+    let variants = [("density quench", &density_q), ("kanamori quench", &ham_q)];
+    let mut worst = [0.0f64; 2];
+    for (vi, (case, h)) in variants.iter().enumerate() {
+        let ev = ed_reference(h, 1.0);
+        worst[vi] = quench_error(vi, case, h, &ev, 1.0);
     }
     println!(
-        "realtime J-quench order {order}: worst |G - G_ed| density {:.3e} kanamori {:.3e}",
+        "realtime {quench_tag}-quench order {order}: worst |G - G_ed| density {:.3e} kanamori {:.3e}",
         worst[0], worst[1]
     );
     // Absolute budgets. Measured: order 1 (NCA) 5.79e-2 / 5.92e-2,
@@ -1184,6 +1309,27 @@ fn check_kanamori_dimer_realtime_sel(
         worst[1] < track * worst[0],
         "kanamori quench error must track density: {worst:?}"
     );
+
+    // -- leg 3: hybridization scaling of the OCA quench error. OCA is
+    // fourth order in the hybridization, so halving the couplings must
+    // shrink the error by about 16 (NCA would only shrink by 4); the
+    // gate allows a factor 8.
+    if matches!(checks, RealtimeChecks::StationarityQuenchScaling) {
+        for (vi, (case, h)) in variants.iter().enumerate() {
+            let ev = ed_reference(h, 0.5);
+            let w_half = quench_error(vi, &format!("{case}, V/2"), h, &ev, 0.5);
+            println!(
+                "realtime OCA hybridization scaling [dimer m={order} variant {vi}]: V {:.3e}, V/2 {w_half:.3e}, ratio {:.3e}",
+                worst[vi],
+                w_half / worst[vi]
+            );
+            assert!(
+                w_half < worst[vi] / 8.0,
+                "OCA quench error must scale as V^4 (ratio ~1/16): V {:.3e}, V/2 {w_half:.3e}",
+                worst[vi]
+            );
+        }
+    }
 }
 
 /// Tier 1 gate: the same up-only two-bath dimer with the FULL

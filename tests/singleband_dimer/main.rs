@@ -238,6 +238,7 @@ fn check_singleband_dimer_realtime(
     nt_rt: usize,
     ntau: usize,
     with_stationarity: bool,
+    with_scaling: bool,
 ) {
     use std::time::Instant;
 
@@ -443,71 +444,78 @@ fn check_singleband_dimer_realtime(
         );
     }
 
-    // -- leg 2: U quench vs the exact unitary evolution
-    let ed_start = Instant::now();
-    eprintln!("[singleband m={order}] building 16-state ED quench reference");
-    let h0 = hamiltonian_at(&ham_q, &hs, &bath(1.0), &[], -1);
-    let h1 = hamiltonian_at(&ham_q, &hs, &bath(1.0), &[], 0);
-    let ev = EdEvolution::build_quench(&h0, &h1, nt_rt, h_rt, BETA, &[0, 1]);
-    eprintln!(
-        "[singleband m={order}] ED reference ready in {:.2?}",
-        ed_start.elapsed()
-    );
-    // hybridization list of the quench leg: the OCA vertex diagrams
-    // of the real-time G are built from the channels (an empty list
-    // silently evaluates the bare NCA closure)
-    let q_pairs: Vec<(ContourGreen, ContourGreen)> =
-        (0..2).map(|spin| mk_pair(&lvl[spin], V[spin])).collect();
-    let mut q_ints = Vec::new();
-    for spin in 0..2 {
-        q_ints.push(Hybridization {
-            delta: &q_pairs[spin].0,
-            op_cre_fl: hs.flavor(0, spin, true),
-            op_ann_fl: hs.flavor(0, spin, false),
-            fermion: true,
-            backward: false,
-        });
-        q_ints.push(Hybridization {
-            delta: &q_pairs[spin].1,
-            op_cre_fl: hs.flavor(0, spin, false),
-            op_ann_fl: hs.flavor(0, spin, true),
-            fermion: true,
-            backward: true,
-        });
-    }
-    let solver = run("U quench", &ham_q, 1.0);
-    let points: Vec<(usize, usize)> = if nt_rt <= 12 {
-        vec![(5, 0), (nt_rt, 0), (nt_rt, nt_rt / 2), (nt_rt, nt_rt - 1)]
-    } else {
-        vec![
-            (5, 0),
-            (nt_rt / 2, 0),
-            (nt_rt / 2, nt_rt / 4),
-            (nt_rt, 0),
-            (nt_rt, nt_rt / 2),
-            (nt_rt, nt_rt - 1),
-        ]
-    };
-    let mut w = 0.0f64;
-    for mode in [0usize, 1] {
-        for (n, j) in points.clone() {
-            let gf = solver.get_spgf(&vts, n as i64, &q_ints);
-            let g_ret = gf[mode].ret.raw_block_at(n as i64, j as i64)[0];
-            let g_les = gf[mode].less.raw_block_at(j as i64, n as i64)[0];
-            for (tag, a, b) in [
-                ("ret", g_ret, ev.greens_ret(mode, n, j)),
-                ("les", g_les, ev.greens_les(mode, j, n)),
-            ] {
-                if (a - b).abs() > w {
-                    println!(
-                        "quench [singleband m={order}] worst so far: mode {mode} {tag} ({n},{j}): {:.3e}",
-                        (a - b).abs()
-                    );
+    // -- leg 2: U quench vs the exact unitary evolution, at the
+    // hybridization scale `vscale` of the bath couplings (1.0: the
+    // gate; 0.5: the OCA scaling leg)
+    let quench_error = |vscale: f64, case: &str| -> f64 {
+        let ed_start = Instant::now();
+        eprintln!("[singleband m={order}] building 16-state ED quench reference");
+        let h0 = hamiltonian_at(&ham_q, &hs, &bath(vscale), &[], -1);
+        let h1 = hamiltonian_at(&ham_q, &hs, &bath(vscale), &[], 0);
+        let ev = EdEvolution::build_quench(&h0, &h1, nt_rt, h_rt, BETA, &[0, 1]);
+        eprintln!(
+            "[singleband m={order}] ED reference ready in {:.2?}",
+            ed_start.elapsed()
+        );
+        // hybridization list of the quench leg: the OCA vertex diagrams
+        // of the real-time G are built from the channels (an empty list
+        // silently evaluates the bare NCA closure)
+        let q_pairs: Vec<(ContourGreen, ContourGreen)> = (0..2)
+            .map(|spin| mk_pair(&lvl[spin], V[spin] * vscale))
+            .collect();
+        let mut q_ints = Vec::new();
+        for spin in 0..2 {
+            q_ints.push(Hybridization {
+                delta: &q_pairs[spin].0,
+                op_cre_fl: hs.flavor(0, spin, true),
+                op_ann_fl: hs.flavor(0, spin, false),
+                fermion: true,
+                backward: false,
+            });
+            q_ints.push(Hybridization {
+                delta: &q_pairs[spin].1,
+                op_cre_fl: hs.flavor(0, spin, false),
+                op_ann_fl: hs.flavor(0, spin, true),
+                fermion: true,
+                backward: true,
+            });
+        }
+        let solver = run(case, &ham_q, vscale);
+        let points: Vec<(usize, usize)> = if nt_rt <= 12 {
+            vec![(5, 0), (nt_rt, 0), (nt_rt, nt_rt / 2), (nt_rt, nt_rt - 1)]
+        } else {
+            vec![
+                (5, 0),
+                (nt_rt / 2, 0),
+                (nt_rt / 2, nt_rt / 4),
+                (nt_rt, 0),
+                (nt_rt, nt_rt / 2),
+                (nt_rt, nt_rt - 1),
+            ]
+        };
+        let mut w = 0.0f64;
+        for mode in [0usize, 1] {
+            for (n, j) in points.clone() {
+                let gf = solver.get_spgf(&vts, n as i64, &q_ints);
+                let g_ret = gf[mode].ret.raw_block_at(n as i64, j as i64)[0];
+                let g_les = gf[mode].less.raw_block_at(j as i64, n as i64)[0];
+                for (tag, a, b) in [
+                    ("ret", g_ret, ev.greens_ret(mode, n, j)),
+                    ("les", g_les, ev.greens_les(mode, j, n)),
+                ] {
+                    if (a - b).abs() > w {
+                        println!(
+                            "quench [singleband m={order}] worst so far: mode {mode} {tag} ({n},{j}): {:.3e}",
+                            (a - b).abs()
+                        );
+                    }
+                    w = w.max((a - b).abs());
                 }
-                w = w.max((a - b).abs());
             }
         }
-    }
+        w
+    };
+    let w = quench_error(1.0, "U quench");
     println!("realtime U-quench order {order} [single-band]: worst |G - G_ed| {w:.3e}");
     // Measured: order 1 (NCA) 6.997e-2, order 2 (OCA with its
     // one-line vertex diagrams of G) 4.767e-3 (3.599e-2 while the
@@ -517,18 +525,35 @@ fn check_singleband_dimer_realtime(
         w < budget,
         "quench error {w:.3e} exceeds the single-band budget"
     );
+
+    // -- leg 3: hybridization scaling of the OCA quench error. OCA is
+    // fourth order in the hybridization, so halving the couplings must
+    // shrink the error by about 16 (NCA would only shrink by 4); the
+    // gate allows a factor 8.
+    if with_scaling {
+        let w_half = quench_error(0.5, "U quench, V/2");
+        println!(
+            "realtime OCA hybridization scaling [single-band]: V {w:.3e}, V/2 {w_half:.3e}, ratio {:.3e}",
+            w_half / w
+        );
+        assert!(
+            w_half < w / 8.0,
+            "OCA quench error must scale as V^4 (ratio ~1/16): V {w:.3e}, V/2 {w_half:.3e}"
+        );
+    }
 }
 
 /// Tier 2 gate: single-band real-time NCA (stationarity + U quench).
 #[test]
 fn singleband_dimer_realtime_nca_vs_ed() {
-    check_singleband_dimer_realtime(Solver::Ppsc, 1, 40, NTAU, true);
+    check_singleband_dimer_realtime(Solver::Ppsc, 1, 40, NTAU, true, false);
 }
 
-/// Tier 2 gate: single-band real-time OCA (stationarity + U quench).
+/// Tier 2 gate: single-band real-time OCA (stationarity + U quench,
+/// plus the V/2 hybridization-scaling leg of the quench error).
 #[test]
 fn singleband_dimer_realtime_oca_vs_ed() {
-    check_singleband_dimer_realtime(Solver::Ppsc, 2, 24, 64, true);
+    check_singleband_dimer_realtime(Solver::Ppsc, 2, 24, 64, true, true);
 }
 
 /// Solver-selection parity: the XCA backbone equilibrium order 1/2
@@ -551,7 +576,7 @@ fn singleband_dimer_xca_nca_oca_vs_ed() {
 /// same stationarity + U-quench gates as the native NCA gate.
 #[test]
 fn singleband_dimer_realtime_xca_nca_vs_ed() {
-    check_singleband_dimer_realtime(Solver::Xca, 1, 40, NTAU, true);
+    check_singleband_dimer_realtime(Solver::Xca, 1, 40, NTAU, true, false);
 }
 
 /// Solver-selection parity: XCA order 2 through the real-time XCA
@@ -559,5 +584,5 @@ fn singleband_dimer_realtime_xca_nca_vs_ed() {
 /// gate.
 #[test]
 fn singleband_dimer_realtime_xca_oca_vs_ed() {
-    check_singleband_dimer_realtime(Solver::Xca, 2, 24, 64, true);
+    check_singleband_dimer_realtime(Solver::Xca, 2, 24, 64, true, false);
 }

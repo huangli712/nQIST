@@ -1389,7 +1389,7 @@ fn check_two_band_nca(sel: Sel, tol: Tol) {
 #[test]
 #[ignore = "heavy (~13 min); run via scripts/heavy_gates.sh"]
 fn two_band_oca_matches_reference() {
-    check_two_band_oca(Sel::Ppsc, Tol::EXACT);
+    check_two_band_case(Sel::Ppsc, Tol::EXACT, &TWO_BAND_OCA);
 }
 
 /// Solver selection `Xca`, order 2, on the same reference: the XCA(2)
@@ -1401,24 +1401,127 @@ fn two_band_oca_matches_reference() {
 #[test]
 #[ignore = "XCA twin in reference-only mode (parity pending); heavy (~5 min)"]
 fn two_band_xca_oca_matches_reference() {
-    check_two_band_oca(Sel::Xca, Tol::REF_OCA);
+    check_two_band_case(Sel::Xca, Tol::REF_OCA, &TWO_BAND_OCA);
 }
 
-/// Two-band OCA gate (data/ppsc/two_band_oca) for a solver selection.
-fn check_two_band_oca(sel: Sel, tol: Tol) {
+/// Static Bz = 0.3 and crystal field delta = 0.5 (the spin and orbital
+/// degeneracies are lifted, so the four hybridization channels differ)
+/// on top of the U quench: a parameter point outside the symmetric
+/// base case.
+const TWO_BAND_BZ_DELTA: TwoBandCase = TwoBandCase {
+    reference: include_str!("../../data/ppsc/two_band_bz_delta/golden.txt"),
+    nt: 30,
+    ntau: 64,
+    order: 1,
+    bz: 0.3,
+    delta: 0.5,
+    t0: 1.0,
+    t1: 1.0,
+    u0: 3.0,
+    u1: 3.5,
+    half_filled: true,
+};
+
+const TWO_BAND_BZ_DELTA_OCA: TwoBandCase = TwoBandCase {
+    reference: include_str!("../../data/ppsc/two_band_bz_delta_oca/golden.txt"),
+    order: 2,
+    ..TWO_BAND_BZ_DELTA
+};
+
+/// Hopping quench t 1.0 -> 0.8 at fixed U = 3.0: the Bethe Weiss
+/// field Delta(t, t') = t(t) t(t') G_loc(t, t') is not translation
+/// invariant after the quench.
+const TWO_BAND_HOP_QUENCH: TwoBandCase = TwoBandCase {
+    reference: include_str!("../../data/ppsc/two_band_hop_quench/golden.txt"),
+    nt: 30,
+    ntau: 64,
+    order: 1,
+    bz: 0.0,
+    delta: 0.0,
+    t0: 1.0,
+    t1: 0.8,
+    u0: 3.0,
+    u1: 3.0,
+    half_filled: true,
+};
+
+const TWO_BAND_HOP_QUENCH_OCA: TwoBandCase = TwoBandCase {
+    reference: include_str!("../../data/ppsc/two_band_hop_quench_oca/golden.txt"),
+    order: 2,
+    ..TWO_BAND_HOP_QUENCH
+};
+
+#[test]
+fn two_band_bz_delta_matches_reference() {
+    check_two_band_case(Sel::Ppsc, Tol::EXACT, &TWO_BAND_BZ_DELTA);
+}
+
+#[test]
+#[ignore = "heavy (~13 min); run via scripts/heavy_gates.sh"]
+fn two_band_bz_delta_oca_matches_reference() {
+    check_two_band_case(Sel::Ppsc, Tol::EXACT, &TWO_BAND_BZ_DELTA_OCA);
+}
+
+#[test]
+fn two_band_hop_quench_matches_reference() {
+    check_two_band_case(Sel::Ppsc, Tol::EXACT, &TWO_BAND_HOP_QUENCH);
+}
+
+#[test]
+#[ignore = "heavy (~13 min); run via scripts/heavy_gates.sh"]
+fn two_band_hop_quench_oca_matches_reference() {
+    check_two_band_case(Sel::Ppsc, Tol::EXACT, &TWO_BAND_HOP_QUENCH_OCA);
+}
+
+/// One two-band Bethe case against its C++ reference: static field
+/// `bz` and crystal field `delta`, hopping `t0` (equilibrium) ->
+/// `t1` (after the quench), `u0` -> `u1`, J = 0.4, mu = 0, beta = 5.
+struct TwoBandCase {
+    reference: &'static str,
+    nt: usize,
+    ntau: usize,
+    order: usize,
+    bz: f64,
+    delta: f64,
+    t0: f64,
+    t1: f64,
+    u0: f64,
+    u1: f64,
+    /// `n1 + n2 == 2` holds exactly (particle-hole symmetric cases).
+    half_filled: bool,
+}
+
+/// The base case (data/ppsc/two_band_oca): U quench only.
+const TWO_BAND_OCA: TwoBandCase = TwoBandCase {
+    reference: include_str!("../../data/ppsc/two_band_oca/golden.txt"),
+    nt: 30,
+    ntau: 64,
+    order: 2,
+    bz: 0.0,
+    delta: 0.0,
+    t0: 1.0,
+    t1: 1.0,
+    u0: 3.0,
+    u1: 3.5,
+    half_filled: true,
+};
+
+/// Two-band gate (data/ppsc/two_band_oca and its static-Bz/delta and
+/// hopping-quench variants) for a solver selection.
+fn check_two_band_case(sel: Sel, tol: Tol, case: &TwoBandCase) {
     use nqist::dmft::{run_equilibrium_multi, run_realtime_multi, run_start_window_multi};
     use nqist::hamilton::LocalHamiltonian::TwoBand;
     use nqist::observable::update_exp_vals_two_band;
 
-    const REF: &str = include_str!("../../data/ppsc/two_band_oca/golden.txt");
+    let REF: &str = case.reference;
 
     // print-resolution budget of the default C++ stream output
     let close = |a: f64, b: f64| tol.close(a, b);
     let err_of = |l: &str| l.split_whitespace().last().unwrap().parse::<f64>().unwrap();
 
-    let (nt, ntau) = (30usize, 64usize);
-    let mut u = vec![3.5f64; nt + 2];
-    u[0] = 3.0;
+    let (nt, ntau) = (case.nt, case.ntau);
+    let mut u = vec![case.u1; nt + 2];
+    u[0] = case.u0;
     let hs = build(2, SectorClass::SpinResolved);
     let mut solver = sel.make(
         nt,
@@ -1426,18 +1529,20 @@ fn check_two_band_oca(sel: Sel, tol: Tol) {
         5.0,
         0.02,
         5,
-        2,
+        case.order,
         hs,
         TwoBand {
             mu: 0.0,
             u,
             j: vec![0.4; nt + 2],
-            delta: vec![0.0; nt + 2],
-            bz: vec![0.0; nt + 2],
+            delta: vec![case.delta; nt + 2],
+            bz: vec![case.bz; nt + 2],
         },
     );
 
-    let tvec = vec![1.0f64; nt + 2];
+    // hopping t(t): the equilibrium value in row 0, the quenched value after
+    let mut tvec = vec![case.t1; nt + 2];
+    tvec[0] = case.t0;
     let (log, mut gloc, mut delta, mut delta_cc) =
         run_equilibrium_multi(&mut solver, &tvec, &[0, 1, 2, 3], 0.5, 1e-8, 100);
     let ref_iters: Vec<&str> = REF.lines().filter(|l| l.starts_with("iter:")).collect();
@@ -1480,7 +1585,9 @@ fn check_two_band_oca(sel: Sel, tol: Tol) {
         eprintln!("eqobs {name}: {a:+.9e} against the reference {b:+.9e} (diff {:+.3e})", a - b);
         assert!(close(a, b), "eqobs {name}: {a} vs {b}");
     }
-    assert!((obs.n1 + obs.n2 - 2.0).abs() < 1e-9, "half filling");
+    if case.half_filled {
+        assert!((obs.n1 + obs.n2 - 2.0).abs() < 1e-9, "half filling");
+    }
 
     let start = run_start_window_multi(
         &mut solver,
@@ -1587,15 +1694,53 @@ fn three_band_ref_sections(ref_log: &str) -> (Vec<[f64; 7]>, Vec<[f64; 7]>, Vec<
     (eq, start, rt)
 }
 
-fn check_three_band_reference(sel: Sel, tol: Tol, ref_log: &str, nt: usize, ntau: usize, order: usize) {
+/// One three-band Bethe case against its C++ reference, same layout
+/// as [`TwoBandCase`] (six hybridization channels, J = 0.4).
+struct ThreeBandCase {
+    reference: &'static str,
+    nt: usize,
+    ntau: usize,
+    order: usize,
+    bz: f64,
+    delta: f64,
+    t0: f64,
+    t1: f64,
+    u0: f64,
+    u1: f64,
+}
+
+/// The base cases (data/ppsc/three_band_u35{,_oca}): U quench only.
+const THREE_BAND_NCA: ThreeBandCase = ThreeBandCase {
+    reference: include_str!("../../data/ppsc/three_band_u35/golden.txt"),
+    nt: 30,
+    ntau: 64,
+    order: 1,
+    bz: 0.0,
+    delta: 0.0,
+    t0: 1.0,
+    t1: 1.0,
+    u0: 3.0,
+    u1: 3.5,
+};
+
+const THREE_BAND_OCA: ThreeBandCase = ThreeBandCase {
+    reference: include_str!("../../data/ppsc/three_band_u35_oca/golden.txt"),
+    nt: 16,
+    ntau: 40,
+    order: 2,
+    ..THREE_BAND_NCA
+};
+
+fn check_three_band_reference(sel: Sel, tol: Tol, case: &ThreeBandCase) {
     use nqist::dmft::{run_equilibrium_multi, run_realtime_multi, run_start_window_multi};
     use nqist::hamilton::LocalHamiltonian::ThreeBand;
     use nqist::observable::update_exp_vals_three_band;
 
     const KT: usize = 5;
     let (kt, iter_rtime) = (KT, 4usize);
-    let mut u = vec![3.5f64; nt + 2];
-    u[0] = 3.0; // U0 = equilibrium value
+    let (nt, ntau, ref_log) = (case.nt, case.ntau, case.reference);
+    let mut u = vec![case.u1; nt + 2];
+    u[0] = case.u0; // equilibrium value
     let hs = build(3, SectorClass::SpinResolved);
     let mut solver = sel.make(
         nt,
@@ -1603,23 +1748,27 @@ fn check_three_band_reference(sel: Sel, tol: Tol, ref_log: &str, nt: usize, ntau
         5.0,
         0.02,
         kt,
-        order,
+        case.order,
         hs,
         ThreeBand {
             mu: 0.0,
             u,
             j: vec![0.4; nt + 2],
-            delta: vec![0.0; nt + 2],
-            bz: vec![0.0; nt + 2],
+            delta: vec![case.delta; nt + 2],
+            bz: vec![case.bz; nt + 2],
         },
     );
-    let tvec = vec![1.0f64; nt + 2];
+    // hopping t(t): the equilibrium value in row 0, the quenched value after
+    let mut tvec = vec![case.t1; nt + 2];
+    tvec[0] = case.t0;
     let bath_map: Vec<usize> = (0..6).collect();
     // print-resolution budget of the default C++ stream output
     let close = |a: f64, b: f64| tol.close(a, b);
     let row_ok = |tag: &str, o: &nqist::observable::ThreeBandObservables, r: &[f64; 7]| {
         for (name, a, b) in [
-            ("n", o.n1 + o.n2 + o.n3, r[1]),
+            // the C++ program prints n1 + 2 n2 (n3 is replaced by a
+            // second n2); it equals n1 + n2 + n3 for equivalent orbitals
+            ("n", o.n1 + 2.0 * o.n2, r[1]),
             ("d1", o.d1, r[2]),
             ("d2", o.d2, r[3]),
             ("d3", o.d3, r[4]),
@@ -1710,28 +1859,14 @@ fn check_three_band_reference(sel: Sel, tol: Tol, ref_log: &str, nt: usize, ntau
 
 #[test]
 fn three_band_matches_reference() {
-    check_three_band_reference(
-        Sel::Ppsc,
-        Tol::EXACT,
-        include_str!("../../data/ppsc/three_band_u35/golden.txt"),
-        30,
-        64,
-        1,
-    );
+    check_three_band_reference(Sel::Ppsc, Tol::EXACT, &THREE_BAND_NCA);
 }
 
 /// Solver selection `Xca`, order 1: same gates as
 /// `three_band_matches_reference`.
 #[test]
 fn three_band_xca_matches_reference() {
-    check_three_band_reference(
-        Sel::Xca,
-        Tol::EXACT,
-        include_str!("../../data/ppsc/three_band_u35/golden.txt"),
-        30,
-        64,
-        1,
-    );
+    check_three_band_reference(Sel::Xca, Tol::EXACT, &THREE_BAND_NCA);
 }
 
 /// HEAVY: the Matsubara OCA kernel costs ~30 s per DMFT iteration on
@@ -1745,14 +1880,7 @@ fn three_band_xca_matches_reference() {
 #[test]
 #[ignore = "heavy (~85 min); run via scripts/heavy_gates.sh"]
 fn three_band_oca_matches_reference() {
-    check_three_band_reference(
-        Sel::Ppsc,
-        Tol::EXACT,
-        include_str!("../../data/ppsc/three_band_u35_oca/golden.txt"),
-        16,
-        40,
-        2,
-    );
+    check_three_band_reference(Sel::Ppsc, Tol::EXACT, &THREE_BAND_OCA);
 }
 
 /// Solver selection `Xca`, order 2, on the same reference. On this
@@ -1762,14 +1890,74 @@ fn three_band_oca_matches_reference() {
 #[test]
 #[ignore = "XCA twin in reference-only mode (parity pending); heavy (~45 min)"]
 fn three_band_xca_oca_matches_reference() {
-    check_three_band_reference(
-        Sel::Xca,
-        Tol::REF_OCA,
-        include_str!("../../data/ppsc/three_band_u35_oca/golden.txt"),
-        16,
-        40,
-        2,
-    );
+    check_three_band_reference(Sel::Xca, Tol::REF_OCA, &THREE_BAND_OCA);
+}
+
+/// Static Bz = 0.3 and crystal field delta = 0.5 (the spin and orbital
+/// degeneracies are lifted, so the six hybridization channels differ)
+/// on top of the U quench: a parameter point outside the symmetric
+/// base case.
+const THREE_BAND_BZ_DELTA: ThreeBandCase = ThreeBandCase {
+    reference: include_str!("../../data/ppsc/three_band_bz_delta/golden.txt"),
+    nt: 16,
+    ntau: 40,
+    order: 1,
+    bz: 0.3,
+    delta: 0.5,
+    t0: 1.0,
+    t1: 1.0,
+    u0: 3.0,
+    u1: 3.5,
+};
+
+const THREE_BAND_BZ_DELTA_OCA: ThreeBandCase = ThreeBandCase {
+    reference: include_str!("../../data/ppsc/three_band_bz_delta_oca/golden.txt"),
+    order: 2,
+    ..THREE_BAND_BZ_DELTA
+};
+
+/// Hopping quench t 1.0 -> 0.8 at fixed U = 3.0: the Bethe Weiss
+/// field Delta(t, t') = t(t) t(t') G_loc(t, t') is not translation
+/// invariant after the quench.
+const THREE_BAND_HOP_QUENCH: ThreeBandCase = ThreeBandCase {
+    reference: include_str!("../../data/ppsc/three_band_hop_quench/golden.txt"),
+    nt: 16,
+    ntau: 40,
+    order: 1,
+    bz: 0.0,
+    delta: 0.0,
+    t0: 1.0,
+    t1: 0.8,
+    u0: 3.0,
+    u1: 3.0,
+};
+
+const THREE_BAND_HOP_QUENCH_OCA: ThreeBandCase = ThreeBandCase {
+    reference: include_str!("../../data/ppsc/three_band_hop_quench_oca/golden.txt"),
+    order: 2,
+    ..THREE_BAND_HOP_QUENCH
+};
+
+#[test]
+fn three_band_bz_delta_matches_reference() {
+    check_three_band_reference(Sel::Ppsc, Tol::EXACT, &THREE_BAND_BZ_DELTA);
+}
+
+#[test]
+#[ignore = "heavy (~85 min); run via scripts/heavy_gates.sh"]
+fn three_band_bz_delta_oca_matches_reference() {
+    check_three_band_reference(Sel::Ppsc, Tol::EXACT, &THREE_BAND_BZ_DELTA_OCA);
+}
+
+#[test]
+fn three_band_hop_quench_matches_reference() {
+    check_three_band_reference(Sel::Ppsc, Tol::EXACT, &THREE_BAND_HOP_QUENCH);
+}
+
+#[test]
+#[ignore = "heavy (~85 min); run via scripts/heavy_gates.sh"]
+fn three_band_hop_quench_oca_matches_reference() {
+    check_three_band_reference(Sel::Ppsc, Tol::EXACT, &THREE_BAND_HOP_QUENCH_OCA);
 }
 
 // ------------------------------------------------------------------
