@@ -14,7 +14,7 @@ use kadanoffbaym::complex::Complex;
 use nqist::dmft::{run_equilibrium_multi, run_realtime_multi, run_start_window_multi};
 use nqist::hamilton::LocalHamiltonian::SingleBand;
 use nqist::hilbert::{build, SectorClass};
-use nqist::solver::ImpuritySolver;
+use nqist::solver::{ImpuritySolver, Solver};
 
 const BETA: f64 = 5.0;
 const NT: usize = 8;
@@ -32,18 +32,29 @@ fn ham() -> nqist::hamilton::LocalHamiltonian {
     }
 }
 
-fn new_solver() -> ImpuritySolver {
+fn new_solver(sel: Solver) -> ImpuritySolver {
     let hs = build(1, SectorClass::SpinResolved);
-    let mut s = ImpuritySolver::new(NT, NTAU, BETA, H, KT, 1, hs, ham());
+    let mut s = ImpuritySolver::with_solver(NT, NTAU, BETA, H, KT, sel, 1, hs, ham());
     s.solve_atomic();
     s
 }
 
 #[test]
 fn bath_map_cross_bethe_is_honored() {
+    check_bath_map_cross_bethe(Solver::Ppsc);
+}
+
+/// Solver-selection parity: XCA order 1 on the same gates as `bath_map_cross_bethe_is_honored`.
+#[test]
+fn bath_map_cross_bethe_xca_honored() {
+    check_bath_map_cross_bethe(Solver::Xca);
+}
+
+/// `bath_map_cross_bethe_is_honored` for a solver selection.
+fn check_bath_map_cross_bethe(sel: Solver) {
     // identity map: Delta_c = t^2 Gloc_c with t = 1
     let tvec = vec![1.0; NT + 2];
-    let mut s = new_solver();
+    let mut s = new_solver(sel);
     let (_log, gloc, delta, _dcc) = run_equilibrium_multi(&mut s, &tvec, &[0, 1], 0.5, 1e-10, 100);
     for c in 0..2 {
         for m in 0..=NTAU {
@@ -56,7 +67,7 @@ fn bath_map_cross_bethe_is_honored() {
     // driver mixes a channel's Gloc and immediately writes its Delta,
     // so Delta_0 lags Gloc_1 by one mixing step; at convergence
     // (errmax = 1e-10) the residual is a few 1e-12.
-    let mut s = new_solver();
+    let mut s = new_solver(sel);
     let (_log, gloc_x, delta_x, _dcc) =
         run_equilibrium_multi(&mut s, &tvec, &[1, 0], 0.5, 1e-10, 100);
     for m in 0..=NTAU {
@@ -79,12 +90,23 @@ fn bath_map_cross_bethe_is_honored() {
 
 #[test]
 fn time_dependent_hopping_rows_follow_the_series() {
+    check_time_dependent_hopping_rows(Solver::Ppsc);
+}
+
+/// Solver-selection parity: XCA order 1 on the same gates as `time_dependent_hopping_rows_follow_the_series`.
+#[test]
+fn time_dependent_hopping_rows_follow_the_series_xca() {
+    check_time_dependent_hopping_rows(Solver::Xca);
+}
+
+/// `time_dependent_hopping_rows_follow_the_series` for a solver selection.
+fn check_time_dependent_hopping_rows(sel: Solver) {
     // equilibrium hopping 1.0, then a quench to 1.2 at t = 0
     let mut tvec = vec![1.2; NT + 2];
     tvec[0] = 1.0;
     let t_at = |n: i64| tvec[(n + 1) as usize];
 
-    let mut s = new_solver();
+    let mut s = new_solver(sel);
     let (_log, mut gloc, mut delta, mut delta_cc) =
         run_equilibrium_multi(&mut s, &tvec, &[1, 0], 0.4, 1e-10, 200);
     // the Matsubara bath used t_init^2 = 1; Delta_0 lags Gloc_1 by
@@ -162,8 +184,19 @@ fn time_dependent_hopping_rows_follow_the_series() {
 /// factor from the hopping series) for both maps.
 #[test]
 fn equilibrium_bath_rows_are_real() {
+    check_equilibrium_bath_rows_real(Solver::Ppsc);
+}
+
+/// Solver-selection parity: XCA order 1 on the same gates as `equilibrium_bath_rows_are_real`.
+#[test]
+fn equilibrium_bath_rows_are_real_xca() {
+    check_equilibrium_bath_rows_real(Solver::Xca);
+}
+
+/// `equilibrium_bath_rows_are_real` for a solver selection.
+fn check_equilibrium_bath_rows_real(sel: Solver) {
     let tvec = vec![1.1; NT + 2];
-    let mut s = new_solver();
+    let mut s = new_solver(sel);
     let (_log, _gloc, delta, _dcc) = run_equilibrium_multi(&mut s, &tvec, &[1, 0], 0.5, 1e-10, 50);
     for c in 0..2 {
         for m in 0..=NTAU {
@@ -178,7 +211,7 @@ fn equilibrium_bath_rows_are_real() {
 #[test]
 #[should_panic(expected = "bath_map")]
 fn bath_map_out_of_range_is_rejected() {
-    let mut s = new_solver();
+    let mut s = new_solver(Solver::Ppsc);
     let tvec = vec![1.0; NT + 2];
     let _ = run_equilibrium_multi(&mut s, &tvec, &[0, 2], 0.5, 1e-10, 1);
 }
@@ -186,7 +219,7 @@ fn bath_map_out_of_range_is_rejected() {
 #[test]
 #[should_panic(expected = "bath_map must have")]
 fn bath_map_wrong_length_is_rejected() {
-    let mut s = new_solver();
+    let mut s = new_solver(Solver::Ppsc);
     let tvec = vec![1.0; NT + 2];
     let _ = run_equilibrium_multi(&mut s, &tvec, &[0], 0.5, 1e-10, 1);
 }

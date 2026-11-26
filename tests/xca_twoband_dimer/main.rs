@@ -19,7 +19,7 @@ use nqist::dmft::set_bwd_from_fwd_mat;
 use nqist::hamilton::LocalHamiltonian::TwoBand;
 use nqist::hilbert::{HilbertSpace, SectorClass, build};
 use nqist::nca::{GfVertex, Hybridization};
-use nqist::solver::ImpuritySolver;
+use nqist::solver::{ImpuritySolver, Solver};
 
 const BETA: f64 = 5.0;
 const NTAU: usize = 96;
@@ -138,6 +138,46 @@ fn twoband_exact(
     -acc / z
 }
 
+/// The test-local exact reference `twoband_exact` agrees with
+/// `nqist::ed::EdReference` on the density fixture. The ED module is
+/// calibrated against external ED packages (`scripts/ed_crosscheck`:
+/// PyED and Pomerol, 1e-14), so this ties the hand-built reference used
+/// by the order-1..3 gates to that calibration.
+#[test]
+fn twoband_test_reference_matches_ed_module() {
+    use nqist::ed::{BathCoupling, EdReference};
+    let hs = build(2, SectorClass::SpinResolved);
+    let ham = TwoBand {
+        mu: 0.0,
+        u: vec![U_HUB; NT + 2],
+        j: vec![J_HUND; NT + 2],
+        delta: vec![CRYSTAL; NT + 2],
+        bz: vec![0.0; NT + 2],
+    };
+    let bath = [
+        BathCoupling {
+            imp_mode: 0,
+            eps: EPS_B1,
+            v: V1,
+        },
+        BathCoupling {
+            imp_mode: 1,
+            eps: EPS_B2,
+            v: V2,
+        },
+    ];
+    let ed = EdReference::build(&ham, &hs, &bath, &[], BETA);
+    let dtau = BETA / NTAU as f64;
+    for orb in 0..2 {
+        for i in 0..=NTAU {
+            let tau = dtau * i as f64;
+            let a = twoband_exact(&ham, &hs, orb, tau);
+            let b = ed.greens_tau(orb, tau);
+            assert!((a - b).abs() < 1e-12, "orb {orb}, tau {tau}: {a} vs {b}");
+        }
+    }
+}
+
 /// Hybridization-scaling diagnostic: the NCA dimer error should
 /// follow the leading missing diagrams (~ v^4); a structural defect
 /// in the dense-block vertex algebra would not follow the scaling.
@@ -184,7 +224,7 @@ fn kanamori_dimer_scaling() {
                 },
             ];
             let ed = EdReference::build(ham, &hs, &bath, &[], BETA);
-            let (g0, g1) = solve_twoband_ham(ham, 1, 200, V1 * scale, V2 * scale);
+            let (g0, g1) = solve_twoband_ham(ham, Solver::Ppsc, 1, 200, V1 * scale, V2 * scale);
             let mut err = [0.0f64; 2];
             for i in 1..NTAU {
                 let tau = dtau * i as f64;
@@ -221,6 +261,19 @@ fn kanamori_dimer_realtime_nca_vs_ed() {
     check_kanamori_dimer_realtime(1, 40, NTAU, RealtimeChecks::StationarityAndQuench);
 }
 
+/// Solver-selection parity: XCA order 1 on the same real-time gates as
+/// `kanamori_dimer_realtime_nca_vs_ed`.
+#[test]
+fn kanamori_dimer_realtime_xca_nca_vs_ed() {
+    check_kanamori_dimer_realtime_sel(
+        Solver::Xca,
+        1,
+        40,
+        NTAU,
+        RealtimeChecks::StationarityAndQuench,
+    );
+}
+
 /// Tier 2 gate: real-time OCA (order = 2) with the full dimer on the
 /// NCA grid - the same two legs as the NCA gate (no-quench
 /// stationarity for the density and the full-Kanamori variant, then
@@ -234,6 +287,21 @@ fn kanamori_dimer_realtime_nca_vs_ed() {
 #[ignore = "heavy: two-band OCA real-time dimer; run manually"]
 fn kanamori_dimer_realtime_oca_vs_ed() {
     check_kanamori_dimer_realtime(2, 40, NTAU, RealtimeChecks::StationarityAndQuench);
+}
+
+/// Solver-selection parity: XCA order 2 on the same real-time gates as
+/// `kanamori_dimer_realtime_oca_vs_ed`. HEAVY - run with
+/// `cargo test --release --test xca_twoband_dimer -- --ignored`.
+#[test]
+#[ignore = "heavy: two-band XCA(2) real-time dimer; run manually"]
+fn kanamori_dimer_realtime_xca_oca_vs_ed() {
+    check_kanamori_dimer_realtime_sel(
+        Solver::Xca,
+        2,
+        40,
+        NTAU,
+        RealtimeChecks::StationarityAndQuench,
+    );
 }
 
 /// Tier 2 gate: two-band real-time XCA(3) vs the exact 64-state
@@ -290,6 +358,20 @@ enum RealtimeChecks {
 }
 
 fn check_kanamori_dimer_realtime(order: usize, nt_rt: usize, ntau: usize, checks: RealtimeChecks) {
+    // `ImpuritySolver::new` semantics: the PPSC-like kernels at orders
+    // 1 and 2, the XCA series from order 3
+    let sel = if order >= 3 { Solver::Xca } else { Solver::Ppsc };
+    check_kanamori_dimer_realtime_sel(sel, order, nt_rt, ntau, checks);
+}
+
+/// The real-time dimer gates for a solver selection.
+fn check_kanamori_dimer_realtime_sel(
+    sel: Solver,
+    order: usize,
+    nt_rt: usize,
+    ntau: usize,
+    checks: RealtimeChecks,
+) {
     use std::time::Instant;
 
     use nqist::ed::{BathCoupling, EdEvolution, hamiltonian_at};
@@ -455,7 +537,7 @@ fn check_kanamori_dimer_realtime(order: usize, nt_rt: usize, ntau: usize, checks
         let started = Instant::now();
         eprintln!("[dimer m={order} {case}] starting equilibrium");
         let mut solver =
-            ImpuritySolver::new(nt_rt, ntau, BETA, H_RT, std::env::var("NQIST_KT").ok().and_then(|v| v.parse::<usize>().ok()).unwrap_or(5), order, hs.clone(), ham.clone());
+            ImpuritySolver::with_solver(nt_rt, ntau, BETA, H_RT, std::env::var("NQIST_KT").ok().and_then(|v| v.parse::<usize>().ok()).unwrap_or(5), sel, order, hs.clone(), ham.clone());
         solver.rt_xca_m3 = order == 3;
         solver.rt_xca_poles = 2;
         solver.solve_atomic();
@@ -1035,6 +1117,12 @@ fn check_kanamori_dimer_realtime(order: usize, nt_rt: usize, ntau: usize, checks
     {
         let solver = run(case, h, 1.0);
         eprintln!("[dimer m={order} {case}] comparing retarded and lesser Green's functions against ED");
+        // the hybridization list must be passed: the OCA vertex
+        // diagrams of the real-time G are built from its channels
+        // (an empty list silently evaluates the bare NCA closure)
+        let (q1, q1c) = mk_pair(&lvl1, V1);
+        let (q2, q2c) = mk_pair(&lvl2, V2);
+        let q_ints = mk_ints(&q1, &q1c, &q2, &q2c, c0a, c0c, c1a, c1c);
         let mut w = 0.0f64;
         for mode in [0usize, 1] {
             let points = if nt_rt == 6 {
@@ -1043,7 +1131,7 @@ fn check_kanamori_dimer_realtime(order: usize, nt_rt: usize, ntau: usize, checks
                 &[(5, 0), (20, 0), (20, 15), (40, 0), (40, 25), (40, 39)][..]
             };
             for &(n, j) in points {
-                let gf = solver.get_spgf(&verts, n, &[]);
+                let gf = solver.get_spgf(&verts, n, &q_ints);
                 let g_ret = gf[mode].ret.raw_block_at(n, j)[0];
                 let g_les = gf[mode].less.raw_block_at(j, n)[0];
                 // gtr is algebraically implied (G^> = G^R + G^< at
@@ -1069,17 +1157,31 @@ fn check_kanamori_dimer_realtime(order: usize, nt_rt: usize, ntau: usize, checks
         "realtime J-quench order {order}: worst |G - G_ed| density {:.3e} kanamori {:.3e}",
         worst[0], worst[1]
     );
+    // Absolute budgets. Measured: order 1 (NCA) 5.79e-2 / 5.92e-2,
+    // order 2 (OCA with its one-line vertex diagrams of G) 3.85e-3 /
+    // 5.57e-3 (5.86e-2 / 6.06e-2 before the statistics-sign fix and
+    // while the gates passed an empty hybridization list). Orders
+    // >= 3 keep the pre-fix budget until re-measured.
+    let budget = match order {
+        1 => 7.0e-2,
+        2 => 1.0e-2,
+        _ => 7.0e-2,
+    };
     assert!(
-        worst[0] < 7.0e-2 && worst[1] < 7.0e-2,
+        worst[0] < budget && worst[1] < budget,
         "quench errors: density {:#?} kanamori {:#?}",
         worst[0],
         worst[1]
     );
-    // family consistency: the Kanamori variant must track the
-    // density baseline (same NCA quench error, no variant-specific
-    // defect)
+    // family consistency: the Kanamori variant tracks the density
+    // baseline (same quench, no variant-specific defect). The J
+    // quench also drives the spin-flip / pair-hopping terms of the
+    // Kanamori variant, so the smaller OCA-level errors may differ by
+    // a factor below 2 (measured 1.44) where the NCA errors agree
+    // to 2 percent.
+    let track = if order == 2 { 2.0 } else { 1.1 };
     assert!(
-        worst[1] < 1.1 * worst[0],
+        worst[1] < track * worst[0],
         "kanamori quench error must track density: {worst:?}"
     );
 }
@@ -1118,7 +1220,7 @@ fn kanamori_dimer_nca_oca_vs_ed() {
     let dtau = BETA / NTAU as f64;
     let mut errors: Vec<[f64; 2]> = Vec::new();
     for order in [1usize, 2] {
-        let (g0, g1) = solve_twoband_ham(&ham, order, 200, V1, V2);
+        let (g0, g1) = solve_twoband_ham(&ham, Solver::Ppsc, order, 200, V1, V2);
         let mut err = [0.0f64; 2];
         for i in 1..NTAU {
             let tau = dtau * i as f64;
@@ -1131,15 +1233,145 @@ fn kanamori_dimer_nca_oca_vs_ed() {
         );
         errors.push(err);
     }
-    // Calibrated absolute budgets (first validated run):
+    // Absolute budgets. Measured: NCA 1.02e-2 / 1.10e-2 (error ~ V^2),
+    // OCA 4.78e-4 / 6.72e-4 (error ~ V^4, see
+    // `kanamori_dimer_order2_gf_spread_scaling`).
     assert!(
         errors[0][0] < 1.5e-2 && errors[0][1] < 1.5e-2,
         "NCA: {errors:?}"
     );
     assert!(
-        errors[1][0] < 3.0e-2 && errors[1][1] < 3.0e-2,
+        errors[1][0] < 1.0e-3 && errors[1][1] < 1.0e-3,
         "OCA: {errors:?}"
     );
+}
+
+/// Solver-selection parity on the same two-band Kanamori ED fixture:
+/// the PPSC-like route and the XCA backbone are the same
+/// approximation (NCA at order 1, the one-line vertex diagrams at
+/// order 2) and must coincide up to convolution quadrature and meet
+/// the same ED budgets. Order 2 measures 4.78e-4 / 6.72e-4 against
+/// ED for both routes, |Ppsc - Xca| = 1.6e-9 (the statistics-sign
+/// fix of the OCA one-line Green's-function diagram, see
+/// `oca::OcaGfDiagram::gd_sign`; before it the PPSC-like route sat
+/// at 1.9e-2).
+#[test]
+#[allow(clippy::needless_range_loop)]
+fn ppsc_vs_xca_twoband_selection_matches() {
+    use nqist::ed::{BathCoupling, EdReference};
+    use nqist::hamilton::LocalHamiltonian::TwoBandKanamori;
+    let hs = build(2, SectorClass::SpinResolved);
+    let ham = TwoBandKanamori {
+        mu: 0.0,
+        u: vec![U_HUB; NT + 2],
+        j: vec![J_HUND; NT + 2],
+        delta: vec![CRYSTAL; NT + 2],
+        bz: vec![0.0; NT + 2],
+    };
+    let bath = [
+        BathCoupling {
+            imp_mode: 0,
+            eps: EPS_B1,
+            v: V1,
+        },
+        BathCoupling {
+            imp_mode: 1,
+            eps: EPS_B2,
+            v: V2,
+        },
+    ];
+    let ed = EdReference::build(&ham, &hs, &bath, &[], BETA);
+    let dtau = BETA / NTAU as f64;
+    let ed_budget = [1.5e-2, 1.0e-3];
+    for (idx, &order) in [1usize, 2].iter().enumerate() {
+        let (p0, p1) = solve_twoband_ham(&ham, Solver::Ppsc, order, 200, V1, V2);
+        let (x0, x1) = solve_twoband_ham(&ham, Solver::Xca, order, 200, V1, V2);
+        let mut pair = 0.0f64;
+        let mut ep = [0.0f64; 2];
+        let mut ex = [0.0f64; 2];
+        for i in 1..NTAU {
+            let tau = dtau * i as f64;
+            let e0 = ed.greens_tau(0, tau);
+            let e1 = ed.greens_tau(1, tau);
+            pair = pair.max((p0[i] - x0[i]).abs()).max((p1[i] - x1[i]).abs());
+            ep[0] = ep[0].max((p0[i] - e0).abs());
+            ep[1] = ep[1].max((p1[i] - e1).abs());
+            ex[0] = ex[0].max((x0[i] - e0).abs());
+            ex[1] = ex[1].max((x1[i] - e1).abs());
+        }
+        println!(
+            "twoband order {order}: |Ppsc-Xca| {pair:.3e}, Ppsc-ED {ep:?}, Xca-ED {ex:?}"
+        );
+        // Same approximation on both routes: the pairwise spread is
+        // convolution quadrature only (measured 0.0 at order 1 and
+        // 1.6e-9 at order 2).
+        assert!(pair < 1.0e-7, "order {order}: Ppsc vs XCA {pair:.3e}");
+        assert!(
+            ep[0] < ed_budget[idx] && ep[1] < ed_budget[idx],
+            "order {order} Ppsc: {ep:?}"
+        );
+        assert!(
+            ex[0] < ed_budget[idx] && ex[1] < ed_budget[idx],
+            "order {order} Xca: {ex:?}"
+        );
+    }
+}
+
+/// Regression gate of the OCA Green's-function statistics sign on
+/// the two-band Kanamori dimer: the PPSC-like order-2 (OCA) and the
+/// XCA(2) Green's functions must coincide at every hybridization
+/// scale, and the OCA error against ED must shrink as V^4 and stay
+/// well below the NCA error (which shrinks as V^2). Measured:
+/// |Ppsc2 - Xca2| <= 1.6e-9, OCA-ED 6.72e-4 -> 4.28e-5 -> 2.67e-6,
+/// NCA-ED 1.10e-2 -> 2.57e-3 -> 6.29e-4 at V, V/2, V/4. Before the
+/// channel-direction statistics sign of the one-line vertex diagram
+/// (`oca::OcaGfDiagram::gd_sign`) the PPSC-like route followed the
+/// NCA-like V^2 error (1.97e-2 -> 4.72e-3 -> 1.17e-3).
+#[test]
+fn kanamori_dimer_order2_gf_spread_scaling() {
+    use nqist::ed::{BathCoupling, EdReference};
+    use nqist::hamilton::LocalHamiltonian::TwoBandKanamori;
+    let hs = build(2, SectorClass::SpinResolved);
+    let ham = TwoBandKanamori {
+        mu: 0.0,
+        u: vec![U_HUB; NT + 2],
+        j: vec![J_HUND; NT + 2],
+        delta: vec![CRYSTAL; NT + 2],
+        bz: vec![0.0; NT + 2],
+    };
+    let dtau = BETA / NTAU as f64;
+    let mut oca_err: Vec<f64> = Vec::new();
+    for scale in [1.0f64, 0.5, 0.25] {
+        let bath = [
+            BathCoupling { imp_mode: 0, eps: EPS_B1, v: V1 * scale },
+            BathCoupling { imp_mode: 1, eps: EPS_B2, v: V2 * scale },
+        ];
+        let ed = EdReference::build(&ham, &hs, &bath, &[], BETA);
+        let (p0, p1) = solve_twoband_ham(&ham, Solver::Ppsc, 2, 200, V1 * scale, V2 * scale);
+        let (x0, x1) = solve_twoband_ham(&ham, Solver::Xca, 2, 200, V1 * scale, V2 * scale);
+        let (n0, n1) = solve_twoband_ham(&ham, Solver::Ppsc, 1, 200, V1 * scale, V2 * scale);
+        let (mut pair, mut ep, mut ex, mut en) = (0.0f64, 0.0f64, 0.0f64, 0.0f64);
+        for i in 1..NTAU {
+            let tau = dtau * i as f64;
+            for o in 0..2 {
+                let e = ed.greens_tau(o, tau);
+                let (pv, xv, nv) = if o == 0 { (p0[i], x0[i], n0[i]) } else { (p1[i], x1[i], n1[i]) };
+                pair = pair.max((pv - xv).abs());
+                ep = ep.max((pv - e).abs());
+                ex = ex.max((xv - e).abs());
+                en = en.max((nv - e).abs());
+            }
+        }
+        println!(
+            "PAIRSCALE scale {scale}: |Ppsc2-Xca2| {pair:.3e}, Ppsc2-ED {ep:.3e}, Xca2-ED {ex:.3e}, NCA-ED {en:.3e}"
+        );
+        assert!(pair < 1.0e-7, "scale {scale}: |Ppsc2 - Xca2| {pair:.3e}");
+        assert!(ep < 0.1 * en, "scale {scale}: OCA {ep:.3e} vs NCA {en:.3e}");
+        oca_err.push(ep);
+    }
+    // error ~ V^4: a factor 16 per halving of the hybridization
+    assert!(oca_err[1] < 0.1 * oca_err[0], "{oca_err:?}");
+    assert!(oca_err[2] < 0.1 * oca_err[1], "{oca_err:?}");
 }
 
 /// Field gate: the same full-Kanamori dimer with Bz = 0.3. Every
@@ -1148,6 +1380,17 @@ fn kanamori_dimer_nca_oca_vs_ed() {
 /// and OCA against the 64-state ED reference.
 #[test]
 fn kanamori_dimer_bz_field_vs_ed() {
+    check_kanamori_dimer_bz_field_vs_ed(Solver::Ppsc);
+}
+
+/// Solver-selection parity: XCA orders 1 and 2 on the same field gate
+/// and budgets as `kanamori_dimer_bz_field_vs_ed`.
+#[test]
+fn kanamori_dimer_bz_field_xca_vs_ed() {
+    check_kanamori_dimer_bz_field_vs_ed(Solver::Xca);
+}
+
+fn check_kanamori_dimer_bz_field_vs_ed(sel: Solver) {
     use nqist::ed::{BathCoupling, EdReference};
     use nqist::hamilton::LocalHamiltonian::TwoBandKanamori;
     let hs = build(2, SectorClass::SpinResolved);
@@ -1174,7 +1417,7 @@ fn kanamori_dimer_bz_field_vs_ed() {
     let dtau = BETA / NTAU as f64;
     let mut errors: Vec<[f64; 2]> = Vec::new();
     for order in [1usize, 2] {
-        let (g0, g1) = solve_twoband_ham(&ham, order, 200, V1, V2);
+        let (g0, g1) = solve_twoband_ham(&ham, sel, order, 200, V1, V2);
         let mut err = [0.0f64; 2];
         for i in 1..NTAU {
             let tau = dtau * i as f64;
@@ -1182,17 +1425,19 @@ fn kanamori_dimer_bz_field_vs_ed() {
             err[1] = err[1].max((g1[i] - ed.greens_tau(1, tau)).abs());
         }
         println!(
-            "kanamori Bz=0.3 order {order}: max |G-Ged| orb1 {:+.6e} orb2 {:+.6e}",
+            "kanamori Bz=0.3 {sel:?} order {order}: max |G-Ged| orb1 {:+.6e} orb2 {:+.6e}",
             err[0], err[1]
         );
         errors.push(err);
     }
+    // Measured: NCA 1.28e-2 / 3.08e-3, OCA 2.02e-4 / 4.34e-4 (error
+    // ~ V^4)
     assert!(
         errors[0][0] < 2.0e-2 && errors[0][1] < 2.0e-2,
         "NCA: {errors:?}"
     );
     assert!(
-        errors[1][0] < 4.0e-2 && errors[1][1] < 4.0e-2,
+        errors[1][0] < 1.0e-3 && errors[1][1] < 1.0e-3,
         "OCA: {errors:?}"
     );
 }
@@ -1337,13 +1582,24 @@ fn ed_module_matches_fixture_exact() {
 #[allow(clippy::needless_range_loop)]
 fn solve_twoband_ham(
     ham: &nqist::hamilton::LocalHamiltonian,
+    solver_kind: Solver,
     order: usize,
     pp_iters: usize,
     v1: f64,
     v2: f64,
 ) -> (Vec<f64>, Vec<f64>) {
     let hs = build(2, SectorClass::SpinResolved);
-    let mut solver = ImpuritySolver::new(NT, NTAU, BETA, 0.02, 5, order, hs.clone(), ham.clone());
+    let mut solver = ImpuritySolver::with_solver(
+        NT,
+        NTAU,
+        BETA,
+        0.02,
+        5,
+        solver_kind,
+        order,
+        hs.clone(),
+        ham.clone(),
+    );
     solver.solve_atomic();
 
     let contour = Contour::new(NT as i64, NTAU as i64, 1, 1, 0.1, BETA);
@@ -1449,6 +1705,11 @@ fn solve_twoband_ham(
 
 /// Density-density dimer wrapper (the original benchmark).
 fn solve_twoband(order: usize, pp_iters: usize) -> (Vec<f64>, Vec<f64>) {
+    let kind = if order <= 2 {
+        Solver::Ppsc
+    } else {
+        Solver::Xca
+    };
     solve_twoband_ham(
         &TwoBand {
             mu: 0.0,
@@ -1457,6 +1718,7 @@ fn solve_twoband(order: usize, pp_iters: usize) -> (Vec<f64>, Vec<f64>) {
             delta: vec![CRYSTAL; NT + 2],
             bz: vec![0.0; NT + 2],
         },
+        kind,
         order,
         pp_iters,
         V1,
@@ -1495,6 +1757,45 @@ fn twoband_atomic_conventions_and_propagators() {
     }
 }
 
+/// Density-density variant of the order-2 regression gate
+/// (`twoband_exact` is the fixed full-V reference, so only this
+/// coupling is meaningful): the PPSC-like order 2 and XCA(2) Green's
+/// functions must coincide and beat the NCA error (measured NCA-ED
+/// 9.5e-3, order 2 6.8e-4 for both routes, |Ppsc2 - Xca2| < 1e-9).
+#[test]
+fn density_dimer_order2_gf_spread() {
+    let hs = build(2, SectorClass::SpinResolved);
+    let ham = TwoBand {
+        mu: 0.0,
+        u: vec![U_HUB; NT + 2],
+        j: vec![J_HUND; NT + 2],
+        delta: vec![CRYSTAL; NT + 2],
+        bz: vec![0.0; NT + 2],
+    };
+    let dtau = BETA / NTAU as f64;
+    let scale = 1.0f64;
+    {
+        let (p0, p1) = solve_twoband_ham(&ham, Solver::Ppsc, 2, 200, V1 * scale, V2 * scale);
+        let (x0, x1) = solve_twoband_ham(&ham, Solver::Xca, 2, 200, V1 * scale, V2 * scale);
+        let (n0, n1) = solve_twoband_ham(&ham, Solver::Ppsc, 1, 200, V1 * scale, V2 * scale);
+        let (mut pair, mut ep, mut ex, mut en) = (0.0f64, 0.0f64, 0.0f64, 0.0f64);
+        for i in 1..NTAU {
+            let tau = dtau * i as f64;
+            for o in 0..2 {
+                let e = if o == 0 { twoband_exact(&ham, &hs, 0, tau) } else { twoband_exact(&ham, &hs, 1, tau) };
+                let (pv, xv, nv) = if o == 0 { (p0[i], x0[i], n0[i]) } else { (p1[i], x1[i], n1[i]) };
+                pair = pair.max((pv - xv).abs());
+                ep = ep.max((pv - e).abs());
+                ex = ex.max((xv - e).abs());
+                en = en.max((nv - e).abs());
+            }
+        }
+        println!("DENSITY2 scale {scale}: |Ppsc2-Xca2| {pair:.3e}, Ppsc2-ED {ep:.3e}, Xca2-ED {ex:.3e}, NCA-ED {en:.3e}");
+        assert!(pair < 1.0e-7, "|Ppsc2 - Xca2| {pair:.3e}");
+        assert!(ep < 0.1 * en, "order 2 {ep:.3e} vs NCA {en:.3e}");
+    }
+}
+
 #[test]
 fn xca_twoband_dimer_converges_to_exact() {
     let hs = build(2, SectorClass::SpinResolved);
@@ -1522,18 +1823,19 @@ fn xca_twoband_dimer_converges_to_exact() {
         );
         errors.push(err);
     }
-    // Native OCA calibration (2026-11): the norb>=2 orders are now
-    // served by the native PPSC-faithful OCA path (C++-gated),
-    // superseding the old XCA-route values (order-2 once hit 8.7e-4
-    // riding on the XCA(2)-gf deviation). At these couplings the
-    // bold series is non-monotonic: order-2 OCA overshoots NCA and
-    // order-3 recovers slightly. Anchor the absolute error budget
-    // instead of route-dependent monotonic improvement.
+    // Orders 1 and 2 run the PPSC-like route (NCA, native OCA),
+    // order 3 the XCA series. Measured: 9.1e-3 / 9.5e-3 (NCA, error
+    // ~ V^2), 4.28e-4 / 6.85e-4 (OCA, ~ V^4), 3.70e-5 / 3.85e-5
+    // (order 3, ~ V^6): the series is monotonic in the order.
     assert!(errors[0][0] < 1.1e-2 && errors[0][1] < 1.1e-2, "{errors:?}");
-    assert!(errors[1][0] < 2.0e-2 && errors[1][1] < 2.0e-2, "{errors:?}");
-    assert!(errors[2][0] < 2.0e-2 && errors[2][1] < 2.0e-2, "{errors:?}");
+    assert!(errors[1][0] < 1.0e-3 && errors[1][1] < 1.0e-3, "{errors:?}");
+    assert!(errors[2][0] < 1.0e-4 && errors[2][1] < 1.0e-4, "{errors:?}");
     assert!(
-        errors[2][0] < 1.1 * errors[1][0] && errors[2][1] < 1.1 * errors[1][1],
+        errors[1][0] < 0.2 * errors[0][0] && errors[1][1] < 0.2 * errors[0][1],
+        "{errors:?}"
+    );
+    assert!(
+        errors[2][0] < 0.2 * errors[1][0] && errors[2][1] < 0.2 * errors[1][1],
         "{errors:?}"
     );
 }

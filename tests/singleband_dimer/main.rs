@@ -20,7 +20,7 @@ use nqist::hamilton::LocalHamiltonian::SingleBand;
 use nqist::hilbert::{build, HilbertSpace, SectorClass};
 use nqist::nca::{GfVertex, Hybridization};
 use nqist::observable;
-use nqist::solver::ImpuritySolver;
+use nqist::solver::{ImpuritySolver, Solver};
 
 const BETA: f64 = 5.0;
 const NTAU: usize = 96;
@@ -80,13 +80,24 @@ fn verts(hs: &HilbertSpace) -> [GfVertex; 2] {
 /// Matsubara axis; returns `(G_up[m], G_dn[m])`, `m = 0..=ntau`.
 fn solve_singleband(
     ham: &LocalHamiltonian,
+    solver_kind: Solver,
     order: usize,
     pp_iters: usize,
     vscale: f64,
     ntau: usize,
 ) -> (Vec<f64>, Vec<f64>) {
     let hs = build(1, SectorClass::SpinResolved);
-    let mut solver = ImpuritySolver::new(NT, ntau, BETA, 0.02, 5, order, hs.clone(), ham.clone());
+    let mut solver = ImpuritySolver::with_solver(
+        NT,
+        ntau,
+        BETA,
+        0.02,
+        5,
+        solver_kind,
+        order,
+        hs.clone(),
+        ham.clone(),
+    );
     solver.solve_atomic();
 
     let contour = Contour::new(NT as i64, ntau as i64, 1, 1, 0.1, BETA);
@@ -149,10 +160,15 @@ fn solve_singleband(
 
 /// Max |G_solver - G_ed| over both spins and the interior Matsubara
 /// points (the endpoints carry the equal-time convention).
-fn dimer_errors(ham: &LocalHamiltonian, order: usize, vscale: f64) -> [f64; 2] {
+fn dimer_errors(
+    ham: &LocalHamiltonian,
+    solver_kind: Solver,
+    order: usize,
+    vscale: f64,
+) -> [f64; 2] {
     let hs = build(1, SectorClass::SpinResolved);
     let ed = EdReference::build(ham, &hs, &bath(vscale), &[], BETA);
-    let (up, dn) = solve_singleband(ham, order, 200, vscale, NTAU);
+    let (up, dn) = solve_singleband(ham, solver_kind, order, 200, vscale, NTAU);
     let dtau = BETA / NTAU as f64;
     let mut err = [0.0f64; 2];
     for m in 1..NTAU {
@@ -173,7 +189,7 @@ fn singleband_atomic_limit_crosscheck() {
     let hs = build(1, SectorClass::SpinResolved);
     let ed = EdReference::build(&ham, &hs, &[], &[], BETA);
     for ntau in [NTAU, 64] {
-        let (up, dn) = solve_singleband(&ham, 1, 200, 0.0, ntau);
+        let (up, dn) = solve_singleband(&ham, Solver::Ppsc, 1, 200, 0.0, ntau);
         let mut w = 0.0f64;
         for m in 1..ntau {
             let tau = BETA * m as f64 / ntau as f64;
@@ -191,7 +207,7 @@ fn singleband_atomic_limit_crosscheck() {
 #[test]
 fn singleband_dimer_nca_vs_ed() {
     let ham = mk_ham(U_HUB, NT + 2);
-    let err = dimer_errors(&ham, 1, 1.0);
+    let err = dimer_errors(&ham, Solver::Ppsc, 1, 1.0);
     println!(
         "single-band order 1: max |G-Ged| up {:+.6e} dn {:+.6e}",
         err[0], err[1]
@@ -203,13 +219,13 @@ fn singleband_dimer_nca_vs_ed() {
 #[test]
 fn singleband_dimer_oca_vs_ed() {
     let ham = mk_ham(U_HUB, NT + 2);
-    let err = dimer_errors(&ham, 2, 1.0);
+    let err = dimer_errors(&ham, Solver::Ppsc, 2, 1.0);
     println!(
         "single-band order 2: max |G-Ged| up {:+.6e} dn {:+.6e}",
         err[0], err[1]
     );
-    // The bold series is non-monotonic at these couplings (OCA is
-    // far better than NCA here); the budget is absolute.
+    // Measured 4.09e-3 / 3.44e-3 (2.88e-4 / 2.42e-4 at V/2, i.e.
+    // the error scales as V^4), one order below the NCA error above.
     assert!(err.iter().all(|e| *e < 1.0e-2), "OCA: {err:?}");
 }
 
@@ -217,6 +233,7 @@ fn singleband_dimer_oca_vs_ed() {
 /// (i) no-quench stationarity (TTI) and (ii) a U quench
 /// 2.0 -> 2.4 against the exact unitary evolution.
 fn check_singleband_dimer_realtime(
+    solver_kind: Solver,
     order: usize,
     nt_rt: usize,
     ntau: usize,
@@ -302,8 +319,23 @@ fn check_singleband_dimer_realtime(
     let run = |case: &str, ham: &LocalHamiltonian, vscale: f64| -> ImpuritySolver {
         let started = Instant::now();
         eprintln!("[singleband m={order} {case}] starting equilibrium, nt={nt_rt}, ntau={ntau}");
-        let mut solver =
-            ImpuritySolver::new(nt_rt, ntau, BETA, h_rt, kt, order, hs.clone(), ham.clone());
+        let mut solver = ImpuritySolver::with_solver(
+            nt_rt,
+            ntau,
+            BETA,
+            h_rt,
+            kt,
+            solver_kind,
+            order,
+            hs.clone(),
+            ham.clone(),
+        );
+        // the real-time XCA route: the dimer bath is static (time
+        // translation invariant)
+        if solver_kind == Solver::Xca {
+            solver.rt_xca_m1 = true;
+            solver.rt_xca_m2 = order >= 2;
+        }
         solver.solve_atomic();
         let zero = || ContourGreen::new(&contour, Sign::Fermi, Complex::ZERO);
         let pairs: Vec<(ContourGreen, ContourGreen)> = (0..2)
@@ -421,6 +453,28 @@ fn check_singleband_dimer_realtime(
         "[singleband m={order}] ED reference ready in {:.2?}",
         ed_start.elapsed()
     );
+    // hybridization list of the quench leg: the OCA vertex diagrams
+    // of the real-time G are built from the channels (an empty list
+    // silently evaluates the bare NCA closure)
+    let q_pairs: Vec<(ContourGreen, ContourGreen)> =
+        (0..2).map(|spin| mk_pair(&lvl[spin], V[spin])).collect();
+    let mut q_ints = Vec::new();
+    for spin in 0..2 {
+        q_ints.push(Hybridization {
+            delta: &q_pairs[spin].0,
+            op_cre_fl: hs.flavor(0, spin, true),
+            op_ann_fl: hs.flavor(0, spin, false),
+            fermion: true,
+            backward: false,
+        });
+        q_ints.push(Hybridization {
+            delta: &q_pairs[spin].1,
+            op_cre_fl: hs.flavor(0, spin, false),
+            op_ann_fl: hs.flavor(0, spin, true),
+            fermion: true,
+            backward: true,
+        });
+    }
     let solver = run("U quench", &ham_q, 1.0);
     let points: Vec<(usize, usize)> = if nt_rt <= 12 {
         vec![(5, 0), (nt_rt, 0), (nt_rt, nt_rt / 2), (nt_rt, nt_rt - 1)]
@@ -437,7 +491,7 @@ fn check_singleband_dimer_realtime(
     let mut w = 0.0f64;
     for mode in [0usize, 1] {
         for (n, j) in points.clone() {
-            let gf = solver.get_spgf(&vts, n as i64, &[]);
+            let gf = solver.get_spgf(&vts, n as i64, &q_ints);
             let g_ret = gf[mode].ret.raw_block_at(n as i64, j as i64)[0];
             let g_les = gf[mode].less.raw_block_at(j as i64, n as i64)[0];
             for (tag, a, b) in [
@@ -455,8 +509,12 @@ fn check_singleband_dimer_realtime(
         }
     }
     println!("realtime U-quench order {order} [single-band]: worst |G - G_ed| {w:.3e}");
+    // Measured: order 1 (NCA) 6.997e-2, order 2 (OCA with its
+    // one-line vertex diagrams of G) 4.767e-3 (3.599e-2 while the
+    // gate passed an empty hybridization list).
+    let budget = if order == 1 { 8.0e-2 } else { 1.0e-2 };
     assert!(
-        w < 8.0e-2,
+        w < budget,
         "quench error {w:.3e} exceeds the single-band budget"
     );
 }
@@ -464,11 +522,42 @@ fn check_singleband_dimer_realtime(
 /// Tier 2 gate: single-band real-time NCA (stationarity + U quench).
 #[test]
 fn singleband_dimer_realtime_nca_vs_ed() {
-    check_singleband_dimer_realtime(1, 40, NTAU, true);
+    check_singleband_dimer_realtime(Solver::Ppsc, 1, 40, NTAU, true);
 }
 
 /// Tier 2 gate: single-band real-time OCA (stationarity + U quench).
 #[test]
 fn singleband_dimer_realtime_oca_vs_ed() {
-    check_singleband_dimer_realtime(2, 24, 64, true);
+    check_singleband_dimer_realtime(Solver::Ppsc, 2, 24, 64, true);
+}
+
+/// Solver-selection parity: the XCA backbone equilibrium order 1/2
+/// against the same single-band ED, same budgets.
+#[test]
+fn singleband_dimer_xca_nca_oca_vs_ed() {
+    let ham = mk_ham(U_HUB, NT + 2);
+    for (order, budget) in [(1usize, 4.5e-2), (2, 1.0e-2)] {
+        let err = dimer_errors(&ham, Solver::Xca, order, 1.0);
+        println!(
+            "single-band XCA order {order}: max |G-Ged| up {:+.6e} dn {:+.6e}",
+            err[0], err[1]
+        );
+        assert!(err.iter().all(|e| *e < budget), "XCA({order}): {err:?}");
+    }
+}
+
+/// Solver-selection parity: XCA order 1 through the real-time XCA
+/// route (`xca_rt::eval1`, tolerance-driven hybridization fit), the
+/// same stationarity + U-quench gates as the native NCA gate.
+#[test]
+fn singleband_dimer_realtime_xca_nca_vs_ed() {
+    check_singleband_dimer_realtime(Solver::Xca, 1, 40, NTAU, true);
+}
+
+/// Solver-selection parity: XCA order 2 through the real-time XCA
+/// route (`xca_rt::eval1` + `eval2`), the same gates as the native OCA
+/// gate.
+#[test]
+fn singleband_dimer_realtime_xca_oca_vs_ed() {
+    check_singleband_dimer_realtime(Solver::Xca, 2, 24, 64, true);
 }

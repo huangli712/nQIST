@@ -10,15 +10,25 @@
 #   scripts/heavy_gates.sh --list           # gate list and ETAs
 #   scripts/heavy_gates.sh <filter>         # only gates matching target::name
 #
-# Gates (one thread, reference machine):
-#   - xca_twoband_dimer::kanamori_dimer_realtime_oca_vs_ed   (~603 s)
-#   - threeband_dimer::threeband_kanamori_bz_oca_vs_ed       (~285 s)
-#   - threeband_dimer::threeband_dimer_realtime_oca_vs_ed    (~56 min)
-#   - threeband_dimer::threeband_kanamori_realtime_oca_vs_ed (~80 min)
-#   - ppsc_ref::two_band_oca_matches_reference               (~15 min)
-#   - ppsc_ref::oca_realtime_matches_reference               (~30-60 min)
-#   - ppsc_ref::three_band_oca_matches_reference             (~2.2 h)
-#   - ppsc_ref::prb96_photodoping_matches_reference          (~3 min)
+# Gates (one thread, reference machine): every heavy OCA gate is
+# followed by its XCA(2) twin (solver selection `Solver::Xca`, order 2;
+# the twin ETAs are estimates until the first full tier run):
+#   - xca_twoband_dimer::kanamori_dimer_realtime_oca_vs_ed        (~603 s)
+#   - xca_twoband_dimer::kanamori_dimer_realtime_xca_oca_vs_ed    (~603 s)
+#   - threeband_dimer::threeband_dimer_realtime_oca_vs_ed         (~56 min)
+#   - threeband_dimer::threeband_dimer_realtime_xca_oca_vs_ed     (~56 min)
+#   - threeband_dimer::threeband_kanamori_realtime_oca_vs_ed      (~80 min)
+#   - threeband_dimer::threeband_kanamori_realtime_xca_oca_vs_ed  (~80 min)
+#   - ppsc_ref::oca_realtime_matches_reference                    (~30-60 min)
+#   - ppsc_ref::xca_oca_realtime_matches_reference                (~30-60 min)
+#   - ppsc_ref::two_band_oca_matches_reference                    (~13 min)
+#   - ppsc_ref::three_band_oca_matches_reference                  (~85 min)
+#
+# The last two compare the native multi-band OCA solver with the C++
+# PPSC programs built with the statistics-sign patch
+# (data/ppsc/ppsc_oca_gf_statistics_sign.patch) at the native
+# tolerances. Their XCA twins stay out of the tier until XCA parity
+# is settled.
 #
 # Progress: the script exports NQIST_PROGRESS=1 and passes --nocapture;
 # the DMFT drivers print `[dmft eq|start|rt] i/N (pct%) ... elapsed/eta`
@@ -30,13 +40,15 @@ export NQIST_PROGRESS=1
 
 gates=(
     "xca_twoband_dimer|kanamori_dimer_realtime_oca_vs_ed|603 s"
-    "threeband_dimer|threeband_kanamori_bz_oca_vs_ed|285 s"
+    "xca_twoband_dimer|kanamori_dimer_realtime_xca_oca_vs_ed|603 s (twin)"
     "threeband_dimer|threeband_dimer_realtime_oca_vs_ed|56 min"
+    "threeband_dimer|threeband_dimer_realtime_xca_oca_vs_ed|56 min (twin)"
     "threeband_dimer|threeband_kanamori_realtime_oca_vs_ed|80 min"
-    "ppsc_ref|two_band_oca_matches_reference|15 min"
+    "threeband_dimer|threeband_kanamori_realtime_xca_oca_vs_ed|80 min (twin)"
     "ppsc_ref|oca_realtime_matches_reference|30-60 min"
-    "ppsc_ref|three_band_oca_matches_reference|2.2 h"
-    "ppsc_ref|prb96_photodoping_matches_reference|3 min"
+    "ppsc_ref|xca_oca_realtime_matches_reference|30-60 min (twin)"
+    "ppsc_ref|two_band_oca_matches_reference|13 min"
+    "ppsc_ref|three_band_oca_matches_reference|85 min"
 )
 
 log_dir="target/heavy_gates"

@@ -23,7 +23,7 @@ use nqist::hamilton::LocalHamiltonian::ThreeBand;
 use nqist::hamilton::LocalHamiltonian::ThreeBandKanamori;
 use nqist::hilbert::{HilbertSpace, SectorClass, build};
 use nqist::nca::{GfVertex, Hybridization};
-use nqist::solver::ImpuritySolver;
+use nqist::solver::{ImpuritySolver, Solver};
 
 const BETA: f64 = 5.0;
 const NTAU: usize = 64;
@@ -99,13 +99,24 @@ fn up_verts(hs: &HilbertSpace) -> [GfVertex; 3] {
 /// three orbitals (`G[o][m]`, `m = 0..=ntau`).
 fn solve_threeband(
     ham: &LocalHamiltonian,
+    solver_kind: Solver,
     order: usize,
     pp_iters: usize,
     vscale: f64,
     ntau: usize,
 ) -> Vec<Vec<f64>> {
     let hs = build(3, SectorClass::SpinResolved);
-    let mut solver = ImpuritySolver::new(NT, ntau, BETA, 0.02, 5, order, hs.clone(), ham.clone());
+    let mut solver = ImpuritySolver::with_solver(
+        NT,
+        ntau,
+        BETA,
+        0.02,
+        5,
+        solver_kind,
+        order,
+        hs.clone(),
+        ham.clone(),
+    );
     solver.solve_atomic();
 
     let contour = Contour::new(NT as i64, ntau as i64, 1, 1, 0.1, BETA);
@@ -193,7 +204,7 @@ fn threeband_diag_profile() {
     let dtau = BETA / NTAU as f64;
     for (vscale, ntau) in [(1.0f64, NTAU), (0.5, NTAU), (0.25, NTAU), (0.1, NTAU), (1.0, 128)] {
         let ed = EdReference::build(&ham, &hs, &bath_scaled(vscale), &[], BETA);
-        let g = solve_threeband(&ham, 1, 200, vscale, ntau);
+        let g = solve_threeband(&ham, Solver::Ppsc, 1, 200, vscale, ntau);
         let step = ntau / 16;
         for o in 0..3 {
             let mut worst = (0.0f64, 0usize);
@@ -339,11 +350,16 @@ fn threeband_atomic_limit_crosscheck() {
 // equilibrium dimer: NCA / OCA against ED
 // ------------------------------------------------------------------
 
-fn dimer_errors(ham: &LocalHamiltonian, order: usize, vscale: f64) -> [f64; 3] {
+fn dimer_errors(
+    ham: &LocalHamiltonian,
+    solver_kind: Solver,
+    order: usize,
+    vscale: f64,
+) -> [f64; 3] {
     use nqist::ed::EdReference;
     let hs = build(3, SectorClass::SpinResolved);
     let ed = EdReference::build(ham, &hs, &bath_scaled(vscale), &[], BETA);
-    let g = solve_threeband(ham, order, 200, vscale, NTAU);
+    let g = solve_threeband(ham, solver_kind, order, 200, vscale, NTAU);
     let dtau = BETA / NTAU as f64;
     let mut err = [0.0f64; 3];
     for o in 0..3 {
@@ -360,8 +376,8 @@ fn dimer_errors(ham: &LocalHamiltonian, order: usize, vscale: f64) -> [f64; 3] {
 #[test]
 fn threeband_dimer_nca_scaling() {
     let ham = mk_ham(U_HUB, J_HUND, CRYSTAL, NT + 2);
-    let full = dimer_errors(&ham, 1, 1.0);
-    let half = dimer_errors(&ham, 1, 0.5);
+    let full = dimer_errors(&ham, Solver::Ppsc, 1, 1.0);
+    let half = dimer_errors(&ham, Solver::Ppsc, 1, 0.5);
     println!(
         "scaling [three-band]: NCA err {full:?} at V, {half:?} at V/2, ratios {:.4} {:.4} {:.4}",
         half[0] / full[0],
@@ -376,89 +392,101 @@ fn threeband_dimer_nca_scaling() {
     }
 }
 
-/// Equilibrium gate: NCA against the ED module's 512-state exact
-/// reference. The budget is absolute and calibrated on the validated
-/// run (the bold series is non-monotonic at these couplings,
-/// mirroring the two-band dimer).
-#[test]
-fn threeband_dimer_nca_vs_ed() {
-    let ham = mk_ham(U_HUB, J_HUND, CRYSTAL, NT + 2);
-    let err = dimer_errors(&ham, 1, 1.0);
-    println!(
-        "threeband order 1: max |G-Ged| orb1 {:+.6e} orb2 {:+.6e} orb3 {:+.6e}",
-        err[0], err[1], err[2]
-    );
-    assert!(
-        err.iter().all(|e| *e < 2.0e-2),
-        "NCA: {err:?}"
-    );
-}
-
-/// Equilibrium gate: OCA against the same exact reference. Measured
-/// ~144 s in release (the Matsubara OCA kernel costs ~30 s per
-/// pseudo-particle iteration at ntau = 64), so it is a default gate;
-/// the real-time OCA leg below remains heavy. The OCA error exceeds
-/// the NCA error at these couplings (non-monotonic bold series, as in
-/// the two-band dimer), so the budget is absolute.
-#[test]
-fn threeband_dimer_oca_vs_ed() {
-    let ham = mk_ham(U_HUB, J_HUND, CRYSTAL, NT + 2);
-    let err = dimer_errors(&ham, 2, 1.0);
-    println!(
-        "threeband order 2: max |G-Ged| orb1 {:+.6e} orb2 {:+.6e} orb3 {:+.6e}",
-        err[0], err[1], err[2]
-    );
-    assert!(
-        err.iter().all(|e| *e < 4.0e-2),
-        "OCA: {err:?}"
-    );
+fn density_ham() -> LocalHamiltonian {
+    mk_ham(U_HUB, J_HUND, CRYSTAL, NT + 2)
 }
 
 /// Full rotationally-invariant three-band Kanamori (spin flip + pair
 /// hopping, verified at the multiplet level in `hamilton`) with a
-/// finite field: NCA against the ED module. Covers the off-diagonal
-/// interaction strings and the Bz != 0 path end-to-end.
-#[test]
-fn threeband_kanamori_bz_nca_vs_ed() {
-    let ham = ThreeBandKanamori {
+/// finite field: covers the off-diagonal interaction strings and the
+/// Bz != 0 path end-to-end.
+fn kanamori_bz_ham() -> LocalHamiltonian {
+    ThreeBandKanamori {
         mu: 0.0,
         u: vec![U_HUB; NT + 2],
         j: vec![J_HUND; NT + 2],
         delta: vec![CRYSTAL; NT + 2],
         bz: vec![0.2; NT + 2],
-    };
-    let err = dimer_errors(&ham, 1, 1.0);
+    }
+}
+
+/// Equilibrium dimer gate for a solver selection: every orbital's
+/// error against the ED module's 512-state exact reference must stay
+/// below `budget`. The budgets are absolute, with a factor ~2-3 over
+/// the measured errors: the NCA error scales as V^2, the OCA error as
+/// V^4. The same function serves the PPSC-like kernels and the XCA
+/// series, so both pass the identical assertion at the matching order
+/// (XCA(1) = NCA, XCA(1)+XCA(2) = OCA).
+fn check_dimer_vs_ed(sel: Solver, order: usize, ham: LocalHamiltonian, budget: f64) {
+    let err = dimer_errors(&ham, sel, order, 1.0);
     println!(
-        "threeband full-Kanamori Bz=0.2 order 1: max |G-Ged| orb1 {:+.6e} orb2 {:+.6e} orb3 {:+.6e}",
+        "threeband {sel:?} order {order}: max |G-Ged| orb1 {:+.6e} orb2 {:+.6e} orb3 {:+.6e}",
         err[0], err[1], err[2]
     );
     assert!(
-        err.iter().all(|e| *e < 2.5e-2),
-        "NCA full Kanamori: {err:?}"
+        err.iter().all(|e| *e < budget),
+        "{sel:?} order {order}: {err:?}"
     );
 }
 
-/// Same gate at OCA order. HEAVY (three-band Matsubara OCA) -
-/// ignored for the default suite.
+/// Density-density three-band dimer: NCA.
 #[test]
-#[ignore = "heavy: three-band full-Kanamori OCA equilibrium dimer (~3 min); run manually"]
+fn threeband_dimer_nca_vs_ed() {
+    check_dimer_vs_ed(Solver::Ppsc, 1, density_ham(), 2.0e-2);
+}
+
+/// Density-density three-band dimer: OCA. Measured ~145 s in release
+/// (the Matsubara OCA kernel costs ~30 s per pseudo-particle
+/// iteration at ntau = 64), so it is a default gate. Measured error
+/// 4.32e-4 / 6.33e-4 / 8.59e-4 (2.28e-5 / 3.55e-5 / 5.47e-5 at V/2,
+/// i.e. ~ V^4; 1.55e-2 / 1.88e-2 / 2.06e-2 before the statistics-sign
+/// fix of the OCA one-line Green's-function diagram).
+#[test]
+fn threeband_dimer_oca_vs_ed() {
+    check_dimer_vs_ed(Solver::Ppsc, 2, density_ham(), 2.0e-3);
+}
+
+/// Density-density three-band dimer: XCA order 1 (the NCA
+/// equivalent), same budget as `threeband_dimer_nca_vs_ed`.
+#[test]
+fn threeband_dimer_xca_nca_vs_ed() {
+    check_dimer_vs_ed(Solver::Xca, 1, density_ham(), 2.0e-2);
+}
+
+/// Density-density three-band dimer: XCA order 2 (the OCA
+/// equivalent), same budget as `threeband_dimer_oca_vs_ed`.
+#[test]
+fn threeband_dimer_xca_oca_vs_ed() {
+    check_dimer_vs_ed(Solver::Xca, 2, density_ham(), 2.0e-3);
+}
+
+/// Full Kanamori three-band dimer with Bz = 0.2: NCA.
+#[test]
+fn threeband_kanamori_bz_nca_vs_ed() {
+    check_dimer_vs_ed(Solver::Ppsc, 1, kanamori_bz_ham(), 2.5e-2);
+}
+
+/// Full Kanamori three-band dimer with Bz = 0.2: OCA. Measured ~230 s
+/// in release, so it is a default gate. Measured error 2.48e-4 /
+/// 3.20e-4 / 6.53e-4 (1.46e-5 / 2.38e-5 / 4.16e-5 at V/2, ~ V^4;
+/// 2.37e-2 / 5.30e-3 / 3.24e-2 before the statistics-sign fix).
+#[test]
 fn threeband_kanamori_bz_oca_vs_ed() {
-    let ham = ThreeBandKanamori {
-        mu: 0.0,
-        u: vec![U_HUB; NT + 2],
-        j: vec![J_HUND; NT + 2],
-        delta: vec![CRYSTAL; NT + 2],
-        bz: vec![0.2; NT + 2],
-    };
-    let err = dimer_errors(&ham, 2, 1.0);
-    println!(
-        "threeband full-Kanamori Bz=0.2 order 2: max |G-Ged| orb1 {:+.6e} orb2 {:+.6e} orb3 {:+.6e}",
-        err[0], err[1], err[2]
-    );
-    assert!(
-        err.iter().all(|e| *e < 5.0e-2),
-        "OCA full Kanamori: {err:?}"
-    );
+    check_dimer_vs_ed(Solver::Ppsc, 2, kanamori_bz_ham(), 1.5e-3);
+}
+
+/// Full Kanamori three-band dimer with Bz = 0.2: XCA order 1, same
+/// budget as `threeband_kanamori_bz_nca_vs_ed`.
+#[test]
+fn threeband_kanamori_bz_xca_nca_vs_ed() {
+    check_dimer_vs_ed(Solver::Xca, 1, kanamori_bz_ham(), 2.5e-2);
+}
+
+/// Full Kanamori three-band dimer with Bz = 0.2: XCA order 2, same
+/// budget as `threeband_kanamori_bz_oca_vs_ed`.
+#[test]
+fn threeband_kanamori_bz_xca_oca_vs_ed() {
+    check_dimer_vs_ed(Solver::Xca, 2, kanamori_bz_ham(), 1.5e-3);
 }
 
 // ------------------------------------------------------------------
@@ -506,7 +534,31 @@ fn quench_series(value_eq: f64, value_q: f64, len: usize) -> Vec<f64> {
     v
 }
 
+/// The PPSC-like kernels (orders 1 and 2 of `check_threeband_dimer_realtime`).
 fn check_threeband_dimer_realtime(
+    order: usize,
+    nt_rt: usize,
+    ntau: usize,
+    with_stationarity: bool,
+    kanamori: bool,
+    quench: RtQuench,
+) {
+    check_threeband_dimer_realtime_sel(
+        Solver::Ppsc,
+        order,
+        nt_rt,
+        ntau,
+        with_stationarity,
+        kanamori,
+        quench,
+    );
+}
+
+/// The three-band real-time dimer gates for a solver selection: both
+/// legs and budgets are those described above.
+#[allow(clippy::too_many_arguments)]
+fn check_threeband_dimer_realtime_sel(
+    sel: Solver,
     order: usize,
     nt_rt: usize,
     ntau: usize,
@@ -621,12 +673,13 @@ fn check_threeband_dimer_realtime(
     let run = |case: &str, ham: &LocalHamiltonian, vscale: f64| -> ImpuritySolver {
         let started = Instant::now();
         eprintln!("[threeband m={order} {case}] starting equilibrium, nt={nt_rt}, ntau={ntau}");
-        let mut solver = ImpuritySolver::new(
+        let mut solver = ImpuritySolver::with_solver(
             nt_rt,
             ntau,
             BETA,
             h_rt,
             kt,
+            sel,
             order,
             hs.clone(),
             ham.clone(),
@@ -763,6 +816,28 @@ fn check_threeband_dimer_realtime(
         RtQuench::Bz => "Bz",
         RtQuench::Delta => "delta",
     };
+    // hybridization list of the quench leg: the OCA vertex diagrams
+    // of the real-time G are built from the channels (an empty list
+    // silently evaluates the bare NCA closure)
+    let q_pairs: Vec<(ContourGreen, ContourGreen)> =
+        (0..3).map(|o| mk_pair(&lvl[o], V[o])).collect();
+    let mut q_ints = Vec::new();
+    for o in 0..3 {
+        q_ints.push(Hybridization {
+            delta: &q_pairs[o].0,
+            op_cre_fl: hs.flavor(o, 0, true),
+            op_ann_fl: hs.flavor(o, 0, false),
+            fermion: true,
+            backward: false,
+        });
+        q_ints.push(Hybridization {
+            delta: &q_pairs[o].1,
+            op_cre_fl: hs.flavor(o, 0, false),
+            op_ann_fl: hs.flavor(o, 0, true),
+            fermion: true,
+            backward: true,
+        });
+    }
     let solver = run(&format!("{quench_tag} quench"), &ham_q, 1.0);
     let points: Vec<(usize, usize)> = if nt_rt <= 12 {
         vec![(5, 0), (nt_rt, 0), (nt_rt, nt_rt / 2), (nt_rt, nt_rt - 1)]
@@ -780,7 +855,7 @@ fn check_threeband_dimer_realtime(
     for mode in [0usize, 1, 2] {
         let points_mode = points.clone();
         for (n, j) in points_mode {
-            let gf = solver.get_spgf(&verts, n as i64, &[]);
+            let gf = solver.get_spgf(&verts, n as i64, &q_ints);
             let g_ret = gf[mode].ret.raw_block_at(n as i64, j as i64)[0];
             let g_les = gf[mode].less.raw_block_at(j as i64, n as i64)[0];
             for (tag, a, b) in [
@@ -801,12 +876,19 @@ fn check_threeband_dimer_realtime(
         "realtime {quench_tag}-quench order {order} [three-band{}]: worst |G - G_ed| {w:.3e}",
         if kanamori { " full Kanamori" } else { "" }
     );
-    // Absolute budget calibrated on the validated runs (density NCA
-    // worst 6.55e-2 at the longest separation t = 0.6; the error grows
-    // with the separation like in the two-band dimer). The full
-    // Kanamori / field-quench legs add the off-diagonal strings and a
-    // finite field and are calibrated separately.
-    let budget = if kanamori { 1.0e-1 } else { 8.0e-2 };
+    // Absolute budgets. The error grows with the separation (worst
+    // at t = 0.6, like on the two-band dimer); the full-Kanamori /
+    // field-quench legs add the off-diagonal strings and a finite
+    // field. Order 1 (NCA) measures 6.552e-2 on the density dimer.
+    // Order 2 (OCA with its one-line vertex diagrams of G and the
+    // statistics-sign fix) measures 1.575e-3 on the density dimer and
+    // 1.190e-3 on the full-Kanamori dimer (6.627e-2 before the fix,
+    // i.e. no better than NCA).
+    let budget = if order == 1 {
+        if kanamori { 1.0e-1 } else { 8.0e-2 }
+    } else {
+        5.0e-3
+    };
     assert!(
         w < budget,
         "quench error {w:.3e} exceeds the three-band budget {budget:.1e}"
@@ -833,11 +915,18 @@ fn threeband_dimer_realtime_nca_vs_ed() {
     check_threeband_dimer_realtime(1, 24, 128, true, false, RtQuench::J);
 }
 
+/// Solver-selection parity: XCA order 1 on the same gates as
+/// `threeband_dimer_realtime_nca_vs_ed`.
+#[test]
+fn threeband_dimer_realtime_xca_nca_vs_ed() {
+    check_threeband_dimer_realtime_sel(Solver::Xca, 1, 24, 128, true, false, RtQuench::J);
+}
+
 /// Tier 2 gate: three-band real-time OCA with the full dimer
 /// (stationarity + J quench vs EdEvolution). Runs on the ntau = 64
 /// grid with the OCA steady-state gate of 5e-6 (see the gate note in
-/// `check_threeband_dimer_realtime`); the atomic leg (1e-8) and the
-/// quench budget are those of the NCA gate. HEAVY (measured 55m46s:
+/// `check_threeband_dimer_realtime`); the atomic leg is that of the
+/// NCA gate, the quench budget 5e-3 (measured 1.575e-3). HEAVY (measured 55m46s:
 /// ~80 s per real-time step in the OCA matrix kernels at ntau = 64)
 /// - ignored for the default suite; run with
 /// `cargo test --release --test threeband_dimer -- --ignored`.
@@ -847,11 +936,26 @@ fn threeband_dimer_realtime_oca_vs_ed() {
     check_threeband_dimer_realtime(2, 24, 64, true, false, RtQuench::J);
 }
 
+/// Solver-selection parity: XCA order 2 on the same gates as
+/// `threeband_dimer_realtime_oca_vs_ed`. HEAVY.
+#[test]
+#[ignore = "heavy: three-band XCA(2) real-time dimer (~1 h); run manually"]
+fn threeband_dimer_realtime_xca_oca_vs_ed() {
+    check_threeband_dimer_realtime_sel(Solver::Xca, 2, 24, 64, true, false, RtQuench::J);
+}
+
 /// Full rotationally-invariant three-band Kanamori (Bz = 0.2) in real
 /// time: J quench 0.4 -> 0.55, stationarity + quench vs EdEvolution.
 #[test]
 fn threeband_kanamori_realtime_nca_vs_ed() {
     check_threeband_dimer_realtime(1, 24, 128, true, true, RtQuench::J);
+}
+
+/// Solver-selection parity: XCA order 1 on the same gates as
+/// `threeband_kanamori_realtime_nca_vs_ed`.
+#[test]
+fn threeband_kanamori_realtime_xca_nca_vs_ed() {
+    check_threeband_dimer_realtime_sel(Solver::Xca, 1, 24, 128, true, true, RtQuench::J);
 }
 
 /// Time-dependent magnetic field: Bz 0.2 -> 0.5 against the exact
@@ -861,11 +965,25 @@ fn threeband_kanamori_realtime_bz_quench_nca_vs_ed() {
     check_threeband_dimer_realtime(1, 24, 128, true, true, RtQuench::Bz);
 }
 
+/// Solver-selection parity: XCA order 1 on the same gates as
+/// `threeband_kanamori_realtime_bz_quench_nca_vs_ed`.
+#[test]
+fn threeband_kanamori_realtime_bz_quench_xca_nca_vs_ed() {
+    check_threeband_dimer_realtime_sel(Solver::Xca, 1, 24, 128, true, true, RtQuench::Bz);
+}
+
 /// Time-dependent crystal field: delta 0.8 -> 1.0 against the exact
 /// unitary evolution (covers the delta term's real-time slice).
 #[test]
 fn threeband_kanamori_realtime_delta_quench_nca_vs_ed() {
     check_threeband_dimer_realtime(1, 24, 128, true, true, RtQuench::Delta);
+}
+
+/// Solver-selection parity: XCA order 1 on the same gates as
+/// `threeband_kanamori_realtime_delta_quench_nca_vs_ed`.
+#[test]
+fn threeband_kanamori_realtime_delta_quench_xca_nca_vs_ed() {
+    check_threeband_dimer_realtime_sel(Solver::Xca, 1, 24, 128, true, true, RtQuench::Delta);
 }
 
 /// Full-Kanamori real-time OCA (J quench). HEAVY - ignored for the
@@ -874,4 +992,12 @@ fn threeband_kanamori_realtime_delta_quench_nca_vs_ed() {
 #[ignore = "heavy: three-band full-Kanamori OCA real-time dimer (~80 min); run manually"]
 fn threeband_kanamori_realtime_oca_vs_ed() {
     check_threeband_dimer_realtime(2, 24, 64, true, true, RtQuench::J);
+}
+
+/// Solver-selection parity: XCA order 2 on the same gates as
+/// `threeband_kanamori_realtime_oca_vs_ed`. HEAVY.
+#[test]
+#[ignore = "heavy: three-band full-Kanamori XCA(2) real-time dimer (~80 min); run manually"]
+fn threeband_kanamori_realtime_xca_oca_vs_ed() {
+    check_threeband_dimer_realtime_sel(Solver::Xca, 2, 24, 64, true, true, RtQuench::J);
 }

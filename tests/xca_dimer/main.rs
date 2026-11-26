@@ -18,7 +18,7 @@ use kadanoffbaym::types::{Contour, ContourGreen, Sign};
 use nqist::dmft::{get_gf_verts, get_pp_ints, set_bwd_from_fwd_mat};
 use nqist::hamilton::LocalHamiltonian::SingleBand;
 use nqist::hilbert::{SectorClass, build};
-use nqist::solver::ImpuritySolver;
+use nqist::solver::{ImpuritySolver, Solver};
 
 const BETA: f64 = 8.0;
 const NTAU: usize = 128;
@@ -77,7 +77,7 @@ fn dimer_exact(tau: f64) -> f64 {
 /// given expansion order and return the Matsubara bath Green's
 /// function samples.
 #[allow(clippy::needless_range_loop)]
-fn solve_dimer(order: usize, pp_iters: usize) -> Vec<f64> {
+fn solve_dimer_sel(kind: Solver, order: usize, pp_iters: usize) -> Vec<f64> {
     let hs = build(1, SectorClass::SpinResolved);
     let ham = SingleBand {
         mu: 0.0,
@@ -85,7 +85,8 @@ fn solve_dimer(order: usize, pp_iters: usize) -> Vec<f64> {
         eps_up: vec![EPS_D; NT + 2],
         eps_do: vec![0.0; NT + 2],
     };
-    let mut solver = ImpuritySolver::new(NT, NTAU, BETA, 0.02, 5, order, hs, ham);
+    let mut solver =
+        ImpuritySolver::with_solver(NT, NTAU, BETA, 0.02, 5, kind, order, hs, ham);
     solver.solve_atomic();
 
     let contour = Contour::new(NT as i64, NTAU as i64, 1, 1, 0.12, BETA);
@@ -127,6 +128,46 @@ fn solve_dimer(order: usize, pp_iters: usize) -> Vec<f64> {
         last = cur;
     }
     last
+}
+
+/// Backward-compatible convenience wrapper: order <= 2 -> PPSC
+/// (NCA/OCA), order >= 3 -> XCA.
+fn solve_dimer(order: usize, pp_iters: usize) -> Vec<f64> {
+    let kind = if order <= 2 {
+        Solver::Ppsc
+    } else {
+        Solver::Xca
+    };
+    solve_dimer_sel(kind, order, pp_iters)
+}
+
+/// Solver-selection parity: the PPSC-like native route and the XCA
+/// backbone must agree at order 1 (NCA) and order 2 (OCA) on the same
+/// dimer fixture. Order 1 is fit-exact; order 2 keeps the XCA Gregory
+/// warmup residual (documented at the m=2 anchors).
+#[test]
+#[allow(clippy::needless_range_loop)]
+fn ppsc_vs_xca_selection_matches() {
+    for &order in &[1usize, 2] {
+        let g_p = solve_dimer_sel(Solver::Ppsc, order, 200);
+        let g_x = solve_dimer_sel(Solver::Xca, order, 200);
+        let dtau = BETA / NTAU as f64;
+        let mut pair = 0.0f64;
+        let mut ep = 0.0f64;
+        let mut ex = 0.0f64;
+        for i in 1..=NTAU {
+            let tau = dtau * i as f64;
+            let exact = dimer_exact(tau);
+            pair = pair.max((g_p[i] - g_x[i]).abs());
+            ep = ep.max((g_p[i] - exact).abs());
+            ex = ex.max((g_x[i] - exact).abs());
+        }
+        println!(
+            "order {order}: |Ppsc-Xca| {pair:.3e}, |Ppsc-exact| {ep:.3e}, |Xca-exact| {ex:.3e}"
+        );
+        let budget = if order == 1 { 1.0e-6 } else { 1.0e-2 };
+        assert!(pair < budget, "order {order}: Ppsc vs XCA {pair:.3e}");
+    }
 }
 
 fn main() {

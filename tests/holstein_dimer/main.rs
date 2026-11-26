@@ -31,7 +31,7 @@ use nqist::hamilton::LocalHamiltonian;
 use nqist::hamilton::LocalHamiltonian::SingleBand;
 use nqist::hilbert::{HilbertSpace, SectorClass, build};
 use nqist::nca::{BosonBath, GfVertex, Hybridization};
-use nqist::solver::ImpuritySolver;
+use nqist::solver::{ImpuritySolver, Solver};
 
 const BETA: f64 = 5.0;
 const NTAU: usize = 64;
@@ -196,6 +196,7 @@ fn spin_ints<'a>(
 /// functions plus the number of pseudo-particle iterations.
 fn solve_holstein(
     ham: &LocalHamiltonian,
+    solver_kind: Solver,
     order: usize,
     vscale: f64,
     g: f64,
@@ -203,7 +204,17 @@ fn solve_holstein(
     pp_iters: usize,
 ) -> (Vec<Vec<f64>>, usize) {
     let hs = build(1, SectorClass::SpinResolved);
-    let mut solver = ImpuritySolver::new(NT, ntau, BETA, 0.02, 5, order, hs.clone(), ham.clone());
+    let mut solver = ImpuritySolver::with_solver(
+        NT,
+        ntau,
+        BETA,
+        0.02,
+        5,
+        solver_kind,
+        order,
+        hs.clone(),
+        ham.clone(),
+    );
     solver.solve_atomic();
     solver.set_boson_bath(Some(boson_bath(
         &hs,
@@ -250,8 +261,13 @@ fn solve_holstein(
 
 /// Matsubara solution with the library's single-line convention:
 /// `G_EP` is the Hamiltonian coupling.
-fn solve_matsubara(ham: &LocalHamiltonian, order: usize, vscale: f64) -> (Vec<Vec<f64>>, usize) {
-    solve_holstein(ham, order, vscale, G_EP, NTAU, 200)
+fn solve_matsubara(
+    ham: &LocalHamiltonian,
+    solver_kind: Solver,
+    order: usize,
+    vscale: f64,
+) -> (Vec<Vec<f64>>, usize) {
+    solve_holstein(ham, solver_kind, order, vscale, G_EP, NTAU, 200)
 }
 
 fn main() {
@@ -351,7 +367,7 @@ fn holstein_dimer_ed_selfchecks() {
 fn holstein_library_counts_single_boson_line() {
     let ham = mk_ham(U_HUB, NT + 2);
     let vscale = 0.1;
-    let (g, _) = solve_matsubara(&ham, 1, vscale);
+    let (g, _) = solve_matsubara(&ham, Solver::Ppsc, 1, vscale);
     let error = |lambda: f64| -> f64 {
         let ed = ed_reference(&ham, lambda, NPH, vscale);
         let mut err = 0.0f64;
@@ -375,10 +391,10 @@ fn holstein_library_counts_single_boson_line() {
 // equilibrium dimer: NCA / OCA against the phonon ED (single line)
 // ------------------------------------------------------------------
 
-fn dimer_error(order: usize, vscale: f64) -> f64 {
+fn dimer_error(solver_kind: Solver, order: usize, vscale: f64) -> f64 {
     let ham = mk_ham(U_HUB, NT + 2);
     let ed = ed_reference(&ham, G_EP, NPH, vscale);
-    let (g, _) = solve_matsubara(&ham, order, vscale);
+    let (g, _) = solve_matsubara(&ham, solver_kind, order, vscale);
     let mut err = 0.0f64;
     for o in 0..2 {
         for m in 1..NTAU {
@@ -400,9 +416,20 @@ fn dimer_error(order: usize, vscale: f64) -> f64 {
 /// ~1.7e-2).
 #[test]
 fn holstein_coupling_normalization_scan() {
+    check_holstein_coupling_normalization_scan(Solver::Ppsc);
+}
+
+/// Solver-selection parity: XCA order 1 on the same gates as `holstein_coupling_normalization_scan`.
+#[test]
+fn holstein_coupling_normalization_scan_xca() {
+    check_holstein_coupling_normalization_scan(Solver::Xca);
+}
+
+/// `holstein_coupling_normalization_scan` for a solver selection.
+fn check_holstein_coupling_normalization_scan(sel: Solver) {
     let ham = mk_ham(U_HUB, NT + 2);
     let vscale = 0.1;
-    let (g, _) = solve_matsubara(&ham, 1, vscale);
+    let (g, _) = solve_matsubara(&ham, sel, 1, vscale);
     let error = |lambda: f64| -> f64 {
         let ed = ed_reference(&ham, lambda, NPH, vscale);
         let mut err = 0.0f64;
@@ -439,8 +466,8 @@ fn holstein_coupling_normalization_scan() {
 /// vertex algebra would not follow the scaling.
 #[test]
 fn holstein_dimer_nca_scaling() {
-    let full = dimer_error(1, 1.0);
-    let half = dimer_error(1, 0.5);
+    let full = dimer_error(Solver::Ppsc, 1, 1.0);
+    let half = dimer_error(Solver::Ppsc, 1, 0.5);
     println!(
         "scaling [holstein]: NCA err {full:.6e} at V, {half:.6e} at V/2"
     );
@@ -459,7 +486,7 @@ fn holstein_dimer_nca_oca_vs_ed() {
     let ed = ed_reference(&ham, G_EP, NPH, 1.0);
     let mut errors = Vec::new();
     for order in [1usize, 2] {
-        let (g, iters) = solve_matsubara(&ham, order, 1.0);
+        let (g, iters) = solve_matsubara(&ham, Solver::Ppsc, order, 1.0);
         let mut err = [0.0f64; 2];
         for o in 0..2 {
             for m in 1..NTAU {
@@ -477,18 +504,52 @@ fn holstein_dimer_nca_oca_vs_ed() {
     assert!(errors[1] < 1.0e-2, "OCA: {errors:?}");
 }
 
+/// Solver-selection parity: the XCA backbone (order 1 = XCA(1),
+/// order 2 = XCA(1)+XCA(2)) against the same phonon ED, same budgets
+/// as the PPSC NCA/OCA gate above.
+#[test]
+fn holstein_dimer_xca_nca_oca_vs_ed() {
+    let ham = mk_ham(U_HUB, NT + 2);
+    let ed = ed_reference(&ham, G_EP, NPH, 1.0);
+    let mut errors = Vec::new();
+    for order in [1usize, 2] {
+        let (g, iters) = solve_matsubara(&ham, Solver::Xca, order, 1.0);
+        let mut err = [0.0f64; 2];
+        for o in 0..2 {
+            for m in 1..NTAU {
+                err[o] = err[o].max(
+                    (g[o][m] - ed.greens_tau(o, BETA * m as f64 / NTAU as f64)).abs(),
+                );
+            }
+        }
+        println!(
+            "holstein XCA order {order} ({iters} pp iterations): max |G-Ged| up {:+.6e} dn {:+.6e}",
+            err[0], err[1]
+        );
+        assert!((err[0] - err[1]).abs() < 1e-8, "spin symmetry: {err:?}");
+        errors.push(err[0]);
+    }
+    assert!(errors[0] < 5.0e-2, "XCA(1): {errors:?}");
+    assert!(errors[1] < 1.0e-2, "XCA(2): {errors:?}");
+}
+
 // ------------------------------------------------------------------
 // real-time dimer: stationarity + g quench against EdEvolution
 // ------------------------------------------------------------------
 
-/// Real-time solver state of the Holstein dimer.
+/// Real-time solver state of the Holstein dimer, with its fermionic
+/// bath (forward / backward hybridization): the OCA vertex diagrams of
+/// the real-time G need the hybridization list, which the caller
+/// rebuilds with `spin_ints` from this pair.
 struct RtRun {
     solver: ImpuritySolver,
     verts: [GfVertex; 2],
+    bath: (ContourGreen, ContourGreen),
 }
 
 #[allow(clippy::too_many_arguments)]
 fn run_realtime(
+    solver_kind: Solver,
     order: usize,
     gvec: &[f64],
     vscale: f64,
@@ -569,7 +630,23 @@ fn run_realtime(
     let verts = spin_verts(&hs);
 
     let started = Instant::now();
-    let mut solver = ImpuritySolver::new(nt_rt, ntau, BETA, h_rt, kt, order, hs.clone(), ham);
+    let mut solver = ImpuritySolver::with_solver(
+        nt_rt,
+        ntau,
+        BETA,
+        h_rt,
+        kt,
+        solver_kind,
+        order,
+        hs.clone(),
+        ham,
+    );
+    // the real-time XCA route: the dimer bath is static (time
+    // translation invariant)
+    if solver_kind == Solver::Xca {
+        solver.rt_xca_m1 = true;
+        solver.rt_xca_m2 = order >= 2;
+    }
     solver.solve_atomic();
     solver.set_boson_bath(Some(boson_bath(
         &hs,
@@ -612,7 +689,11 @@ fn run_realtime(
         "[holstein m={order} vscale {vscale}] equilibrium {iters} iterations, total {:.2?}",
         started.elapsed()
     );
-    RtRun { solver, verts }
+    RtRun {
+        solver,
+        verts,
+        bath: (delta, delta_cc),
+    }
 }
 
 /// Largest drift of the equal-time observables away from their
@@ -633,10 +714,15 @@ fn obs_drift(run: &mut RtRun, nt_rt: usize) -> f64 {
     drift
 }
 
-fn check_holstein_dimer_realtime(order: usize) {
+fn check_holstein_dimer_realtime(solver_kind: Solver, order: usize) {
     use nqist::ed::{EdEvolution, hamiltonian_at_phonon};
 
-    let (nt_rt, ntau, h_rt) = (24usize, 128usize, 0.025f64);
+    let h_rt = std::env::var("NQIST_H")
+        .ok()
+        .and_then(|v| v.parse::<f64>().ok())
+        .unwrap_or(0.025);
+    let nt_rt = (0.6 / h_rt).round() as usize;
+    let ntau = 128usize;
     let len = nt_rt + 2;
     let (g0, g1) = (G_EP, 0.6f64);
     let ham = mk_ham(U_HUB, len);
@@ -647,7 +733,7 @@ fn check_holstein_dimer_realtime(order: usize) {
 
     // -- leg 1: no-quench stationarity (TTI), with and without the
     // fermionic bath (the phonon stays coupled in both legs)
-    let mut atomic = run_realtime(order, &gvec_eq, 0.0, nt_rt, ntau, h_rt);
+    let mut atomic = run_realtime(solver_kind, order, &gvec_eq, 0.0, nt_rt, ntau, h_rt);
     let drift = obs_drift(&mut atomic, nt_rt);
     println!("realtime TTI drift [holstein m={order}, v=0]: {drift:.3e}");
     assert!(
@@ -655,7 +741,7 @@ fn check_holstein_dimer_realtime(order: usize) {
         "atomic leg must be stationary: {drift:.3e}"
     );
 
-    let mut steady = run_realtime(order, &gvec_eq, 1.0, nt_rt, ntau, h_rt);
+    let mut steady = run_realtime(solver_kind, order, &gvec_eq, 1.0, nt_rt, ntau, h_rt);
     let drift = obs_drift(&mut steady, nt_rt);
     println!(
         "realtime TTI drift [holstein m={order}] (n_up, n_dn, docc, e_int): {drift:.3e}"
@@ -670,7 +756,8 @@ fn check_holstein_dimer_realtime(order: usize) {
     let h0 = hamiltonian_at_phonon(&ham, &hs, &bath(), &[], -1, &phonon_series(&gvec_eq));
     let h1 = hamiltonian_at_phonon(&ham, &hs, &bath(), &[], 0, &phonon_series(&gvec_q));
     let ev = EdEvolution::build_quench_with_layout(&h0, &h1, nt_rt, h_rt, BETA, &[0, 1], 4);
-    let quench = run_realtime(order, &gvec_q, 1.0, nt_rt, ntau, h_rt);
+    let quench = run_realtime(solver_kind, order, &gvec_q, 1.0, nt_rt, ntau, h_rt);
+    let q_ints = spin_ints(&hs, &quench.bath.0, &quench.bath.1);
     let mut w = 0.0f64;
     for mode in [0usize, 1] {
         for (n, j) in [
@@ -680,7 +767,7 @@ fn check_holstein_dimer_realtime(order: usize) {
             (nt_rt, 0),
             (nt_rt, nt_rt - 1),
         ] {
-            let gf = quench.solver.get_spgf(&quench.verts, n as i64, &[]);
+            let gf = quench.solver.get_spgf(&quench.verts, n as i64, &q_ints);
             for (tag, a, b) in [
                 (
                     "ret",
@@ -704,8 +791,12 @@ fn check_holstein_dimer_realtime(order: usize) {
     println!(
         "realtime g-quench order {order} [holstein]: worst |G - G_ed| {w:.3e}"
     );
+    // Measured: order 1 (NCA) 4.380e-2, order 2 (OCA with its
+    // one-line vertex diagrams of G) 8.651e-3 (4.847e-2 while the
+    // gate passed an empty hybridization list).
+    let budget = if order == 1 { 8.0e-2 } else { 2.0e-2 };
     assert!(
-        w < 8.0e-2,
+        w < budget,
         "quench error {w:.3e} exceeds the Holstein budget"
     );
 }
@@ -714,11 +805,27 @@ fn check_holstein_dimer_realtime(order: usize) {
 /// EdEvolution on the fermion + phonon space, single boson line).
 #[test]
 fn holstein_dimer_realtime_nca_vs_ed() {
-    check_holstein_dimer_realtime(1);
+    check_holstein_dimer_realtime(Solver::Ppsc, 1);
 }
 
 /// Tier 2 gate: Holstein real-time OCA.
 #[test]
 fn holstein_dimer_realtime_oca_vs_ed() {
-    check_holstein_dimer_realtime(2);
+    check_holstein_dimer_realtime(Solver::Ppsc, 2);
+}
+
+/// Solver-selection parity: XCA order 1 through the real-time XCA
+/// route with the single boson line, the same stationarity and quench
+/// gates as the native NCA gate.
+#[test]
+fn holstein_dimer_realtime_xca_nca_vs_ed() {
+    check_holstein_dimer_realtime(Solver::Xca, 1);
+}
+
+/// Solver-selection parity: XCA order 2 through the real-time XCA
+/// route with the single boson line, the same gates as the native OCA
+/// gate.
+#[test]
+fn holstein_dimer_realtime_xca_oca_vs_ed() {
+    check_holstein_dimer_realtime(Solver::Xca, 2);
 }
