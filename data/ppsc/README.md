@@ -20,6 +20,14 @@ program output that no code reads).
 | two_band_oca | two-band Kanamori, OCA | case.inp, case.toml, golden.txt | `ppsc_ref::two_band_oca_matches_reference` (heavy tier; reference from the sign-patched C++ build) |
 | three_band_u35 | three-band Kanamori, NCA | case.inp, case.toml, golden.txt | `ppsc_ref::three_band_matches_reference` |
 | three_band_u35_oca | three-band Kanamori, OCA | case.inp, case.toml, golden.txt | `ppsc_ref::three_band_oca_matches_reference` (heavy tier; reference from the sign-patched C++ build) |
+| two_band_bz_delta | two-band Kanamori, static Bz = 0.3 and delta = 0.5, NCA | case.inp, case.toml, golden.txt | `ppsc_ref::two_band_bz_delta_matches_reference` |
+| two_band_bz_delta_oca | same, OCA | case.inp, case.toml, golden.txt | `ppsc_ref::two_band_bz_delta_oca_matches_reference` (heavy tier; reference from the sign-patched C++ build) |
+| two_band_hop_quench | two-band Kanamori, hopping quench t 1.0 -> 0.8, NCA | case.inp, golden.txt | `ppsc_ref::two_band_hop_quench_matches_reference` |
+| two_band_hop_quench_oca | same, OCA | case.inp, golden.txt | `ppsc_ref::two_band_hop_quench_oca_matches_reference` (heavy tier; reference from the sign-patched C++ build) |
+| three_band_bz_delta | three-band Kanamori, static Bz = 0.3 and delta = 0.5, NCA | case.inp, case.toml, golden.txt | `ppsc_ref::three_band_bz_delta_matches_reference` |
+| three_band_bz_delta_oca | same, OCA | case.inp, case.toml, golden.txt | `ppsc_ref::three_band_bz_delta_oca_matches_reference` (heavy tier; reference from the sign-patched C++ build) |
+| three_band_hop_quench | three-band Kanamori, hopping quench t 1.0 -> 0.8, NCA | case.inp, golden.txt | `ppsc_ref::three_band_hop_quench_matches_reference` |
+| three_band_hop_quench_oca | same, OCA | case.inp, golden.txt | `ppsc_ref::three_band_hop_quench_oca_matches_reference` (heavy tier; reference from the sign-patched C++ build) |
 | holstein_u46 | single-band Hubbard-Holstein, NCA (g_ppsc = 0.3) | case.inp, case.toml, useries.txt, golden.txt | `ppsc_ref::holstein_matches_reference` |
 | holstein_u46_oca | same, OCA | case.inp, case.toml, useries.txt, golden.txt | `ppsc_ref::holstein_oca_matches_reference` |
 | holstein_u46_oca_fine | same, OCA, fine grid (ntau = 250) | case.inp, case.toml, useries.txt, golden.txt | `ppsc_ref::holstein_oca_fine_matches_reference`, `ppsc_ref::holstein_xca_oca_fine_matches_reference` |
@@ -29,6 +37,22 @@ program output that no code reads).
 
 Per-case details (C++ source file, sha256, exact run command, compared line
 kinds) are in each `<case>/README.txt`.
+
+The four `*_bz_delta` cases lift the spin and orbital degeneracies (static
+Bz = 0.3, delta = 0.5) and the four `*_hop_quench` cases quench the hopping
+t 1.0 -> 0.8, so the Bethe Weiss field Delta(t, t') = t(t) t(t') G_loc(t, t')
+is not translation invariant; they are the parameter points outside the
+symmetric base cases. Three conventions matter there:
+
+- The C++ drivers measure the DMFT convergence error on channel 0 only
+  (`distance_norm2(-1, gtmp, Gloc.o1up)`, and the same at `kt` for the
+  START window). `nqist::dmft::run_equilibrium_multi` and
+  `run_start_window_multi` follow that criterion; the channels only differ
+  once Bz or delta lifts the degeneracy.
+- The C++ three-band driver prints `n1 + 2 n2` in the `n` column (it prints
+  `n2` twice instead of `n3`); nQIST compares the same combination.
+- The `*_hop_quench` cases have no `case.toml`: the examples take a static
+  hopping, so the hopping quench is covered by the tests only.
 
 Known gap: `examples/single_band_hubbard_afm_bethe.rs` defaults to
 `data/ppsc/afm_bethe/case.toml`, which does not exist; pass an explicit path.
@@ -97,8 +121,8 @@ output against the tracked one at the budget the tests use (1e-6 absolute or
 ## Run the gates
 
 ```
-cargo test --release --test ppsc_ref                  # fast gates (20: 11 PPSC + 9 XCA twins)
-cargo test --release --test ppsc_ref -- --ignored     # heavy gates (6; run them through the script instead)
+cargo test --release --test ppsc_ref                  # fast gates (24: 15 PPSC + 9 XCA twins)
+cargo test --release --test ppsc_ref -- --ignored     # heavy gates (10; run them through the script instead)
 scripts/heavy_gates.sh                                # selected heavy OCA tier + XCA(2) twins
 scripts/heavy_gates.sh --list                         # list the tier and ETAs
 scripts/heavy_gates.sh --background                   # detached run (does not block)
@@ -112,9 +136,13 @@ The selected heavy OCA tier is `scripts/heavy_gates.sh`
 `threeband_dimer::threeband_kanamori_realtime_oca_vs_ed`,
 `ppsc_ref::oca_realtime_matches_reference`, each followed by its
 `..._xca_...` twin, plus the multi-band OCA gates against the C++
-references `ppsc_ref::two_band_oca_matches_reference` and
-`ppsc_ref::three_band_oca_matches_reference`); run it as a separate CI
-job so the default suite stays fast. `--background` detaches the run
+references: `ppsc_ref::two_band_oca_matches_reference`,
+`ppsc_ref::three_band_oca_matches_reference` and their static-Bz/delta
+and hopping-quench variants `ppsc_ref::two_band_bz_delta_oca_matches_reference`,
+`ppsc_ref::two_band_hop_quench_oca_matches_reference`,
+`ppsc_ref::three_band_bz_delta_oca_matches_reference`,
+`ppsc_ref::three_band_hop_quench_oca_matches_reference`); run it as a
+separate CI job so the default suite stays fast. `--background` detaches the run
 (log `target/heavy_gates/latest.log`); `--status` tails it. The script
 exports `NQIST_PROGRESS=1` and passes `--nocapture`, so the DMFT
 iteration and solver solve timings stream while it runs.
