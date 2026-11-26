@@ -1,0 +1,169 @@
+# PPSC OCA single-particle Green's function: statistics sign of the
+# one-line vertex diagram on multi-orbital models
+#
+# Reported from nQIST (Rust port of ppsc + ppsc_programs), 2026-11-26.
+# Applies to the pristine `ppsc/oca` sources of the port at
+# ../KadanoffBaym/.nessi/ppsc-port (KadanoffBaym commit 03fa63f; the
+# ppsc-port subtree is untracked there).
+#
+# Status: applied to the port on 2026-11-26 and the port's binaries
+# (build/ppsc/{libppsc,oca/liboca,nca/libnca}.so and
+# build/ppsc_programs/*.ex) were rebuilt from the patched sources. The
+# data/ppsc/two_band_oca and data/ppsc/three_band_u35_oca references
+# were regenerated with them. The pristine library is kept in
+# ppsc-port-pristine.tar.gz.
+#
+# The port is gitignored in the KadanoffBaym repository (.nessi/*), so
+# this file is the only versioned record of the change. To rebuild a
+# pristine copy with the patch:
+#
+#     port=/home/yun/Working/devel/KadanoffBaym/.nessi/ppsc-port
+#     work=/tmp/opencode/ppsc-fix        # must have ../eigen3-install
+#     mkdir -p "$work"
+#     cp -r "$port/ppsc" "$port/ppsc_programs" "$port/CMakeLists.txt" "$work/"
+#     ln -s "$port/cereal-1.2.1" "$port/nessi-install" "$work/"
+#     ln -sfn "$port/../eigen3-install" "$(dirname "$work")/eigen3-install"
+#     (cd "$work" && patch -p1 < <this file>)
+#     cmake -S "$work" -B "$work/build" && cmake --build "$work/build" -j
+#
+# The port's CMakeLists.txt resolves Eigen relative to the tree
+# (`${PPSC_PORT_ROOT}/../eigen3-install`), hence the last symlink.
+# Binaries: "$work/build/ppsc_programs/<program>.ex". Such a copy prints
+# the same run.log as the port's own binaries, patched or not (checked
+# on two_band_oca, three_band_u35_oca, holstein_u46_oca).
+#
+# Defect
+# ------
+# oca/gf_mat.hpp reflects the last-sector pseudo-particle propagator of
+# the one-line vertex diagram with the particle-number parity of that
+# sector,
+#
+#     gd_ref_flip(tau) = -d.gd.sig() * gd(mmax - tau)   // "statistical signs??"
+#
+# and construct_gf_diagram() passes a diagram `sig` that is "inactive
+# ... FIXME?". The sign is a property of the hybridization line, not of
+# the chain: the two time orderings of the line around the external
+# vertex must enter with the SAME sign, set by the propagation
+# direction of the line (fwd/bwd). The last-sector parity coincides with
+# the direction only when every forward chain ends in an even sector and
+# every backward chain in an odd one, which holds for a single orbital
+# (and for the single-band Holstein boson line, where both channels share
+# one chain). With several orbitals, chains of both parities exist in
+# both channels, and the relative sign between the forward and backward
+# contributions is wrong. The real-time matrix kernel (oca/gf_tstp.hpp)
+# carries no explicit sign and inherits the same defect through the
+# continuation of the equilibrium expression.
+#
+# The OCA self-energy is not affected: oca/sigma.cpp builds its
+# `stat_sign` from the line directions (`int.dir == bwd`), so only the
+# direction sign is missing in the Green's function. The pseudo-particle
+# propagators and the density matrix are therefore correct while the
+# physical Green's function is not.
+#
+# Fix
+# ---
+# Carry the statistics sign of the reflected segment in the diagram
+# (`gd_sig`: `hyb.dir` for a fermionic line, the sector statistics for a
+# bosonic line), use it for the equilibrium reflection, and multiply the
+# real-time diagram by its ratio to the previous sign.
+#
+# Evidence (nQIST; exact diagonalization calibrated against PyED and
+# Pomerol to 1e-14 on these dimers)
+# --------------------------------------------------------------------
+# Two-band Kanamori dimer, max |G(tau) - G_ED| at full hybridization:
+# NCA 1.10e-2, OCA 1.97e-2 before, 6.7e-4 after (three-band density
+# dimer: 1.20e-2 / 2.06e-2 / 8.6e-4). Before the fix the OCA error scales
+# as V^2 like NCA, after it as V^4. The self-energy and the density
+# matrix do not change. Single-orbital cases are bit-identical: the
+# patched and unpatched programs print the same run.log on
+# holstein_u46_oca and holstein_u46_oca_fine (Hubbard-Holstein OCA,
+# fermion and boson lines) and on quench_u35_oca (single-band Hubbard,
+# OCA, U quench, nt = 300 / ntau = 250). NCA cases do not evaluate the
+# diagram (two_band_u35, three_band_u35, holstein_u46).
+#
+# With the patch the C++ programs and nQIST agree at the print
+# resolution (absolute 1e-6 or relative 1e-5) on the two-band and
+# three-band Bethe lattices, DMFT trajectories included (34 and 33
+# equilibrium iterations): the gates
+# ppsc_ref::two_band_oca_matches_reference and
+# ppsc_ref::three_band_oca_matches_reference in scripts/heavy_gates.sh.
+#
+# ---- diff -u (a/ = pristine, b/ = patched) ----
+--- a/ppsc/oca/gf_diag.hpp
++++ b/ppsc/oca/gf_diag.hpp
+@@ -130,7 +130,7 @@
+   {}
+ 
+   gdiagram_configuration(const gdiagram_configuration<-1, -1, -1, -1> & d) :
+-    g(d.g), sig(d.sig), op1(d.op1), op2(d.op2), op3(d.op3), op4(d.op4),
++    g(d.g), sig(d.sig), gd_sig(d.gd_sig), op1(d.op1), op2(d.op2), op3(d.op3), op4(d.op4),
+     ga(d.ga), gb(d.gb), gc(d.gc), gd(d.gd), lam(d.lam),
+     vertex_idx(d.vertex_idx), prefactor(d.prefactor),
+     adim(ga.nflavour()), bdim(gb.nflavour()), cdim(gc.nflavour()), ddim(gd.nflavour())
+@@ -141,6 +141,13 @@
+ 
+   g_type g;
+   int sig;
++
++  // -- Statistics sign of the reflected last-sector segment G_d(beta - tau)
++  // -- of the diagram: the propagation direction (+1 fwd / -1 bwd) of a
++  // -- fermionic hybridization line, the sector statistics of a bosonic
++  // -- line. It is NOT the particle-number parity of the last sector, which
++  // -- coincides with the direction for a single orbital only.
++  int gd_sig = 1;
+   
+   op1_matrix_type op1;
+   op2_matrix_type op2;
+--- a/ppsc/oca/gf.cpp
++++ b/ppsc/oca/gf.cpp
+@@ -84,12 +84,23 @@
+   if(hyb.sig == fermion && hyb.dir == bwd) diagram_sig = -1;
+   
+   value_type prefactor = diagram_sig;
++
++  // -- Statistics sign of the reflected G_d segment (see gf_diag.hpp): the
++  // -- two time orderings of the line around the external vertex must enter
++  // -- with the SAME sign, given by the line direction. The previous use of
++  // -- the last-sector particle parity (gd.sig()) is only correct for a
++  // -- single orbital and produces a wrong relative sign between the forward
++  // -- and backward channels for multi-orbital models.
++  int gd_sig = (hyb.sig == fermion) ? hyb.dir : ppGfs[sd].sig();
+   
+-  return gdiagram_configuration<>(
++  gdiagram_configuration<> diagram(
+     gtstp, gf_sig, // nb the sign here is inactive... FIXME?
+     op1, op2, op3, op4,
+     ppGfs[sa], ppGfs[sb], ppGfs[sc], ppGfs[sd],
+     hyb.lam, vertex_idx, prefactor);
++  diagram.gd_sig = gd_sig;
++  
++  return diagram;
+ }
+   
+ // -----------------------------------------------------------------------
+--- a/ppsc/oca/gf_mat.hpp
++++ b/ppsc/oca/gf_mat.hpp
+@@ -77,7 +77,7 @@
+     new (&gd_ref_flip) mam::array_matrix_ref<gd_matrix_type>(gd_flip.data(), mmax+1, d.ddim, d.ddim);
+     
+     for(int tau = 0; tau < mmax+1; tau++) {
+-      gd_ref_flip(tau) = -d.gd.sig() * gd(mmax - tau);
++      gd_ref_flip(tau) = -d.gd_sig * gd(mmax - tau); // statistics sign: see gf_diag.hpp (gd_sig)
+     }
+   }
+   // ---------------------------------------------------------------------  
+--- a/ppsc/oca/gf_disp.cpp
++++ b/ppsc/oca/gf_disp.cpp
+@@ -44,6 +44,12 @@
+     //}
+   }
+ 
++  // -- Real-time analogue of the equilibrium statistics flip: the real-time
++  // -- integrals carry no explicit statistics sign, so the correction is the
++  // -- ratio of the new sign (gd_sig) to the previous one (the last-sector
++  // -- particle parity). No effect for a single orbital.
++  if(tstp != -1) diagram.g *= value_type(diagram.gd_sig * diagram.gd.sig());
++
+   // -- Post-multiplication by diagram prefactor
+   diagram.g *= diagram.prefactor;
+ }
